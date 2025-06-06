@@ -1,6 +1,8 @@
 package imapserver
 
 import (
+	"fmt"
+
 	"github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/internal/imapwire"
 )
@@ -77,6 +79,15 @@ func (c *Conn) availableCaps() []imap.Cap {
 				imap.CapBinary,
 			})
 		}
+
+		if limit, ok := available.AppendLimit(); ok {
+			if limit != nil {
+				caps = append(caps, imap.Cap(fmt.Sprintf("APPENDLIMIT=%d", *limit)))
+			} else {
+				caps = append(caps, imap.CapAppendLimit)
+			}
+		}
+
 		addAvailableCaps(&caps, available, []imap.Cap{
 			imap.CapCreateSpecialUse,
 			imap.CapLiteralPlus,
