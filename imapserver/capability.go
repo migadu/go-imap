@@ -78,6 +78,7 @@ func (c *Conn) availableCaps() []imap.Cap {
 			})
 		}
 		addAvailableCaps(&caps, available, []imap.Cap{
+			imap.CapSpecialUse,
 			imap.CapCreateSpecialUse,
 			imap.CapLiteralPlus,
 			imap.CapUnauthenticate,
