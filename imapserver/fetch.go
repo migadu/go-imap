@@ -75,6 +75,26 @@ func (c *Conn) handleFetch(dec *imapwire.Decoder, numKind NumKind) error {
 		}
 	}
 
+	if dec.SP() && dec.Special('(') {
+		var param string
+		if !dec.ExpectAtom(&param) {
+			return dec.Err()
+		}
+
+		if strings.ToUpper(param) == "CHANGEDSINCE" {
+			if !dec.ExpectSP() || !dec.ExpectModSeq(&options.ChangedSince) {
+				return dec.Err()
+			}
+			options.ModSeq = true
+		} else {
+			return fmt.Errorf("unknown FETCH modifier: %v", param)
+		}
+
+		if !dec.ExpectSpecial(')') {
+			return dec.Err()
+		}
+	}
+
 	if !dec.ExpectCRLF() {
 		return dec.Err()
 	}
@@ -108,6 +128,8 @@ func handleFetchAtt(dec *imapwire.Decoder, attName string, options *imap.FetchOp
 		options.RFC822Size = true
 	case "UID":
 		options.UID = true
+	case "MODSEQ":
+		options.ModSeq = true
 	case "RFC822": // equivalent to BODY[]
 		bs := &imap.FetchItemBodySection{}
 		writerOptions.obsolete[bs] = attName
@@ -454,6 +476,12 @@ func (w *FetchResponseWriter) WriteEnvelope(envelope *imap.Envelope) {
 	enc := w.enc.Encoder
 	enc.Atom("ENVELOPE").SP()
 	writeEnvelope(enc, envelope)
+}
+
+// WriteModSeq writes the message's MODSEQ.
+func (w *FetchResponseWriter) WriteModSeq(modSeq uint64) {
+	w.writeItemSep()
+	w.enc.Atom("MODSEQ").SP().Special('(').ModSeq(modSeq).Special(')')
 }
 
 // WriteBodyStructure writes the message's body structure (either BODYSTRUCTURE
