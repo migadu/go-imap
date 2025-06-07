@@ -20,6 +20,7 @@ type UserSession struct {
 }
 
 var _ imapserver.SessionIMAP4rev2 = (*UserSession)(nil)
+var _ imapserver.SessionSort = (*UserSession)(nil)
 
 // NewUserSession creates a new user session.
 func NewUserSession(user *User) *UserSession {
@@ -137,4 +138,15 @@ func (sess *UserSession) Idle(w *imapserver.UpdateWriter, stop <-chan struct{}) 
 		return nil // TODO
 	}
 	return sess.mailbox.Idle(w, stop)
+}
+
+// Sort implements the imapserver.SessionSort interface.
+func (sess *UserSession) Sort(numKind imapserver.NumKind, criteria *imap.SearchCriteria, sortCriteria []imap.SortCriterion) (*imapserver.SortData, error) {
+	if sess.mailbox == nil {
+		return nil, &imap.Error{
+			Type: imap.StatusResponseTypeNo,
+			Text: "No mailbox selected",
+		}
+	}
+	return sess.mailbox.Sort(numKind, criteria, sortCriteria)
 }
