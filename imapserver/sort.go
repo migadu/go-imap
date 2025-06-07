@@ -8,17 +8,11 @@ import (
 	"github.com/emersion/go-imap/v2/internal/imapwire"
 )
 
-type SortData struct {
+type sortData struct {
 	Nums  []uint32
 	Min   uint32
 	Max   uint32
 	Count uint32
-}
-
-type SessionSort interface {
-	Session
-
-	Sort(numKind NumKind, criteria *imap.SearchCriteria, sortCriteria []imap.SortCriterion) (*SortData, error)
 }
 
 type esortReturnOptions struct {
@@ -26,6 +20,12 @@ type esortReturnOptions struct {
 	Max   bool
 	Count bool
 	All   bool
+}
+
+type SessionSort interface {
+	Session
+
+	Sort(numKind NumKind, criteria *imap.SearchCriteria, sortCriteria []imap.SortCriterion) ([]uint32, error)
 }
 
 func (c *Conn) handleSort(tag string, dec *imapwire.Decoder, numKind NumKind) error {
@@ -156,10 +156,10 @@ func (c *Conn) handleSort(tag string, dec *imapwire.Decoder, numKind NumKind) er
 		return err
 	}
 
-	var data *SortData
+	var sortedNums []uint32
 	if sortSession, ok := c.session.(SessionSort); ok {
 		var sortErr error
-		data, sortErr = sortSession.Sort(numKind, &criteria, sortCriteria)
+		sortedNums, sortErr = sortSession.Sort(numKind, &criteria, sortCriteria)
 		if sortErr != nil {
 			return sortErr
 		}
@@ -167,14 +167,21 @@ func (c *Conn) handleSort(tag string, dec *imapwire.Decoder, numKind NumKind) er
 		return &imap.Error{
 			Type: imap.StatusResponseTypeNo,
 			Code: imap.ResponseCodeCannot,
-			Text: "SORT not implemented by session",
+			Text: "SORT command is not supported by this session",
 		}
+	}
+
+	data := &sortData{Nums: sortedNums}
+	if len(sortedNums) > 0 {
+		data.Count = uint32(len(sortedNums))
+		data.Min = sortedNums[0]
+		data.Max = sortedNums[len(sortedNums)-1]
 	}
 
 	return c.writeSortResponse(tag, numKind, data, &esortReturnOpts)
 }
 
-func (c *Conn) writeSortResponse(tag string, numKind NumKind, data *SortData, returnOpts *esortReturnOptions) error {
+func (c *Conn) writeSortResponse(tag string, numKind NumKind, data *sortData, returnOpts *esortReturnOptions) error {
 	enc := newResponseEncoder(c)
 	defer enc.end()
 
