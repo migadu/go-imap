@@ -54,7 +54,60 @@ func main() {
 
 	if username != "" || password != "" {
 		user := imapmemserver.NewUser(username, password)
-		user.Create("INBOX", nil)
+
+		// Create standard mailboxes with special-use attributes as per RFC 6154
+		if err := user.Create("INBOX", nil); err != nil {
+			log.Printf("Failed to create INBOX: %v", err)
+		}
+
+		if err := user.Create("Drafts", nil); err != nil {
+			log.Printf("Failed to create Drafts mailbox: %v", err)
+		}
+		if mbox, err := user.Mailbox("Drafts"); err == nil {
+			mbox.SetSpecialUse(imap.MailboxAttrDrafts)
+		}
+
+		if err := user.Create("Sent", nil); err != nil {
+			log.Printf("Failed to create Sent mailbox: %v", err)
+		}
+		if mbox, err := user.Mailbox("Sent"); err == nil {
+			mbox.SetSpecialUse(imap.MailboxAttrSent)
+		}
+
+		if err := user.Create("Archive", nil); err != nil {
+			log.Printf("Failed to create Archive mailbox: %v", err)
+		}
+		if mbox, err := user.Mailbox("Archive"); err == nil {
+			mbox.SetSpecialUse(imap.MailboxAttrArchive)
+		}
+
+		if err := user.Create("Junk", nil); err != nil {
+			log.Printf("Failed to create Junk mailbox: %v", err)
+		}
+		if mbox, err := user.Mailbox("Junk"); err == nil {
+			mbox.SetSpecialUse(imap.MailboxAttrJunk)
+		}
+
+		if err := user.Create("Trash", nil); err != nil {
+			log.Printf("Failed to create Trash mailbox: %v", err)
+		}
+		if mbox, err := user.Mailbox("Trash"); err == nil {
+			mbox.SetSpecialUse(imap.MailboxAttrTrash)
+		}
+
+		if err := user.Create("Flagged", nil); err != nil {
+			log.Printf("Failed to create Flagged mailbox: %v", err)
+		}
+		if mbox, err := user.Mailbox("Flagged"); err == nil {
+			mbox.SetSpecialUse(imap.MailboxAttrFlagged)
+		}
+
+		// Subscribe to the most commonly used mailboxes
+		_ = user.Subscribe("INBOX")
+		_ = user.Subscribe("Drafts")
+		_ = user.Subscribe("Sent")
+		_ = user.Subscribe("Trash")
+
 		memServer.AddUser(user)
 	}
 

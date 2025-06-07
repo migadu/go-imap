@@ -17,12 +17,12 @@ import (
 type Mailbox struct {
 	tracker     *imapserver.MailboxTracker
 	uidValidity uint32
-
-	mutex         sync.Mutex
-	name          string
-	subscribed    bool
-	l             []*message
-	uidNext       imap.UID
+	mutex      sync.Mutex
+	name       string
+	subscribed bool
+	specialUse []imap.MailboxAttr
+	l          []*message
+	uidNext    imap.UID
 	highestModSeq uint64
 }
 
@@ -38,10 +38,13 @@ func NewMailbox(name string, uidValidity uint32) *Mailbox {
 }
 
 func (mbox *Mailbox) list(options *imap.ListOptions) *imap.ListData {
-	mbox.mutex.Lock()
+  mbox.mutex.Lock()
 	defer mbox.mutex.Unlock()
 
 	if options.SelectSubscribed && !mbox.subscribed {
+		return nil
+	}
+	if options.SelectSpecialUse && len(mbox.specialUse) == 0 {
 		return nil
 	}
 
@@ -51,6 +54,9 @@ func (mbox *Mailbox) list(options *imap.ListOptions) *imap.ListData {
 	}
 	if mbox.subscribed {
 		data.Attrs = append(data.Attrs, imap.MailboxAttrSubscribed)
+	}
+	if (options.ReturnSpecialUse || options.SelectSpecialUse) && len(mbox.specialUse) > 0 {
+		data.Attrs = append(data.Attrs, mbox.specialUse...)
 	}
 	if options.ReturnStatus != nil {
 		data.Status = mbox.statusDataLocked(options.ReturnStatus)
@@ -172,6 +178,13 @@ func (mbox *Mailbox) rename(newName string) {
 func (mbox *Mailbox) SetSubscribed(subscribed bool) {
 	mbox.mutex.Lock()
 	mbox.subscribed = subscribed
+	mbox.mutex.Unlock()
+}
+
+// SetSpecialUse sets the special-use attributes for this mailbox.
+func (mbox *Mailbox) SetSpecialUse(attrs ...imap.MailboxAttr) {
+	mbox.mutex.Lock()
+	mbox.specialUse = attrs
 	mbox.mutex.Unlock()
 }
 
