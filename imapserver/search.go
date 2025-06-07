@@ -328,6 +328,33 @@ func readSearchKeyWithAtom(criteria *imap.SearchCriteria, dec *imapwire.Decoder,
 		criteria.Or = append(criteria.Or, or)
 	case "$":
 		criteria.UID = append(criteria.UID, imap.SearchRes())
+	case "MODSEQ":
+		if !dec.ExpectSP() {
+			return dec.Err()
+		}
+		var name string
+		var metadataType imap.SearchCriteriaMetadataType
+		if dec.Quoted(&name) {
+			if !dec.ExpectSP() {
+				return dec.Err()
+			}
+			var typeName string
+			if !dec.ExpectAtom(&typeName) || !dec.ExpectSP() {
+				return dec.Err()
+			}
+			metadataType = imap.SearchCriteriaMetadataType(strings.ToLower(typeName))
+		}
+
+		var modSeq uint64
+		if !dec.ExpectModSeq(&modSeq) {
+			return dec.Err()
+		}
+
+		criteria.ModSeq = &imap.SearchCriteriaModSeq{
+			ModSeq:       modSeq,
+			MetadataName: name,
+			MetadataType: metadataType,
+		}
 	default:
 		seqSet, err := imapwire.ParseSeqSet(key)
 		if err != nil {
