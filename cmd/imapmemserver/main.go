@@ -121,8 +121,9 @@ func main() {
 			return memServer.NewSession(), nil, nil
 		},
 		Caps: imap.CapSet{
-			imap.CapIMAP4rev1: {},
-			imap.CapIMAP4rev2: {},
+			imap.CapIMAP4rev1:                 {},
+			imap.CapIMAP4rev2:                 {},
+			imap.Cap("APPENDLIMIT=104857600"): {},
 		},
 		TLSConfig:    tlsConfig,
 		InsecureAuth: insecureAuth,
