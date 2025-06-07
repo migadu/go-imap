@@ -9,7 +9,10 @@ import (
 )
 
 type SortData struct {
-	Nums []uint32
+	Nums  []uint32
+	Min   uint32
+	Max   uint32
+	Count uint32
 }
 
 type SessionSort interface {
@@ -18,14 +21,80 @@ type SessionSort interface {
 	Sort(numKind NumKind, criteria *imap.SearchCriteria, sortCriteria []imap.SortCriterion) (*SortData, error)
 }
 
+type esortReturnOptions struct {
+	Min   bool
+	Max   bool
+	Count bool
+	All   bool
+}
+
 func (c *Conn) handleSort(tag string, dec *imapwire.Decoder, numKind NumKind) error {
 	if !dec.ExpectSP() {
 		return dec.Err()
 	}
 
+	var esortReturnOpts esortReturnOptions
+	esortReturnOpts.All = true // Default if no RETURN or RETURN (ALL)
+
+	var atom string
+	// dec.Func returns true if an atom is read; 'atom' will contain it.
+	// If the next token is not an atom (e.g., '('), it returns false and dec.Err() is nil.
+	if dec.Func(&atom, imapwire.IsAtomChar) && strings.EqualFold(atom, "RETURN") {
+		// Atom "RETURN" was successfully read and consumed.
+		if !dec.ExpectSP() {
+			return dec.Err()
+		}
+
+		esortReturnOpts.All = false // Explicit RETURN given, so default ALL is off unless specified in list
+
+		parseReturnErr := dec.ExpectList(func() error {
+			var opt string
+			if !dec.ExpectAtom(&opt) {
+				return dec.Err()
+			}
+			opt = strings.ToUpper(opt)
+			switch opt {
+			case "MIN":
+				esortReturnOpts.Min = true
+			case "MAX":
+				esortReturnOpts.Max = true
+			case "COUNT":
+				esortReturnOpts.Count = true
+			case "ALL":
+				esortReturnOpts.All = true
+			default:
+				// RFC 5267: Servers MUST ignore any unknown sort-return-opt.
+			}
+			return nil
+		})
+		if parseReturnErr != nil {
+			return parseReturnErr
+		}
+
+		if esortReturnOpts.All && (esortReturnOpts.Min || esortReturnOpts.Max || esortReturnOpts.Count) {
+			return &imap.Error{
+				Type: imap.StatusResponseTypeBad,
+				Text: "ESORT RETURN ALL cannot be combined with MIN, MAX, or COUNT",
+			}
+		}
+
+		// If RETURN was specified but resulted in no recognized options, default to ALL.
+		// This means if RETURN () or RETURN (UNKNOWN_OPT) is sent, it behaves as if RETURN (ALL) or no RETURN was sent.
+		if !esortReturnOpts.Min && !esortReturnOpts.Max && !esortReturnOpts.Count && !esortReturnOpts.All {
+			esortReturnOpts.All = true
+		}
+
+		if !dec.ExpectSP() { // Expect SP after RETURN (...)
+			return dec.Err()
+		}
+	} else if dec.Err() != nil {
+		// dec.Func failed for a reason other than the first char not matching (e.g. EOF or malformed atom)
+		return dec.Err()
+	}
+
 	var sortCriteria []imap.SortCriterion
 	listErr := dec.ExpectList(func() error {
-		for {
+		for { // Loop to correctly parse multiple sort criteria items
 			var criterion imap.SortCriterion
 			var atom string
 			if !dec.ExpectAtom(&atom) {
@@ -42,7 +111,7 @@ func (c *Conn) handleSort(tag string, dec *imapwire.Decoder, numKind NumKind) er
 			criterion.Key = imap.SortKey(strings.ToUpper(atom))
 			sortCriteria = append(sortCriteria, criterion)
 
-			if !dec.SP() {
+			if !dec.SP() { // If no more SP, then no more sort criteria in this list
 				break
 			}
 		}
@@ -70,27 +139,12 @@ func (c *Conn) handleSort(tag string, dec *imapwire.Decoder, numKind NumKind) er
 
 	// Parse search criteria
 	var criteria imap.SearchCriteria
-	var atom string
-	if maybeReadSearchKeyAtom(dec, &atom) {
-		if err := readSearchKeyWithAtom(&criteria, dec, atom); err != nil {
-			return fmt.Errorf("in search-key: %w", err)
-		}
-	} else {
+	for {
 		if err := readSearchKey(&criteria, dec); err != nil {
 			return fmt.Errorf("in search-key: %w", err)
 		}
-	}
-
-	for dec.SP() {
-		atom = ""
-		if maybeReadSearchKeyAtom(dec, &atom) {
-			if err := readSearchKeyWithAtom(&criteria, dec, atom); err != nil {
-				return fmt.Errorf("in search-key: %w", err)
-			}
-		} else {
-			if err := readSearchKey(&criteria, dec); err != nil {
-				return fmt.Errorf("in search-key: %w", err)
-			}
+		if !dec.SP() { // If no more SP, then no more search keys
+			break
 		}
 	}
 
@@ -113,20 +167,47 @@ func (c *Conn) handleSort(tag string, dec *imapwire.Decoder, numKind NumKind) er
 		return &imap.Error{
 			Type: imap.StatusResponseTypeNo,
 			Code: imap.ResponseCodeCannot,
-			Text: "SORT not implemented",
+			Text: "SORT not implemented by session",
 		}
 	}
 
-	return c.writeSortResponse(data.Nums)
+	return c.writeSortResponse(tag, numKind, data, &esortReturnOpts)
 }
 
-func (c *Conn) writeSortResponse(nums []uint32) error {
+func (c *Conn) writeSortResponse(tag string, numKind NumKind, data *SortData, returnOpts *esortReturnOptions) error {
 	enc := newResponseEncoder(c)
 	defer enc.end()
 
-	enc.Atom("*").SP().Atom("SORT")
-	for _, num := range nums {
-		enc.SP().Number(num)
+	// For ESORT, use ESEARCH response format if not RETURN ALL
+	if c.server.options.caps().Has(imap.CapESort) && !returnOpts.All {
+		enc.Atom("*").SP().Atom("ESEARCH")
+		if tag != "" {
+			enc.SP().Special('(').Atom("TAG").SP().Atom(tag).Special(')')
+		}
+		if numKind == NumKindUID {
+			enc.SP().Atom("UID")
+		}
+
+		if returnOpts.Min {
+			if data.Count > 0 {
+				enc.SP().Atom("MIN").SP().Number(data.Min)
+			}
+		}
+		if returnOpts.Max {
+			if data.Count > 0 {
+				enc.SP().Atom("MAX").SP().Number(data.Max)
+			}
+		}
+		if returnOpts.Count {
+			enc.SP().Atom("COUNT").SP().Number(data.Count)
+		}
+		// Note: No "ALL <seq-set>" here for ESORT as per RFC 5267
+	} else {
+		// Use regular SORT response for non-ESORT clients or when RETURN (ALL) or no RETURN option is specified
+		enc.Atom("*").SP().Atom("SORT")
+		for _, num := range data.Nums {
+			enc.SP().Number(num)
+		}
 	}
 
 	return enc.CRLF()

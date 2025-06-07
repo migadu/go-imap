@@ -50,6 +50,24 @@ func (mbox *MailboxView) Sort(numKind imapserver.NumKind, criteria *imap.SearchC
 		data.Nums = append(data.Nums, num)
 	}
 
+	// Calculate ESORT data fields if there are results
+	if len(data.Nums) > 0 {
+		// Find min and max values
+		min, max := data.Nums[0], data.Nums[0]
+		for _, num := range data.Nums {
+			if num < min {
+				min = num
+			}
+			if num > max {
+				max = num
+			}
+		}
+		data.Min = min
+		data.Max = max
+	}
+	// Set count regardless of whether there are results
+	data.Count = uint32(len(data.Nums))
+
 	return &data, nil
 }
 
