@@ -23,7 +23,6 @@ func (c *Conn) handleID(tag string, dec *imapwire.Decoder) error {
 	}
 
 	enc := newResponseEncoder(c)
-	defer enc.end()
 	enc.Atom("*").SP().Atom("ID")
 
 	if serverIDData == nil {
@@ -67,7 +66,9 @@ func (c *Conn) handleID(tag string, dec *imapwire.Decoder) error {
 		enc.Special(')')
 	}
 
-	if err := enc.CRLF(); err != nil {
+	err = enc.CRLF()
+	enc.end()
+	if err != nil {
 		return err
 	}
 
