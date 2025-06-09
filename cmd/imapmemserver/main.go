@@ -60,46 +60,40 @@ func main() {
 			log.Printf("Failed to create INBOX: %v", err)
 		}
 
-		if err := user.Create("Drafts", nil); err != nil {
+		if err := user.Create("Drafts", &imap.CreateOptions{
+			SpecialUse: []imap.MailboxAttr{imap.MailboxAttrDrafts},
+		}); err != nil {
 			log.Printf("Failed to create Drafts mailbox: %v", err)
 		}
-		if mbox, err := user.Mailbox("Drafts"); err == nil {
-			mbox.SetSpecialUse(imap.MailboxAttrDrafts)
-		}
 
-		if err := user.Create("Sent", nil); err != nil {
+		if err := user.Create("Sent", &imap.CreateOptions{
+			SpecialUse: []imap.MailboxAttr{imap.MailboxAttrSent},
+		}); err != nil {
 			log.Printf("Failed to create Sent mailbox: %v", err)
 		}
-		if mbox, err := user.Mailbox("Sent"); err == nil {
-			mbox.SetSpecialUse(imap.MailboxAttrSent)
-		}
 
-		if err := user.Create("Archive", nil); err != nil {
+		if err := user.Create("Archive", &imap.CreateOptions{
+			SpecialUse: []imap.MailboxAttr{imap.MailboxAttrArchive},
+		}); err != nil {
 			log.Printf("Failed to create Archive mailbox: %v", err)
 		}
-		if mbox, err := user.Mailbox("Archive"); err == nil {
-			mbox.SetSpecialUse(imap.MailboxAttrArchive)
-		}
 
-		if err := user.Create("Junk", nil); err != nil {
+		if err := user.Create("Junk", &imap.CreateOptions{
+			SpecialUse: []imap.MailboxAttr{imap.MailboxAttrJunk},
+		}); err != nil {
 			log.Printf("Failed to create Junk mailbox: %v", err)
 		}
-		if mbox, err := user.Mailbox("Junk"); err == nil {
-			mbox.SetSpecialUse(imap.MailboxAttrJunk)
-		}
 
-		if err := user.Create("Trash", nil); err != nil {
+		if err := user.Create("Trash", &imap.CreateOptions{
+			SpecialUse: []imap.MailboxAttr{imap.MailboxAttrTrash},
+		}); err != nil {
 			log.Printf("Failed to create Trash mailbox: %v", err)
 		}
-		if mbox, err := user.Mailbox("Trash"); err == nil {
-			mbox.SetSpecialUse(imap.MailboxAttrTrash)
-		}
 
-		if err := user.Create("Flagged", nil); err != nil {
+		if err := user.Create("Flagged", &imap.CreateOptions{
+			SpecialUse: []imap.MailboxAttr{imap.MailboxAttrFlagged},
+		}); err != nil {
 			log.Printf("Failed to create Flagged mailbox: %v", err)
-		}
-		if mbox, err := user.Mailbox("Flagged"); err == nil {
-			mbox.SetSpecialUse(imap.MailboxAttrFlagged)
 		}
 
 		// Subscribe to the most commonly used mailboxes

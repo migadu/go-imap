@@ -56,10 +56,6 @@ func (u *User) mailbox(name string) (*Mailbox, error) {
 	return u.mailboxLocked(name)
 }
 
-func (u *User) Mailbox(name string) (*Mailbox, error) {
-	return u.mailbox(name)
-}
-
 func (u *User) Status(name string, options *imap.StatusOptions) (*imap.StatusData, error) {
 	mbox, err := u.mailbox(name)
 	if err != nil {

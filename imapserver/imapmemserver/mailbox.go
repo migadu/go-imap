@@ -174,13 +174,6 @@ func (mbox *Mailbox) SetSubscribed(subscribed bool) {
 	mbox.mutex.Unlock()
 }
 
-// SetSpecialUse sets the special-use attributes for this mailbox.
-func (mbox *Mailbox) SetSpecialUse(attrs ...imap.MailboxAttr) {
-	mbox.mutex.Lock()
-	mbox.specialUse = attrs
-	mbox.mutex.Unlock()
-}
-
 func (mbox *Mailbox) selectDataLocked() *imap.SelectData {
 	flags := mbox.flagsLocked()
 
