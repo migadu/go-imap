@@ -17,13 +17,35 @@ type (
 type UserSession struct {
 	*user    // immutable
 	*mailbox // may be nil
+
+	// appendLimit is the maximum size in bytes that can be uploaded to this server
+	// in an APPEND command
+	appendLimit uint32
+
+	// discloseLimit indicates whether the append limit should be advertised in the
+	// CAPABILITY response
+	discloseLimit bool
 }
 
 var _ imapserver.SessionIMAP4rev2 = (*UserSession)(nil)
+var _ imapserver.SessionAppendLimit = (*UserSession)(nil)
 
 // NewUserSession creates a new user session.
 func NewUserSession(user *User) *UserSession {
-	return &UserSession{user: user}
+	return &UserSession{
+		user:          user,
+		appendLimit:   104857600, // 100 MiB default
+		discloseLimit: true,      // By default, disclose the limit in CAPABILITY
+	}
+}
+
+// NewUserSessionWithAppendLimit creates a new user session with a custom append limit.
+func NewUserSessionWithAppendLimit(user *User, appendLimit uint32, discloseLimit bool) *UserSession {
+	return &UserSession{
+		user:          user,
+		appendLimit:   appendLimit,
+		discloseLimit: discloseLimit,
+	}
 }
 
 func (sess *UserSession) Close() error {
@@ -137,4 +159,20 @@ func (sess *UserSession) Idle(w *imapserver.UpdateWriter, stop <-chan struct{}) 
 		return nil // TODO
 	}
 	return sess.mailbox.Idle(w, stop)
+}
+
+// AppendLimit implements the SessionAppendLimit interface.
+// It returns the maximum size in bytes that can be uploaded to this server in an APPEND command.
+func (sess *UserSession) AppendLimit() uint32 {
+	// If appendLimit is not set (0), return a default large value
+	if sess.appendLimit == 0 {
+		return 104857600 // 100 MiB default
+	}
+	return sess.appendLimit
+}
+
+// DiscloseLimit implements the SessionAppendLimit interface.
+// It indicates whether the append limit should be advertised in the CAPABILITY response.
+func (sess *UserSession) DiscloseLimit() bool {
+	return sess.discloseLimit
 }

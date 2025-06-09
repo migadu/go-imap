@@ -47,6 +47,25 @@ type serverSession struct {
 }
 
 var _ imapserver.Session = (*serverSession)(nil)
+var _ imapserver.SessionAppendLimit = (*serverSession)(nil)
+
+// AppendLimit implements the SessionAppendLimit interface.
+func (sess *serverSession) AppendLimit() uint32 {
+	if sess.UserSession != nil {
+		return sess.UserSession.AppendLimit()
+	}
+	// Default value for unauthenticated sessions
+	return 104857600 // 100 MiB
+}
+
+// DiscloseLimit implements the SessionAppendLimit interface.
+func (sess *serverSession) DiscloseLimit() bool {
+	if sess.UserSession != nil {
+		return sess.UserSession.DiscloseLimit()
+	}
+	// Default for unauthenticated sessions - true means we show the limit
+	return true
+}
 
 func (sess *serverSession) Login(username, password string) error {
 	u := sess.server.user(username)

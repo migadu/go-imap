@@ -87,7 +87,14 @@ func (c *Conn) availableCaps() []imap.Cap {
 
 		// Capabilities which require backend support and apply to both
 		// IMAP4rev1 and IMAP4rev2
-		if limit, ok := available.AppendLimit(); ok {
+		if appendLimitSession, ok := c.session.(SessionAppendLimit); ok {
+			if appendLimitSession.DiscloseLimit() {
+				limit := appendLimitSession.AppendLimit()
+				caps = append(caps, imap.Cap(fmt.Sprintf("APPENDLIMIT=%d", limit)))
+			} else {
+				caps = append(caps, imap.CapAppendLimit)
+			}
+		} else if limit, ok := available.AppendLimit(); ok {
 			if limit != nil {
 				caps = append(caps, imap.Cap(fmt.Sprintf("APPENDLIMIT=%d", *limit)))
 			} else {
