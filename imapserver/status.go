@@ -45,14 +45,6 @@ func (c *Conn) handleStatus(dec *imapwire.Decoder) error {
 		return err
 	}
 
-	// Check if AppendLimit was requested and the session supports it
-	if options.AppendLimit && data.AppendLimit == nil {
-		if appendLimitSession, ok := c.session.(SessionAppendLimit); ok {
-			limit := appendLimitSession.AppendLimit()
-			data.AppendLimit = &limit
-		}
-	}
-
 	return c.writeStatus(data, &options)
 }
 
