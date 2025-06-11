@@ -8,7 +8,7 @@ import (
 )
 
 // Sort performs a SORT command.
-func (mbox *MailboxView) Sort(numKind imapserver.NumKind, criteria *imap.SearchCriteria, sortCriteria []imap.SortCriterion) (*imapserver.SortData, error) {
+func (mbox *MailboxView) Sort(numKind imapserver.NumKind, criteria *imap.SearchCriteria, sortCriteria []imap.SortCriterion) ([]uint32, error) {
 	mbox.mutex.Lock()
 	defer mbox.mutex.Unlock()
 
@@ -35,7 +35,7 @@ func (mbox *MailboxView) Sort(numKind imapserver.NumKind, criteria *imap.SearchC
 	sortMatchedMessages(matchedMessages, matchedSeqNums, matchedIndices, sortCriteria)
 
 	// Create sorted response
-	var data imapserver.SortData
+	var data []uint32
 	for i, msg := range matchedMessages {
 		var num uint32
 		switch numKind {
@@ -47,28 +47,10 @@ func (mbox *MailboxView) Sort(numKind imapserver.NumKind, criteria *imap.SearchC
 		case imapserver.NumKindUID:
 			num = uint32(msg.uid)
 		}
-		data.Nums = append(data.Nums, num)
+		data = append(data, num)
 	}
 
-	// Calculate ESORT data fields if there are results
-	if len(data.Nums) > 0 {
-		// Find min and max values
-		min, max := data.Nums[0], data.Nums[0]
-		for _, num := range data.Nums {
-			if num < min {
-				min = num
-			}
-			if num > max {
-				max = num
-			}
-		}
-		data.Min = min
-		data.Max = max
-	}
-	// Set count regardless of whether there are results
-	data.Count = uint32(len(data.Nums))
-
-	return &data, nil
+	return data, nil
 }
 
 // sortMatchedMessages sorts messages according to the specified sort criteria

@@ -8,11 +8,17 @@ import (
 	"github.com/emersion/go-imap/v2/internal/imapwire"
 )
 
-type sortData struct {
+type SortData struct {
 	Nums  []uint32
 	Min   uint32
 	Max   uint32
 	Count uint32
+}
+
+type SessionSort interface {
+	Session
+
+	Sort(numKind NumKind, criteria *imap.SearchCriteria, sortCriteria []imap.SortCriterion) ([]uint32, error)
 }
 
 type esortReturnOptions struct {
@@ -20,12 +26,6 @@ type esortReturnOptions struct {
 	Max   bool
 	Count bool
 	All   bool
-}
-
-type SessionSort interface {
-	Session
-
-	Sort(numKind NumKind, criteria *imap.SearchCriteria, sortCriteria []imap.SortCriterion) ([]uint32, error)
 }
 
 func (c *Conn) handleSort(tag string, dec *imapwire.Decoder, numKind NumKind) error {
@@ -171,7 +171,7 @@ func (c *Conn) handleSort(tag string, dec *imapwire.Decoder, numKind NumKind) er
 		}
 	}
 
-	data := &sortData{Nums: sortedNums}
+	data := &SortData{Nums: sortedNums}
 	if len(sortedNums) > 0 {
 		data.Count = uint32(len(sortedNums))
 		data.Min = sortedNums[0]
@@ -181,7 +181,7 @@ func (c *Conn) handleSort(tag string, dec *imapwire.Decoder, numKind NumKind) er
 	return c.writeSortResponse(tag, numKind, data, &esortReturnOpts)
 }
 
-func (c *Conn) writeSortResponse(tag string, numKind NumKind, data *sortData, returnOpts *esortReturnOptions) error {
+func (c *Conn) writeSortResponse(tag string, numKind NumKind, data *SortData, returnOpts *esortReturnOptions) error {
 	enc := newResponseEncoder(c)
 	defer enc.end()
 
