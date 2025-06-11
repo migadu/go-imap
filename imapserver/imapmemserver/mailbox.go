@@ -218,16 +218,6 @@ func (mbox *Mailbox) firstUnseenSeqNumLocked() uint32 {
 	return 0
 }
 
-func (mbox *Mailbox) firstUnseenSeqNumLocked() uint32 {
-	for i, msg := range mbox.l {
-		seqNum := uint32(i) + 1
-		if _, ok := msg.flags[canonicalFlag(imap.FlagSeen)]; !ok {
-			return seqNum
-		}
-	}
-	return 0
-}
-
 func (mbox *Mailbox) flagsLocked() []imap.Flag {
 	m := make(map[imap.Flag]struct{})
 	for _, msg := range mbox.l {
