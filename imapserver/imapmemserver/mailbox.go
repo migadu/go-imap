@@ -94,6 +94,10 @@ func (mbox *Mailbox) statusDataLocked(options *imap.StatusOptions) *imap.StatusD
 		size := mbox.sizeLocked()
 		data.Size = &size
 	}
+	if options.NumRecent {
+		num := uint32(0)
+		data.NumRecent = &num
+	}
 	return &data
 }
 
