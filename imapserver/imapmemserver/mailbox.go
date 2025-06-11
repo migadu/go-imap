@@ -99,8 +99,9 @@ func (mbox *Mailbox) statusDataLocked(options *imap.StatusOptions) *imap.StatusD
 	if options.HighestModSeq {
 		data.HighestModSeq = mbox.highestModSeq
 	}
-	if options.HighestModSeq {
-		data.HighestModSeq = mbox.highestModSeq
+	if options.NumRecent {
+		num := uint32(0)
+		data.NumRecent = &num
 	}
 	return &data
 }
