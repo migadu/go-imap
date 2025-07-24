@@ -6,7 +6,6 @@ import (
 
 	"github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/internal/imapwire"
-	"github.com/emersion/go-imap/v2/internal/utf7"
 )
 
 func (c *Conn) handleList(dec *imapwire.Decoder) error {
@@ -206,7 +205,7 @@ func readListMailbox(dec *imapwire.Decoder) (string, error) {
 			return "", dec.Err()
 		}
 	}
-	return utf7.Decode(mailbox)
+	return mailbox, nil
 }
 
 func isListChar(ch byte) bool {
