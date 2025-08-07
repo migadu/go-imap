@@ -37,7 +37,7 @@ func (c *Conn) writeCopyOK(tag string, data *imap.CopyData) error {
 		tag = "*"
 	}
 
-	enc.Atom(tag).SP().Atom("OK").SP()
+	enc.String(tag).SP().Atom("OK").SP()
 	if data != nil {
 		enc.Special('[')
 		enc.Atom("COPYUID").SP().Number(data.UIDValidity).SP().NumSet(data.SourceUIDs).SP().NumSet(data.DestUIDs)

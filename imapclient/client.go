@@ -432,7 +432,7 @@ func (c *Client) beginCommand(name string, cmd command) *commandEncoder {
 		client:  c,
 		cmd:     baseCmd,
 	}
-	enc.Atom(tag).SP().Atom(name)
+	enc.String(tag).SP().Atom(name)
 	return enc
 }
 
