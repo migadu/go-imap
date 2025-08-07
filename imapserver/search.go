@@ -98,14 +98,14 @@ func (c *Conn) writeESearch(tag string, data *imap.SearchData, options *imap.Sea
 
 	enc.Atom("*").SP().Atom("ESEARCH")
 	if tag != "" {
-		enc.SP().Special('(').Atom("TAG").SP().Atom(tag).Special(')')
+		enc.SP().Special('(').Atom("TAG").SP().String(tag).Special(')')
 	}
 	if numKind == NumKindUID {
 		enc.SP().Atom("UID")
 	}
 	// When there is no result, we need to send an ESEARCH response with no ALL
 	// keyword
-	if options.ReturnAll && !isNumSetEmpty(data.All) {
+	if options.ReturnAll {
 		enc.SP().Atom("ALL").SP().NumSet(data.All)
 	}
 	if options.ReturnMin && data.Min > 0 {

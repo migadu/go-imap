@@ -109,7 +109,7 @@ func (c *Conn) writeAppendOK(tag string, data *imap.AppendData) error {
 	enc := newResponseEncoder(c)
 	defer enc.end()
 
-	enc.Atom(tag).SP().Atom("OK").SP()
+	enc.String(tag).SP().Atom("OK").SP()
 	if data != nil {
 		enc.Special('[')
 		enc.Atom("APPENDUID").SP().Number(data.UIDValidity).SP().UID(data.UID)

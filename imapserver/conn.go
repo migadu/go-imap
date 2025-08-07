@@ -537,7 +537,7 @@ func writeStatusResp(enc *imapwire.Encoder, tag string, statusResp *imap.StatusR
 	if tag == "" {
 		tag = "*"
 	}
-	enc.Atom(tag).SP().Atom(string(statusResp.Type)).SP()
+	enc.String(tag).SP().Atom(string(statusResp.Type)).SP()
 	if statusResp.Code != "" {
 		enc.Atom(fmt.Sprintf("[%v]", statusResp.Code)).SP()
 	}
@@ -554,7 +554,7 @@ func writeCapabilityStatus(enc *imapwire.Encoder, tag string, typ imap.StatusRes
 		tag = "*"
 	}
 
-	enc.Atom(tag).SP().Atom(string(typ)).SP().Special('[').Atom("CAPABILITY")
+	enc.String(tag).SP().Atom(string(typ)).SP().Special('[').Atom("CAPABILITY")
 	for _, c := range caps {
 		enc.SP().Atom(string(c))
 	}
