@@ -246,9 +246,6 @@ func writeSearchKey(enc *imapwire.Encoder, criteria *imap.SearchCriteria, condst
 		}
 	}
 
-	if criteria.ChangedSince > 0 && condstore {
-		encodeItem().Atom("CHANGEDSINCE").SP().ModSeq(criteria.ChangedSince)
-	}
 
 	for _, not := range criteria.Not {
 		encodeItem().Atom("NOT").SP()
