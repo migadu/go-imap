@@ -309,6 +309,3 @@ func TestCapability_CondStore(t *testing.T) {
 		t.Logf("CONDSTORE capability correctly announced after authentication")
 	}
 }
-
-
-

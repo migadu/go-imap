@@ -39,7 +39,7 @@ func TestSelect_QResync(t *testing.T) {
 	if err != nil {
 		t.Fatalf("First Select() = %v", err)
 	}
-	t.Logf("Initial SELECT - UIDValidity: %d, HighestModSeq: %d", 
+	t.Logf("Initial SELECT - UIDValidity: %d, HighestModSeq: %d",
 		firstSelect.UIDValidity, firstSelect.HighestModSeq)
 
 	// Unselect to test QRESYNC SELECT
@@ -54,7 +54,7 @@ func TestSelect_QResync(t *testing.T) {
 			ModSeq:      firstSelect.HighestModSeq,
 		},
 	}
-	
+
 	secondSelect, err := client.Select("INBOX", qresyncOptions).Wait()
 	if err != nil {
 		t.Fatalf("QRESYNC Select() = %v", err)
@@ -93,7 +93,7 @@ func TestSelect_QResync_WithKnownUIDs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Fetch UIDs = %v", err)
 	}
-	
+
 	var knownUIDs imap.UIDSet
 	if len(messages) > 0 {
 		knownUIDs = imap.UIDSetNum(messages[0].UID)
@@ -112,12 +112,12 @@ func TestSelect_QResync_WithKnownUIDs(t *testing.T) {
 			KnownUIDs:   knownUIDs,
 		},
 	}
-	
+
 	_, err = client.Select("INBOX", qresyncOptions).Wait()
 	if err != nil {
 		t.Fatalf("QRESYNC Select() with known UIDs = %v", err)
 	}
-	
+
 	t.Logf("QRESYNC SELECT with known UIDs successful")
 }
 
@@ -138,14 +138,14 @@ func TestUIDFetch_Vanished(t *testing.T) {
 		ChangedSince: 1, // Use a low modseq to potentially get some results
 		Vanished:     true,
 	}
-	
+
 	uidSet := imap.UIDSetNum(1)
 	uidSet.AddRange(1, 0) // 1:*
 	messages, err := client.Fetch(uidSet, fetchOptions).Collect()
 	if err != nil {
 		t.Fatalf("UID FETCH with VANISHED = %v", err)
 	}
-	
+
 	t.Logf("UID FETCH with VANISHED returned %d messages", len(messages))
 }
 
@@ -164,10 +164,10 @@ func TestVanished_Response(t *testing.T) {
 	// a VANISHED response. For now, we just verify QRESYNC is enabled.
 	// The VANISHED responses would be handled by the UnilateralDataHandler
 	// which can be set when creating the client.
-	
+
 	// This test just verifies that QRESYNC is properly enabled
 	// and the client can handle the expected protocol
-	
+
 	t.Logf("VANISHED response handler test completed")
 }
 
@@ -200,6 +200,6 @@ func TestCapability_QResync_Implications(t *testing.T) {
 			t.Errorf("QRESYNC should imply CONDSTORE capability")
 		}
 	}
-	
+
 	t.Logf("QRESYNC capability implications verified")
 }

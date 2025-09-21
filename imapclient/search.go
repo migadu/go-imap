@@ -246,7 +246,6 @@ func writeSearchKey(enc *imapwire.Encoder, criteria *imap.SearchCriteria, condst
 		}
 	}
 
-
 	for _, not := range criteria.Not {
 		encodeItem().Atom("NOT").SP()
 		enc.Special('(')
