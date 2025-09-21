@@ -26,7 +26,10 @@ func (c *Conn) handleSelect(tag string, dec *imapwire.Decoder, readOnly bool) er
 
 			switch strings.ToUpper(param) {
 			case "CONDSTORE":
-				options.CondStore = true
+				// Per RFC 7162, ignore the parameter if not supported.
+				if c.server.options.caps().Has(imap.CapCondStore) || c.enabled.Has(imap.CapIMAP4rev2) {
+					options.CondStore = true
+				}
 			default:
 				return newClientBugError(fmt.Sprintf("unknown SELECT parameter: %v", param))
 			}
@@ -96,7 +99,7 @@ func (c *Conn) handleSelect(tag string, dec *imapwire.Decoder, readOnly bool) er
 		}
 	}
 
-	shouldSendModSeqStatus := c.enabled.Has(imap.CapIMAP4rev2) || c.server.options.caps().Has(imap.CapCondStore)
+	shouldSendModSeqStatus := c.server.options.caps().Has(imap.CapCondStore)
 	if shouldSendModSeqStatus {
 		if data.HighestModSeq > 0 {
 			if err := c.writeHighestModSeq(data.HighestModSeq); err != nil {

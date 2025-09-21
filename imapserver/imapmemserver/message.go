@@ -99,7 +99,7 @@ func (msg *message) flagList() []imap.Flag {
 	return flags
 }
 
-func (msg *message) store(store *imap.StoreFlags) bool {
+func (msg *message) store(mbox *Mailbox, store *imap.StoreFlags) bool {
 	oldFlags := make(map[imap.Flag]struct{}, len(msg.flags))
 	for k, v := range msg.flags {
 		oldFlags[k] = v
@@ -121,20 +121,31 @@ func (msg *message) store(store *imap.StoreFlags) bool {
 		panic(fmt.Errorf("unknown STORE flag operation: %v", store.Op))
 	}
 
+	changed := false
 	if len(oldFlags) != len(msg.flags) {
-		return true
-	}
-	for k := range oldFlags {
-		if _, ok := msg.flags[k]; !ok {
-			return true
+		changed = true
+	} else {
+		for k := range oldFlags {
+			if _, ok := msg.flags[k]; !ok {
+				changed = true
+				break
+			}
+		}
+		if !changed {
+			for k := range msg.flags {
+				if _, ok := oldFlags[k]; !ok {
+					changed = true
+					break
+				}
+			}
 		}
 	}
-	for k := range msg.flags {
-		if _, ok := oldFlags[k]; !ok {
-			return true
-		}
+
+	if changed {
+		mbox.highestModSeq++
+		msg.modSeq = mbox.highestModSeq
 	}
-	return false
+	return changed
 }
 
 func (msg *message) reader() *gomessage.Entity {

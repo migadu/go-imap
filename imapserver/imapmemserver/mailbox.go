@@ -161,8 +161,8 @@ func (mbox *Mailbox) appendBytes(buf []byte, options *imap.AppendOptions) *imap.
 	msg.uid = mbox.uidNext
 	mbox.uidNext++
 
-	msg.modSeq = mbox.highestModSeq
 	mbox.highestModSeq++
+	msg.modSeq = mbox.highestModSeq
 
 	mbox.l = append(mbox.l, msg)
 	mbox.tracker.QueueNumMessages(uint32(len(mbox.l)))
@@ -430,36 +430,45 @@ func (mbox *MailboxView) staticSearchCriteria(criteria *imap.SearchCriteria) {
 	}
 }
 
-func (mbox *MailboxView) Store(w *imapserver.FetchWriter, numSet imap.NumSet, flags *imap.StoreFlags, options *imap.StoreOptions) error {
-	var modifiedSeqNums []uint32
-	var modifiedMsgs []*message
+type modifiedMessageData struct {
+	seqNum uint32
+	uid    imap.UID
+	flags  []imap.Flag
+	modSeq uint64
+}
 
-	mbox.mutex.Lock()
-	mbox.forEachLocked(numSet, func(seqNum uint32, msg *message) {
+func writeStoreFetchResponse(w *imapserver.FetchWriter, tracker *imapserver.SessionTracker, mod modifiedMessageData) error {
+	respWriter := w.CreateMessage(tracker.EncodeSeqNum(mod.seqNum))
+	respWriter.WriteUID(mod.uid)
+	respWriter.WriteFlags(mod.flags)
+	respWriter.WriteModSeq(mod.modSeq)
+	return respWriter.Close()
+}
+
+func (mbox *MailboxView) Store(w *imapserver.FetchWriter, numSet imap.NumSet, flags *imap.StoreFlags, options *imap.StoreOptions) error {
+	var modified []modifiedMessageData
+	mbox.forEach(numSet, func(seqNum uint32, msg *message) {
 		if options != nil && options.UnchangedSince > 0 && msg.modSeq > options.UnchangedSince {
 			return
 		}
 
-		if changed := msg.store(flags); changed {
-			mbox.highestModSeq++
-			msg.modSeq = mbox.highestModSeq
+		if changed := msg.store(mbox.Mailbox, flags); changed {
+			mbox.Mailbox.tracker.QueueMessageFlags(seqNum, msg.uid, msg.flagList(), mbox.tracker)
 
-			modifiedSeqNums = append(modifiedSeqNums, seqNum)
-			modifiedMsgs = append(modifiedMsgs, msg)
+			if !flags.Silent {
+				modified = append(modified, modifiedMessageData{
+					seqNum: seqNum,
+					uid:    msg.uid,
+					flags:  msg.flagList(),
+					modSeq: msg.modSeq,
+				})
+			}
 		}
 	})
-	mbox.mutex.Unlock()
 
-	for i, seqNum := range modifiedSeqNums {
-		msg := modifiedMsgs[i]
-		mbox.Mailbox.tracker.QueueMessageFlags(seqNum, msg.uid, msg.flagList(), mbox.tracker)
-	}
-
-	if !flags.Silent && len(modifiedMsgs) > 0 {
-		for i, seqNum := range modifiedSeqNums {
-			msg := modifiedMsgs[i]
-			respWriter := w.CreateMessage(mbox.tracker.EncodeSeqNum(seqNum))
-			if err := msg.fetch(respWriter, &imap.FetchOptions{Flags: true, ModSeq: true}); err != nil {
+	if !flags.Silent {
+		for _, mod := range modified {
+			if err := writeStoreFetchResponse(w, mbox.tracker, mod); err != nil {
 				return err
 			}
 		}
