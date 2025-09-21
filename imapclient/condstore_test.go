@@ -309,3 +309,132 @@ func TestCapability_CondStore(t *testing.T) {
 		t.Logf("CONDSTORE capability correctly announced after authentication")
 	}
 }
+
+func TestSearch_ChangedSince(t *testing.T) {
+	client, server := newClientServerPair(t, imap.ConnStateSelected)
+	defer client.Close()
+	defer server.Close()
+
+	// First, get current ModSeq for our message
+	seqSet := imap.SeqSetNum(1)
+	firstFetch, err := client.Fetch(seqSet, &imap.FetchOptions{
+		ModSeq: true,
+	}).Collect()
+	if err != nil {
+		t.Fatalf("Initial Fetch() = %v", err)
+	}
+	currentModSeq := firstFetch[0].ModSeq
+	t.Logf("Initial ModSeq: %d", currentModSeq)
+
+	// Search with CHANGEDSINCE using a value lower than current
+	// This should find the message
+	searchCriteria := &imap.SearchCriteria{
+		ChangedSince: currentModSeq - 1,
+	}
+	searchOptions := &imap.SearchOptions{
+		ReturnCount: true,
+	}
+	results, err := client.Search(searchCriteria, searchOptions).Wait()
+	if err != nil {
+		t.Fatalf("Search with CHANGEDSINCE = %v", err)
+	}
+
+	// There should be one message that matches
+	if results.Count != 1 {
+		t.Errorf("Search with CHANGEDSINCE < current returned %d messages, want 1", results.Count)
+	}
+
+	// Search with CHANGEDSINCE using current value
+	// This should NOT find the message (since CHANGEDSINCE criterion is > not >=)
+	searchCriteria = &imap.SearchCriteria{
+		ChangedSince: currentModSeq,
+	}
+	results, err = client.Search(searchCriteria, searchOptions).Wait()
+	if err != nil {
+		t.Fatalf("Search with CHANGEDSINCE = %v", err)
+	}
+
+	// There should be no messages that match
+	if results.Count != 0 {
+		t.Errorf("Search with CHANGEDSINCE = current returned %d messages, want 0", results.Count)
+	}
+
+	// Search with CHANGEDSINCE using a higher value
+	// This should NOT find the message
+	searchCriteria = &imap.SearchCriteria{
+		ChangedSince: currentModSeq + 1,
+	}
+	results, err = client.Search(searchCriteria, searchOptions).Wait()
+	if err != nil {
+		t.Fatalf("Search with CHANGEDSINCE = %v", err)
+	}
+
+	// There should be no messages that match
+	if results.Count != 0 {
+		t.Errorf("Search with CHANGEDSINCE > current returned %d messages, want 0", results.Count)
+	}
+}
+
+func TestUIDSearch_ChangedSince(t *testing.T) {
+	client, server := newClientServerPair(t, imap.ConnStateSelected)
+	defer client.Close()
+	defer server.Close()
+
+	// First, get current ModSeq for our message
+	seqSet := imap.SeqSetNum(1)
+	firstFetch, err := client.Fetch(seqSet, &imap.FetchOptions{
+		ModSeq: true,
+		UID:    true,
+	}).Collect()
+	if err != nil {
+		t.Fatalf("Initial Fetch() = %v", err)
+	}
+	currentModSeq := firstFetch[0].ModSeq
+	expectedUID := firstFetch[0].UID
+	t.Logf("Initial ModSeq: %d, UID: %d", currentModSeq, expectedUID)
+
+	// UID Search with CHANGEDSINCE
+	searchCriteria := &imap.SearchCriteria{
+		ChangedSince: currentModSeq - 1,
+	}
+	searchOptions := &imap.SearchOptions{
+		ReturnAll: true,
+	}
+	results, err := client.UIDSearch(searchCriteria, searchOptions).Wait()
+	if err != nil {
+		t.Fatalf("UID Search with CHANGEDSINCE = %v", err)
+	}
+
+	// Check that we got the expected UID
+	uids := results.AllUIDs()
+	if len(uids) != 1 {
+		t.Errorf("UID Search with CHANGEDSINCE returned %d UIDs, want 1", len(uids))
+	} else if uids[0] != expectedUID {
+		t.Errorf("UID Search with CHANGEDSINCE returned UID %d, want %d", uids[0], expectedUID)
+	}
+}
+
+func TestSearch_ChangedSince_Combined(t *testing.T) {
+	client, server := newClientServerPair(t, imap.ConnStateSelected)
+	defer client.Close()
+	defer server.Close()
+
+	// Test CHANGEDSINCE combined with other search criteria
+	searchCriteria := &imap.SearchCriteria{
+		ChangedSince: 1, // Use a low modseq to match existing messages
+		Flag:         []imap.Flag{}, // Search for any flags (no specific flag required)
+	}
+	searchOptions := &imap.SearchOptions{
+		ReturnCount: true,
+	}
+	results, err := client.Search(searchCriteria, searchOptions).Wait()
+	if err != nil {
+		t.Fatalf("Combined Search with CHANGEDSINCE = %v", err)
+	}
+
+	t.Logf("Combined search returned %d messages", results.Count)
+	// We expect at least one message in the test mailbox
+	if results.Count == 0 {
+		t.Errorf("Combined search with CHANGEDSINCE should find at least one message")
+	}
+}

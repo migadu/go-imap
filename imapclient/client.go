@@ -973,6 +973,11 @@ func (c *Client) readResponseData(typ string) error {
 		return c.handleFetch(num)
 	case "EXPUNGE":
 		return c.handleExpunge(num)
+	case "VANISHED":
+		if !c.dec.ExpectSP() {
+			return c.dec.Err()
+		}
+		return c.handleVanished()
 	case "SEARCH":
 		return c.handleSearch()
 	case "ESEARCH":
@@ -1008,6 +1013,28 @@ func (c *Client) readResponseData(typ string) error {
 		return c.handleGetACL()
 	default:
 		return fmt.Errorf("unsupported response type %q", typ)
+	}
+
+	return nil
+}
+
+func (c *Client) handleVanished() error {
+	var data imap.VanishedData
+	isParen := c.dec.Special('(')
+	if isParen {
+		var tag string
+		if !c.dec.ExpectAtom(&tag) || !c.dec.ExpectSpecial(')') {
+			return c.dec.Err()
+		}
+		data.Earlier = strings.ToUpper(tag) == "EARLIER"
+	}
+
+	if !c.dec.ExpectSP() || !c.dec.ExpectUIDSet(&data.UIDs) {
+		return c.dec.Err()
+	}
+
+	if handler := c.options.unilateralDataHandler().Vanished; handler != nil {
+		handler(&data)
 	}
 
 	return nil
@@ -1184,6 +1211,9 @@ type UnilateralDataHandler struct {
 	Expunge func(seqNum uint32)
 	Mailbox func(data *UnilateralDataMailbox)
 	Fetch   func(msg *FetchMessageData)
+
+	// requires ENABLE QRESYNC
+	Vanished func(data *imap.VanishedData)
 
 	// requires ENABLE METADATA or ENABLE SERVER-METADATA
 	Metadata func(mailbox string, entries []string)

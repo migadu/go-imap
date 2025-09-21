@@ -246,6 +246,10 @@ func writeSearchKey(enc *imapwire.Encoder, criteria *imap.SearchCriteria) {
 		}
 	}
 
+	if criteria.ChangedSince > 0 {
+		encodeItem().Atom("CHANGEDSINCE").SP().ModSeq(criteria.ChangedSince)
+	}
+
 	for _, not := range criteria.Not {
 		encodeItem().Atom("NOT").SP()
 		enc.Special('(')
@@ -340,12 +344,6 @@ func readESearchResponse(dec *imapwire.Decoder) (tag string, data *imap.SearchDa
 				return "", nil, dec.Err()
 			}
 			data.Count = num
-		case "MODSEQ":
-			var modSeq uint64
-			if !dec.ExpectModSeq(&modSeq) {
-				return "", nil, dec.Err()
-			}
-			data.ModSeq = modSeq
 		default:
 			if !dec.DiscardValue() {
 				return "", nil, dec.Err()
@@ -354,6 +352,30 @@ func readESearchResponse(dec *imapwire.Decoder) (tag string, data *imap.SearchDa
 
 		if !dec.SP() {
 			break
+		} else if dec.Special('(') {
+			// Handle parenthesized items like (MODSEQ 123)
+			var atomName string
+			if !dec.ExpectAtom(&atomName) {
+				return "", nil, dec.Err()
+			}
+			if strings.ToUpper(atomName) == "MODSEQ" {
+				var modSeq uint64
+				if !dec.ExpectSP() || !dec.ExpectModSeq(&modSeq) || !dec.ExpectSpecial(')') {
+					return "", nil, dec.Err()
+				}
+				data.ModSeq = modSeq
+			} else {
+				// Unknown parenthesized item, skip it
+				if !dec.DiscardValue() || !dec.ExpectSpecial(')') {
+					return "", nil, dec.Err()
+				}
+			}
+			// Continue to check for more items
+			if !dec.SP() {
+				break
+			} else if !dec.ExpectAtom(&name) {
+				return "", nil, dec.Err()
+			}
 		} else if !dec.ExpectAtom(&name) {
 			return "", nil, dec.Err()
 		}

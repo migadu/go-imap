@@ -173,6 +173,9 @@ func (msg *message) search(seqNum uint32, criteria *imap.SearchCriteria) bool {
 	if criteria.ModSeq != nil && msg.modSeq < criteria.ModSeq.ModSeq {
 		return false
 	}
+	if criteria.ChangedSince > 0 && msg.modSeq <= criteria.ChangedSince {
+		return false
+	}
 	for _, flag := range criteria.Flag {
 		if _, ok := msg.flags[canonicalFlag(flag)]; !ok {
 			return false

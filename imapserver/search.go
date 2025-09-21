@@ -117,6 +117,9 @@ func (c *Conn) writeESearch(tag string, data *imap.SearchData, options *imap.Sea
 	if options.ReturnCount {
 		enc.SP().Atom("COUNT").SP().Number(data.Count)
 	}
+	if data.ModSeq > 0 {
+		enc.SP().Special('(').Atom("MODSEQ").SP().ModSeq(data.ModSeq).Special(')')
+	}
 	return enc.CRLF()
 }
 
@@ -355,6 +358,12 @@ func readSearchKeyWithAtom(criteria *imap.SearchCriteria, dec *imapwire.Decoder,
 			MetadataName: name,
 			MetadataType: metadataType,
 		}
+	case "CHANGEDSINCE":
+		var modSeq uint64
+		if !dec.ExpectSP() || !dec.ExpectModSeq(&modSeq) {
+			return dec.Err()
+		}
+		criteria.ChangedSince = modSeq
 	default:
 		seqSet, err := imapwire.ParseSeqSet(key)
 		if err != nil {

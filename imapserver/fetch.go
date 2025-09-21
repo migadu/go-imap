@@ -95,6 +95,20 @@ func (c *Conn) handleFetch(dec *imapwire.Decoder, numKind NumKind) error {
 		}
 	}
 
+	// Check for VANISHED modifier (separate from parenthesized modifiers)
+	if dec.SP() {
+		var atom string
+		if dec.ExpectAtom(&atom) && strings.ToUpper(atom) == "VANISHED" {
+			if numKind != NumKindUID {
+				return fmt.Errorf("VANISHED modifier only allowed with UID FETCH")
+			}
+			options.Vanished = true
+		} else {
+			// Put the atom back by returning an error that we don't recognize it
+			return fmt.Errorf("unexpected token: %v", atom)
+		}
+	}
+
 	if !dec.ExpectCRLF() {
 		return dec.Err()
 	}

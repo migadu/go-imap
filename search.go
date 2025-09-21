@@ -58,7 +58,8 @@ type SearchCriteria struct {
 	Not []SearchCriteria
 	Or  [][2]SearchCriteria
 
-	ModSeq *SearchCriteriaModSeq // requires CONDSTORE
+	ModSeq      *SearchCriteriaModSeq // requires CONDSTORE
+	ChangedSince uint64               // requires CONDSTORE
 }
 
 // And intersects two search criteria.
@@ -87,6 +88,10 @@ func (criteria *SearchCriteria) And(other *SearchCriteria) {
 
 	criteria.Not = append(criteria.Not, other.Not...)
 	criteria.Or = append(criteria.Or, other.Or...)
+
+	if criteria.ChangedSince == 0 || other.ChangedSince > criteria.ChangedSince {
+		criteria.ChangedSince = other.ChangedSince
+	}
 }
 
 func intersectSince(t1, t2 time.Time) time.Time {
