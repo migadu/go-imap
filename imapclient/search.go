@@ -67,7 +67,7 @@ func (c *Client) search(numKind imapwire.NumKind, criteria *imap.SearchCriteria,
 	if charset != "" {
 		enc.Atom("CHARSET").SP().Atom(charset).SP()
 	}
-	writeSearchKey(enc.Encoder, criteria)
+	writeSearchKey(enc.Encoder, criteria, c.Caps().Has(imap.CapCondStore))
 	enc.end()
 	return cmd
 }
@@ -156,7 +156,7 @@ func (cmd *SearchCommand) Wait() (*imap.SearchData, error) {
 	return &cmd.data, cmd.wait()
 }
 
-func writeSearchKey(enc *imapwire.Encoder, criteria *imap.SearchCriteria) {
+func writeSearchKey(enc *imapwire.Encoder, criteria *imap.SearchCriteria, condstore bool) {
 	firstItem := true
 	encodeItem := func() *imapwire.Encoder {
 		if !firstItem {
@@ -233,7 +233,7 @@ func writeSearchKey(enc *imapwire.Encoder, criteria *imap.SearchCriteria) {
 		encodeItem().Atom("SMALLER").SP().Number64(criteria.Smaller)
 	}
 
-	if modSeq := criteria.ModSeq; modSeq != nil {
+	if modSeq := criteria.ModSeq; modSeq != nil && condstore {
 		encodeItem().Atom("MODSEQ")
 		if modSeq.MetadataName != "" && modSeq.MetadataType != "" {
 			enc.SP().Quoted(modSeq.MetadataName).SP().Atom(string(modSeq.MetadataType))
@@ -246,24 +246,24 @@ func writeSearchKey(enc *imapwire.Encoder, criteria *imap.SearchCriteria) {
 		}
 	}
 
-	if criteria.ChangedSince > 0 {
+	if criteria.ChangedSince > 0 && condstore {
 		encodeItem().Atom("CHANGEDSINCE").SP().ModSeq(criteria.ChangedSince)
 	}
 
 	for _, not := range criteria.Not {
 		encodeItem().Atom("NOT").SP()
 		enc.Special('(')
-		writeSearchKey(enc, &not)
+		writeSearchKey(enc, &not, condstore)
 		enc.Special(')')
 	}
 	for _, or := range criteria.Or {
 		encodeItem().Atom("OR").SP()
 		enc.Special('(')
-		writeSearchKey(enc, &or[0])
+		writeSearchKey(enc, &or[0], condstore)
 		enc.Special(')')
 		enc.SP()
 		enc.Special('(')
-		writeSearchKey(enc, &or[1])
+		writeSearchKey(enc, &or[1], condstore)
 		enc.Special(')')
 	}
 
