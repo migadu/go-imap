@@ -15,8 +15,6 @@ const (
 	CapIMAP4rev1 Cap = "IMAP4rev1" // RFC 3501
 	CapIMAP4rev2 Cap = "IMAP4rev2" // RFC 9051
 
-	CapAuthPlain Cap = "AUTH=PLAIN"
-
 	CapStartTLS      Cap = "STARTTLS"
 	CapLoginDisabled Cap = "LOGINDISABLED"
 
