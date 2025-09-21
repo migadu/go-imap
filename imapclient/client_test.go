@@ -180,6 +180,15 @@ func newClientServerPair(t *testing.T, initialState imap.ConnState) (*imapclient
 		}
 	}
 
+	// Enable CONDSTORE for Dovecot tests (required for CONDSTORE features)
+	if useDovecot && initialState >= imap.ConnStateAuthenticated {
+		if client.Caps().Has(imap.CapCondStore) {
+			if _, err := client.Enable(imap.CapCondStore).Wait(); err != nil {
+				t.Logf("Failed to enable CONDSTORE: %v", err)
+			}
+		}
+	}
+
 	// Turn on debug logs after we're done initializing the test
 	debugWriter.Swap(os.Stderr)
 
