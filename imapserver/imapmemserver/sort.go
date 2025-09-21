@@ -1,7 +1,12 @@
 package imapmemserver
 
 import (
+	"bufio"
+	"bytes"
+	"net/mail"
+	"net/textproto"
 	"sort"
+	"strings"
 
 	"github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/imapserver"
@@ -142,31 +147,78 @@ func compareByCriterion(a, b *message, key imap.SortKey) int {
 		return 0
 
 	case imap.SortKeyFrom:
-		// TODO: For a real implementation, extract the From header and compare
-		return 0
+		// NOTE: A fully compliant implementation as per RFC 5256 would parse
+		// the address and sort by mailbox, then host. This is a simplified
+		// case-insensitive comparison of the full header value.
+		fromA := getHeader(a.buf, "From")
+		fromB := getHeader(b.buf, "From")
+		return strings.Compare(strings.ToLower(fromA), strings.ToLower(fromB))
 
 	case imap.SortKeyTo:
-		// TODO: For a real implementation, you would extract the To header and compare
-		return 0
+		// NOTE: Simplified comparison. See SortKeyFrom.
+		toA := getHeader(a.buf, "To")
+		toB := getHeader(b.buf, "To")
+		return strings.Compare(strings.ToLower(toA), strings.ToLower(toB))
 
 	case imap.SortKeyCc:
-		// TODO: For a real implementation, you would extract the Cc header and compare
-		return 0
+		// NOTE: Simplified comparison. See SortKeyFrom.
+		ccA := getHeader(a.buf, "Cc")
+		ccB := getHeader(b.buf, "Cc")
+		return strings.Compare(strings.ToLower(ccA), strings.ToLower(ccB))
 
 	case imap.SortKeySubject:
-		// TODO: For a real implementation, you would extract the Subject header and compare
-		return 0
+		// RFC 5256 specifies i;ascii-casemap collation, which is case-insensitive.
+		subjA := getHeader(a.buf, "Subject")
+		subjB := getHeader(b.buf, "Subject")
+		return strings.Compare(strings.ToLower(subjA), strings.ToLower(subjB))
 
 	case imap.SortKeyDisplay:
-		// SORT=DISPLAY (RFC 5957) - Use a locale-sensitive version of the string
-		// For now, treat it the same as the subject sorting for this implementation
-		// TODO: For a real implementation, use proper locale-aware sorting of display names
-		// A full implementation would handle internationalized text according to
-		// the user's locale settings and apply proper collation rules
-		return 0
+		// RFC 5957: sort by display-name, fallback to mailbox.
+		fromA := getHeader(a.buf, "From")
+		fromB := getHeader(b.buf, "From")
+
+		addrA, errA := mail.ParseAddress(fromA)
+		addrB, errB := mail.ParseAddress(fromB)
+
+		var displayA, displayB string
+
+		if errA == nil {
+			if addrA.Name != "" {
+				displayA = addrA.Name
+			} else {
+				displayA = addrA.Address
+			}
+		} else {
+			displayA = fromA // Fallback to raw header on parse error
+		}
+
+		if errB == nil {
+			if addrB.Name != "" {
+				displayB = addrB.Name
+			} else {
+				displayB = addrB.Address
+			}
+		} else {
+			displayB = fromB // Fallback to raw header on parse error
+		}
+
+		// A full implementation would use locale-aware sorting (e.g., golang.org/x/text/collate).
+		// A case-insensitive comparison is a reasonable and significant improvement.
+		return strings.Compare(strings.ToLower(displayA), strings.ToLower(displayB))
 
 	default:
 		// Default to no sorting for unknown criteria
 		return 0
 	}
+}
+
+// getHeader extracts a header value from a message's raw bytes.
+// It performs a case-insensitive search for the key.
+func getHeader(buf []byte, key string) string {
+	r := textproto.NewReader(bufio.NewReader(bytes.NewReader(buf)))
+	hdr, err := r.ReadMIMEHeader()
+	if err != nil {
+		return "" // Or log the error
+	}
+	return hdr.Get(key)
 }

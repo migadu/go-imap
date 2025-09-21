@@ -174,27 +174,34 @@ func (c *Conn) handleSort(tag string, dec *imapwire.Decoder, numKind NumKind) er
 	data := &SortData{Nums: sortedNums}
 	if len(sortedNums) > 0 {
 		data.Count = uint32(len(sortedNums))
-		data.Min = sortedNums[0]
-		data.Max = sortedNums[len(sortedNums)-1]
+		min, max := sortedNums[0], sortedNums[0]
+		for _, num := range sortedNums {
+			if num < min {
+				min = num
+			}
+			if num > max {
+				max = num
+			}
+		}
+		data.Min = min
+		data.Max = max
 	}
 
 	return c.writeSortResponse(tag, numKind, data, &esortReturnOpts)
 }
 
 func (c *Conn) writeSortResponse(tag string, numKind NumKind, data *SortData, returnOpts *esortReturnOptions) error {
-	enc := newResponseEncoder(c)
-	defer enc.end()
-
-	// For ESORT, use ESEARCH response format if not RETURN ALL
+	// For ESORT, if RETURN options other than ALL are specified, send an ESEARCH response.
+	// See RFC 5267 section 4.2.
 	if c.server.options.caps().Has(imap.CapESort) && !returnOpts.All {
+		enc := newResponseEncoder(c)
 		enc.Atom("*").SP().Atom("ESEARCH")
 		if tag != "" {
-			enc.SP().Special('(').Atom("TAG").SP().Atom(tag).Special(')')
+			enc.SP().Special('(').Atom("TAG").SP().String(tag).Special(')')
 		}
 		if numKind == NumKindUID {
 			enc.SP().Atom("UID")
 		}
-
 		if returnOpts.Min {
 			if data.Count > 0 {
 				enc.SP().Atom("MIN").SP().Number(data.Min)
@@ -208,14 +215,20 @@ func (c *Conn) writeSortResponse(tag string, numKind NumKind, data *SortData, re
 		if returnOpts.Count {
 			enc.SP().Atom("COUNT").SP().Number(data.Count)
 		}
-		// Note: No "ALL <seq-set>" here for ESORT as per RFC 5267
-	} else {
-		// Use regular SORT response for non-ESORT clients or when RETURN (ALL) or no RETURN option is specified
-		enc.Atom("*").SP().Atom("SORT")
-		for _, num := range data.Nums {
-			enc.SP().Number(num)
+		if err := enc.CRLF(); err != nil {
+			enc.end()
+			return err
 		}
+		enc.end()
 	}
 
+	// A SORT response is always sent, either for a regular SORT, or following
+	// an ESEARCH response for an ESORT.
+	enc := newResponseEncoder(c)
+	defer enc.end()
+	enc.Atom("*").SP().Atom("SORT")
+	for _, num := range data.Nums {
+		enc.SP().Number(num)
+	}
 	return enc.CRLF()
 }
