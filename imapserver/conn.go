@@ -178,7 +178,7 @@ func (c *Conn) serve() {
 		dec := imapwire.NewDecoder(c.br, imapwire.ConnSideServer)
 		dec.MaxSize = maxCommandSize
 		dec.CheckBufferedLiteralFunc = c.checkBufferedLiteral
-		
+
 		c.mutex.Lock()
 		// IMAP4rev2 is automatically enabled when advertised in capabilities
 		// UTF8=ACCEPT must be explicitly enabled

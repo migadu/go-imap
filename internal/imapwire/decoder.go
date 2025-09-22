@@ -520,7 +520,7 @@ func (dec *Decoder) ExpectMailbox(ptr *string) bool {
 		*ptr = "INBOX"
 		return true
 	}
-	
+
 	var err error
 	if dec.QuotedUTF8 {
 		name, err = utf7.Unescape(name)
