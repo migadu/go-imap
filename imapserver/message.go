@@ -85,7 +85,7 @@ func ExtractBodySection(r io.Reader, item *imap.FetchItemBodySection) []byte {
 
 func findMessagePart(header textproto.Header, body io.Reader, partPath []int) (string, textproto.Header, io.Reader) {
 	// First part of non-multipart message refers to the message itself
-	msgHeader := gomessage.Header{header}
+	msgHeader := gomessage.Header{Header: header}
 	mediaType, _, _ := msgHeader.ContentType()
 	if !strings.HasPrefix(mediaType, "multipart/") && len(partPath) > 0 && partPath[0] == 1 {
 		partPath = partPath[1:]
@@ -97,7 +97,7 @@ func findMessagePart(header textproto.Header, body io.Reader, partPath []int) (s
 
 		header, body = openMessagePart(header, body, parentMediaType)
 
-		msgHeader := gomessage.Header{header}
+		msgHeader := gomessage.Header{Header: header}
 		mediaType, typeParams, _ := msgHeader.ContentType()
 		if !strings.HasPrefix(mediaType, "multipart/") {
 			if partNum != 1 {
@@ -131,7 +131,7 @@ func findMessagePart(header textproto.Header, body io.Reader, partPath []int) (s
 }
 
 func openMessagePart(header textproto.Header, body io.Reader, parentMediaType string) (textproto.Header, io.Reader) {
-	msgHeader := gomessage.Header{header}
+	msgHeader := gomessage.Header{Header: header}
 	mediaType, _, _ := msgHeader.ContentType()
 	if !msgHeader.Has("Content-Type") && parentMediaType == "multipart/digest" {
 		mediaType = "message/rfc822"
@@ -177,7 +177,7 @@ func ExtractBinarySection(r io.Reader, item *imap.FetchItemBinarySection) []byte
 		return nil
 	}
 
-	part, err := gomessage.New(gomessage.Header{header}, body)
+	part, err := gomessage.New(gomessage.Header{Header: header}, body)
 	if err != nil {
 		return nil
 	}
@@ -208,7 +208,7 @@ func ExtractBinarySectionSize(r io.Reader, item *imap.FetchItemBinarySectionSize
 //
 // It can be used by server backends to implement Session.Fetch.
 func ExtractEnvelope(h textproto.Header) *imap.Envelope {
-	mh := mail.Header{gomessage.Header{h}}
+	mh := mail.Header{Header: gomessage.Header{Header: h}}
 	date, _ := mh.Date()
 	subject, _ := mh.Subject()
 	inReplyTo, _ := mh.MsgIDList("In-Reply-To")
@@ -255,7 +255,7 @@ func ExtractBodyStructure(r io.Reader) imap.BodyStructure {
 }
 
 func extractBodyStructure(rawHeader textproto.Header, r io.Reader) imap.BodyStructure {
-	header := gomessage.Header{rawHeader}
+	header := gomessage.Header{Header: rawHeader}
 
 	mediaType, typeParams, _ := header.ContentType()
 	primaryType, subType, _ := strings.Cut(mediaType, "/")

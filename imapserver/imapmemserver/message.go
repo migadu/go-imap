@@ -1,7 +1,6 @@
 package imapmemserver
 
 import (
-	"bufio"
 	"bytes"
 	"fmt"
 	"io"
@@ -17,9 +16,12 @@ import (
 
 type message struct {
 	// immutable
-	uid imap.UID
-	buf []byte
-	t   time.Time
+	uid    imap.UID
+	buf    []byte
+	t      time.Time
+	header textproto.Header
+	date   time.Time
+	size   int64
 
 	// mutable, protected by Mailbox.mutex
 	flags map[imap.Flag]struct{}
@@ -35,7 +37,7 @@ func (msg *message) fetch(w *imapserver.FetchResponseWriter, options *imap.Fetch
 		w.WriteInternalDate(msg.t)
 	}
 	if options.RFC822Size {
-		w.WriteRFC822Size(int64(len(msg.buf)))
+		w.WriteRFC822Size(msg.size)
 	}
 	if options.Envelope {
 		w.WriteEnvelope(msg.envelope())
@@ -79,12 +81,7 @@ func (msg *message) fetch(w *imapserver.FetchResponseWriter, options *imap.Fetch
 }
 
 func (msg *message) envelope() *imap.Envelope {
-	br := bufio.NewReader(bytes.NewReader(msg.buf))
-	header, err := textproto.ReadHeader(br)
-	if err != nil {
-		return nil
-	}
-	return imapserver.ExtractEnvelope(header)
+	return imapserver.ExtractEnvelope(msg.header)
 }
 
 func (msg *message) flagList() []imap.Flag {
@@ -147,14 +144,14 @@ func (msg *message) search(seqNum uint32, criteria *imap.SearchCriteria) bool {
 		}
 	}
 
-	if criteria.Larger != 0 && int64(len(msg.buf)) <= criteria.Larger {
+	if criteria.Larger != 0 && msg.size <= criteria.Larger {
 		return false
 	}
-	if criteria.Smaller != 0 && int64(len(msg.buf)) >= criteria.Smaller {
+	if criteria.Smaller != 0 && msg.size >= criteria.Smaller {
 		return false
 	}
 
-	header := mail.Header{msg.reader().Header}
+	header := mail.Header{Header: gomessage.Header{Header: msg.header}}
 
 	for _, fieldCriteria := range criteria.Header {
 		if !matchHeaderFields(header.FieldsByKey(fieldCriteria.Key), fieldCriteria.Value) {
@@ -163,10 +160,9 @@ func (msg *message) search(seqNum uint32, criteria *imap.SearchCriteria) bool {
 	}
 
 	if !criteria.SentSince.IsZero() || !criteria.SentBefore.IsZero() {
-		t, err := header.Date()
-		if err != nil {
+		if msg.date.IsZero() {
 			return false
-		} else if !matchDate(t, criteria.SentSince, criteria.SentBefore) {
+		} else if !matchDate(msg.date, criteria.SentSince, criteria.SentBefore) {
 			return false
 		}
 	}

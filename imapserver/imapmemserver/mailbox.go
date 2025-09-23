@@ -1,13 +1,18 @@
 package imapmemserver
 
 import (
+	"bufio"
 	"bytes"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/imapserver"
+	gomessage "github.com/emersion/go-message"
+	"github.com/emersion/go-message/mail"
+	"github.com/emersion/go-message/textproto"
 )
 
 // Mailbox is an in-memory mailbox.
@@ -114,7 +119,7 @@ func (mbox *Mailbox) countByFlagLocked(flag imap.Flag) uint32 {
 func (mbox *Mailbox) sizeLocked() int64 {
 	var size int64
 	for _, msg := range mbox.l {
-		size += int64(len(msg.buf))
+		size += msg.size
 	}
 	return size
 }
@@ -135,9 +140,19 @@ func (mbox *Mailbox) copyMsg(msg *message) *imap.AppendData {
 }
 
 func (mbox *Mailbox) appendBytes(buf []byte, options *imap.AppendOptions) *imap.AppendData {
+	br := bufio.NewReader(bytes.NewReader(buf))
+	// We can ignore the error, because even on error ReadHeader returns
+	// the headers successfully parsed so far.
+	hdr, _ := textproto.ReadHeader(br)
+	mailHdr := mail.Header{Header: gomessage.Header{Header: hdr}}
+	date, _ := mailHdr.Date()
+
 	msg := &message{
-		flags: make(map[imap.Flag]struct{}),
-		buf:   buf,
+		flags:  make(map[imap.Flag]struct{}),
+		buf:    buf,
+		header: hdr,
+		date:   date,
+		size:   int64(len(buf)),
 	}
 
 	if options.Time.IsZero() {
@@ -388,6 +403,124 @@ func (mbox *MailboxView) Search(numKind imapserver.NumKind, criteria *imap.Searc
 	}
 
 	return &data, nil
+}
+
+func (mbox *MailboxView) Sort(kind imapserver.NumKind, sortCriteria []imap.SortCriterion, charset string, searchCriteria *imap.SearchCriteria, options *imap.SortOptions) (*imap.SortData, error) {
+	mbox.mutex.Lock()
+	defer mbox.mutex.Unlock()
+
+	mbox.staticSearchCriteria(searchCriteria)
+
+	// 1. Search for messages
+	var matchingMsgs []*message
+	for i, msg := range mbox.l {
+		seqNum := mbox.tracker.EncodeSeqNum(uint32(i) + 1)
+		if msg.search(seqNum, searchCriteria) {
+			matchingMsgs = append(matchingMsgs, msg)
+		}
+	}
+
+	// 2. Sort the messages
+	sorter := &memSort{
+		criteria: sortCriteria,
+		msgs:     matchingMsgs,
+		mbox:     mbox,
+	}
+	sort.Sort(sorter)
+
+	// 3. Collect the results
+	var uidToSeq map[imap.UID]uint32
+	if kind != imapserver.NumKindUID {
+		uidToSeq = make(map[imap.UID]uint32, len(mbox.l))
+		for i, m := range mbox.l {
+			// Create a map from UID to current sequence number
+			uidToSeq[m.uid] = mbox.tracker.EncodeSeqNum(uint32(i) + 1)
+		}
+	}
+
+	var data imap.SortData
+	for _, msg := range sorter.msgs {
+		if kind == imapserver.NumKindUID {
+			data.All = append(data.All, uint32(msg.uid))
+		} else {
+			if seqNum, ok := uidToSeq[msg.uid]; ok && seqNum > 0 {
+				data.All = append(data.All, seqNum)
+			}
+		}
+	}
+
+	// 4. Calculate MIN, MAX, COUNT for ESORT
+	data.Count = uint32(len(data.All))
+	if len(data.All) > 0 {
+		// Find the true min and max, regardless of sort order, as required
+		// by RFC 5267.
+		min, max := data.All[0], data.All[0]
+		for _, num := range data.All[1:] {
+			if num < min {
+				min = num
+			}
+			if num > max {
+				max = num
+			}
+		}
+		data.Min = min
+		data.Max = max
+	}
+
+	return &data, nil
+}
+
+type memSort struct {
+	criteria []imap.SortCriterion
+	msgs     []*message
+	mbox     *MailboxView
+}
+
+func (ms *memSort) Len() int {
+	return len(ms.msgs)
+}
+
+func (ms *memSort) Swap(i, j int) {
+	ms.msgs[i], ms.msgs[j] = ms.msgs[j], ms.msgs[i]
+}
+
+func (ms *memSort) Less(i, j int) bool {
+	msgI, msgJ := ms.msgs[i], ms.msgs[j]
+	for _, c := range ms.criteria {
+		var cmp int
+		switch c.Key {
+		case imap.SortKeyArrival:
+			cmp = msgI.t.Compare(msgJ.t)
+		case imap.SortKeyCc:
+			cmp = strings.Compare(msgI.header.Get("Cc"), msgJ.header.Get("Cc"))
+		case imap.SortKeyDate:
+			cmp = msgI.date.Compare(msgJ.date)
+		case imap.SortKeyFrom:
+			cmp = strings.Compare(msgI.header.Get("From"), msgJ.header.Get("From"))
+		case imap.SortKeySize:
+			if msgI.size < msgJ.size {
+				cmp = -1
+			} else if msgI.size > msgJ.size {
+				cmp = 1
+			}
+		case imap.SortKeySubject:
+			hI := mail.Header{Header: gomessage.Header{Header: msgI.header}}
+			hJ := mail.Header{Header: gomessage.Header{Header: msgJ.header}}
+			subjI, _ := hI.Subject()
+			subjJ, _ := hJ.Subject()
+			cmp = strings.Compare(subjI, subjJ)
+		case imap.SortKeyTo:
+			cmp = strings.Compare(msgI.header.Get("To"), msgJ.header.Get("To"))
+		}
+		if cmp != 0 {
+			if c.Reverse {
+				return cmp > 0
+			}
+			return cmp < 0
+		}
+	}
+
+	return msgI.uid < msgJ.uid // Tie-breaker
 }
 
 func (mbox *MailboxView) staticSearchCriteria(criteria *imap.SearchCriteria) {

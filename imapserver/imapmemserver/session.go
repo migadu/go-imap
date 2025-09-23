@@ -138,3 +138,7 @@ func (sess *UserSession) Idle(w *imapserver.UpdateWriter, stop <-chan struct{}) 
 	}
 	return sess.mailbox.Idle(w, stop)
 }
+
+func (sess *UserSession) Sort(kind imapserver.NumKind, sortCriteria []imap.SortCriterion, charset string, searchCriteria *imap.SearchCriteria, options *imap.SortOptions) (*imap.SortData, error) {
+	return sess.mailbox.Sort(kind, sortCriteria, charset, searchCriteria, options)
+}
