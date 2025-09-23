@@ -45,11 +45,9 @@ const (
 
 	cmdWriteTimeout     = 30 * time.Second
 	literalWriteTimeout = 5 * time.Minute
-)
 
-var dialer = &net.Dialer{
-	Timeout: 30 * time.Second,
-}
+	defaultDialTimeout = 30 * time.Second
+)
 
 // SelectedMailbox contains metadata for the currently selected mailbox.
 type SelectedMailbox struct {
@@ -77,6 +75,9 @@ type Options struct {
 	UnilateralDataHandler *UnilateralDataHandler
 	// Decoder for RFC 2047 words.
 	WordDecoder *mime.WordDecoder
+	// Dialer to use when establishing connections with the Dial* functions.
+	// If nil, a default dialer with a 30 second timeout is used.
+	Dialer *net.Dialer
 }
 
 func (options *Options) wrapReadWriter(rw io.ReadWriter) io.ReadWriter {
@@ -112,11 +113,18 @@ func (options *Options) unilateralDataHandler() *UnilateralDataHandler {
 }
 
 func (options *Options) tlsConfig() *tls.Config {
-	if options != nil && options.TLSConfig != nil {
+	if options.TLSConfig != nil {
 		return options.TLSConfig.Clone()
 	} else {
 		return new(tls.Config)
 	}
+}
+
+func (options *Options) dialer() *net.Dialer {
+	if options.Dialer == nil {
+		return &net.Dialer{Timeout: defaultDialTimeout}
+	}
+	return options.Dialer
 }
 
 // Client is an IMAP client.
@@ -146,16 +154,15 @@ type Client struct {
 	decCh  chan struct{}
 	decErr error
 
-	mutex        sync.Mutex
-	state        imap.ConnState
-	caps         imap.CapSet
-	enabled      imap.CapSet
-	pendingCapCh chan struct{}
-	mailbox      *SelectedMailbox
-	cmdTag       uint64
-	pendingCmds  []command
-	contReqs     []continuationRequest
-	closed       bool
+	mutex       sync.Mutex
+	state       imap.ConnState
+	caps        imap.CapSet
+	enabled     imap.CapSet
+	mailbox     *SelectedMailbox
+	cmdTag      uint64
+	pendingCmds []command
+	contReqs    []continuationRequest
+	closed      bool
 }
 
 // New creates a new IMAP client.
@@ -212,7 +219,11 @@ func NewStartTLS(conn net.Conn, options *Options) (*Client, error) {
 
 // DialInsecure connects to an IMAP server without any encryption at all.
 func DialInsecure(address string, options *Options) (*Client, error) {
-	conn, err := dialer.Dial("tcp", address)
+	if options == nil {
+		options = &Options{}
+	}
+
+	conn, err := options.dialer().Dial("tcp", address)
 	if err != nil {
 		return nil, err
 	}
@@ -221,11 +232,16 @@ func DialInsecure(address string, options *Options) (*Client, error) {
 
 // DialTLS connects to an IMAP server with implicit TLS.
 func DialTLS(address string, options *Options) (*Client, error) {
+	if options == nil {
+		options = &Options{}
+	}
+
 	tlsConfig := options.tlsConfig()
 	if tlsConfig.NextProtos == nil {
 		tlsConfig.NextProtos = []string{"imap"}
 	}
 
+	dialer := options.dialer()
 	conn, err := tls.DialWithDialer(dialer, "tcp", address, tlsConfig)
 	if err != nil {
 		return nil, err
@@ -244,7 +260,7 @@ func DialStartTLS(address string, options *Options) (*Client, error) {
 		return nil, err
 	}
 
-	conn, err := dialer.Dial("tcp", address)
+	conn, err := options.dialer().Dial("tcp", address)
 	if err != nil {
 		return nil, err
 	}
@@ -302,58 +318,35 @@ func (c *Client) Caps() imap.CapSet {
 
 	c.mutex.Lock()
 	caps := c.caps
-	capCh := c.pendingCapCh
 	c.mutex.Unlock()
 
 	if caps != nil {
 		return caps
 	}
 
-	if capCh == nil {
-		capCmd := c.Capability()
-		capCh := make(chan struct{})
-		go func() {
-			capCmd.Wait()
-			close(capCh)
-		}()
-		c.mutex.Lock()
-		c.pendingCapCh = capCh
-		c.mutex.Unlock()
-	}
-
-	timer := time.NewTimer(respReadTimeout)
-	defer timer.Stop()
-	select {
-	case <-timer.C:
+	capCmd := c.Capability()
+	caps, err := capCmd.Wait()
+	if err != nil {
 		return nil
-	case <-capCh:
-		// ok
 	}
-
-	// TODO: this is racy if caps are reset before we get the reply
-	c.mutex.Lock()
-	defer c.mutex.Unlock()
-	return c.caps
+	return caps
 }
 
 func (c *Client) setCaps(caps imap.CapSet) {
 	// If the capabilities are being reset, request the updated capabilities
 	// from the server
-	var capCh chan struct{}
 	if caps == nil {
-		capCh = make(chan struct{})
-
 		// We need to send the CAPABILITY command in a separate goroutine:
 		// setCaps might be called with Client.encMutex locked
 		go func() {
 			c.Capability().Wait()
-			close(capCh)
 		}()
 	}
 
 	c.mutex.Lock()
 	c.caps = caps
-	c.pendingCapCh = capCh
+	quotedUTF8 := c.caps.Has(imap.CapIMAP4rev2) || c.enabled.Has(imap.CapUTF8Accept)
+	c.dec.QuotedUTF8 = quotedUTF8
 	c.mutex.Unlock()
 }
 
@@ -956,6 +949,11 @@ func (c *Client) readResponseData(typ string) error {
 		return c.handleFetch(num)
 	case "EXPUNGE":
 		return c.handleExpunge(num)
+	case "VANISHED":
+		if !c.dec.ExpectSP() {
+			return c.dec.Err()
+		}
+		return c.handleVanished()
 	case "SEARCH":
 		return c.handleSearch()
 	case "ESEARCH":
@@ -993,6 +991,28 @@ func (c *Client) readResponseData(typ string) error {
 		return c.handleGetACL()
 	default:
 		return fmt.Errorf("unsupported response type %q", typ)
+	}
+
+	return nil
+}
+
+func (c *Client) handleVanished() error {
+	var data imap.VanishedData
+	isParen := c.dec.Special('(')
+	if isParen {
+		var tag string
+		if !c.dec.ExpectAtom(&tag) || !c.dec.ExpectSpecial(')') {
+			return c.dec.Err()
+		}
+		data.Earlier = strings.ToUpper(tag) == "EARLIER"
+	}
+
+	if !c.dec.ExpectSP() || !c.dec.ExpectUIDSet(&data.UIDs) {
+		return c.dec.Err()
+	}
+
+	if handler := c.options.unilateralDataHandler().Vanished; handler != nil {
+		handler(&data)
 	}
 
 	return nil
@@ -1169,6 +1189,9 @@ type UnilateralDataHandler struct {
 	Expunge func(seqNum uint32)
 	Mailbox func(data *UnilateralDataMailbox)
 	Fetch   func(msg *FetchMessageData)
+
+	// requires ENABLE QRESYNC
+	Vanished func(data *imap.VanishedData)
 
 	// requires ENABLE METADATA or ENABLE SERVER-METADATA
 	Metadata func(mailbox string, entries []string)

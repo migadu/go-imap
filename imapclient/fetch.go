@@ -36,6 +36,9 @@ func (c *Client) Fetch(numSet imap.NumSet, options *imap.FetchOptions) *FetchCom
 	if options.ChangedSince != 0 {
 		enc.SP().Special('(').Atom("CHANGEDSINCE").SP().ModSeq(options.ChangedSince).Special(')')
 	}
+	if options.Vanished && numKind == imapwire.NumKindUID {
+		enc.SP().Atom("VANISHED")
+	}
 	enc.end()
 	return cmd
 }
@@ -1318,7 +1321,7 @@ type fetchLiteralReader struct {
 
 func (lit *fetchLiteralReader) Read(b []byte) (int, error) {
 	n, err := lit.LiteralReader.Read(b)
-	if err == io.EOF && lit.ch != nil {
+	if err != nil && lit.ch != nil {
 		close(lit.ch)
 		lit.ch = nil
 	}
