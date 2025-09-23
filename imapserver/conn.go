@@ -603,6 +603,26 @@ func newClientBugError(text string) error {
 	}
 }
 
+func (c *Conn) writeExists(numMessages uint32) error {
+	enc := newResponseEncoder(c)
+	defer enc.end()
+	return writeExists(enc.Encoder, numMessages)
+}
+
+func writeExists(enc *imapwire.Encoder, numMessages uint32) error {
+	return enc.Atom("*").SP().Number(numMessages).SP().Atom("EXISTS").CRLF()
+}
+
+func (c *Conn) writeObsoleteRecent(n uint32) error {
+	enc := newResponseEncoder(c)
+	defer enc.end()
+	return writeObsoleteRecent(enc.Encoder, n)
+}
+
+func writeObsoleteRecent(enc *imapwire.Encoder, n uint32) error {
+	return enc.Atom("*").SP().Number(n).SP().Atom("RECENT").CRLF()
+}
+
 // UpdateWriter writes status updates.
 type UpdateWriter struct {
 	conn         *Conn

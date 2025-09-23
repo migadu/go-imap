@@ -93,6 +93,8 @@ func (c *Conn) availableCaps() []imap.Cap {
 			imap.CapCreateSpecialUse,
 			imap.CapLiteralPlus,
 			imap.CapUnauthenticate,
+			imap.CapCondStore,
+			imap.CapQResync,
 			imap.CapSort,
 			imap.CapSortDisplay,
 			imap.CapESort,
