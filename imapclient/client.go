@@ -345,6 +345,8 @@ func (c *Client) setCaps(caps imap.CapSet) {
 
 	c.mutex.Lock()
 	c.caps = caps
+	quotedUTF8 := c.caps.Has(imap.CapIMAP4rev2) || c.enabled.Has(imap.CapUTF8Accept)
+	c.dec.QuotedUTF8 = quotedUTF8
 	c.mutex.Unlock()
 }
 
