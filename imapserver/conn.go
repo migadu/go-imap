@@ -203,6 +203,17 @@ func (c *Conn) serve() {
 }
 
 func (c *Conn) readCommand(dec *imapwire.Decoder) error {
+	for {
+		if dec.EOF() {
+			return nil
+		}
+
+		if dec.ExpectCRLF() {
+			continue
+		}
+		break
+	}
+
 	var tag, name string
 	if !dec.ExpectAtom(&tag) || !dec.ExpectSP() || !dec.ExpectAtom(&name) {
 		return fmt.Errorf("in command: %w", dec.Err())
