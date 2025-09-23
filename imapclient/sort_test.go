@@ -14,9 +14,9 @@ func TestSort(t *testing.T) {
 	// msg1: smallest, oldest arrival, subject "C"
 	// msg2: medium, middle arrival, subject "B"
 	// msg3: largest, newest arrival, subject "A"
-	msg1 := []byte("Date: Mon, 2 Jan 2006 15:04:05 -0700\r\nSubject: C\r\n\r\nSmall")
-	msg2 := []byte("Date: Tue, 3 Jan 2006 15:04:05 -0700\r\nSubject: B\r\n\r\nMedium body")
-	msg3 := []byte("Date: Wed, 4 Jan 2006 15:04:05 -0700\r\nSubject: A\r\n\r\nMuch larger body content here")
+	msg1 := []byte("From: B <b@example.org>\r\nDate: Mon, 2 Jan 2006 15:04:05 -0700\r\nSubject: C\r\n\r\nSmall")
+	msg2 := []byte("From: C <c@example.org>\r\nDate: Tue, 3 Jan 2006 15:04:05 -0700\r\nSubject: B\r\n\r\nMedium body")
+	msg3 := []byte("From: A <a@example.org>\r\nDate: Wed, 4 Jan 2006 15:04:05 -0700\r\nSubject: A\r\n\r\nMuch larger body content here")
 
 	client, server := newClientServerPair(t, imap.ConnStateSelected)
 
@@ -91,6 +91,22 @@ func TestSort(t *testing.T) {
 					SearchCriteria: allMsgs,
 				},
 				want: []uint32{3, 2, 1}, // A, B, C
+			},
+			{
+				name: "DISPLAY",
+				options: &imapclient.SortOptions{
+					SortCriteria:   []imap.SortCriterion{{Key: imap.SortKeyDisplay}},
+					SearchCriteria: allMsgs,
+				},
+				want: []uint32{3, 1, 2}, // A, B, C
+			},
+			{
+				name: "FROM",
+				options: &imapclient.SortOptions{
+					SortCriteria:   []imap.SortCriterion{{Key: imap.SortKeyFrom}},
+					SearchCriteria: allMsgs,
+				},
+				want: []uint32{3, 1, 2}, // a@, b@, c@
 			},
 			{
 				name: "DATE then SUBJECT",

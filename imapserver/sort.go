@@ -56,6 +56,8 @@ func (c *Conn) handleSort(tag string, dec *imapwire.Decoder, numKind NumKind) er
 			criterion.Key = imap.SortKeyCc
 		case "DATE":
 			criterion.Key = imap.SortKeyDate
+		case "DISPLAY":
+			criterion.Key = imap.SortKeyDisplay
 		case "FROM":
 			criterion.Key = imap.SortKeyFrom
 		case "SIZE":
@@ -167,19 +169,16 @@ func (c *Conn) writeESort(tag string, data *imap.SortData, options *imap.SortOpt
 		enc.SP().Atom("UID")
 	}
 
-	if options.ReturnAll {
-		enc.SP().Atom("ALL")
-		if len(data.All) > 0 {
-			enc.SP()
-			for i, num := range data.All {
-				if i > 0 {
-					enc.Special(',')
-				}
-				if numKind == NumKindUID {
-					enc.UID(imap.UID(num))
-				} else {
-					enc.Number(num)
-				}
+	if options.ReturnAll && len(data.All) > 0 {
+		enc.SP().Atom("ALL").SP()
+		for i, num := range data.All {
+			if i > 0 {
+				enc.Special(',')
+			}
+			if numKind == NumKindUID {
+				enc.UID(imap.UID(num))
+			} else {
+				enc.Number(num)
 			}
 		}
 	}

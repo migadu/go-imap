@@ -495,8 +495,36 @@ func (ms *memSort) Less(i, j int) bool {
 			cmp = strings.Compare(msgI.header.Get("Cc"), msgJ.header.Get("Cc"))
 		case imap.SortKeyDate:
 			cmp = msgI.date.Compare(msgJ.date)
+		case imap.SortKeyDisplay:
+			hI := mail.Header{Header: gomessage.Header{Header: msgI.header}}
+			hJ := mail.Header{Header: gomessage.Header{Header: msgJ.header}}
+			var valI, valJ string
+			if addrs, err := hI.AddressList("From"); err == nil && len(addrs) > 0 {
+				if addrs[0].Name != "" {
+					valI = addrs[0].Name
+				} else {
+					valI = addrs[0].Address
+				}
+			}
+			if addrs, err := hJ.AddressList("From"); err == nil && len(addrs) > 0 {
+				if addrs[0].Name != "" {
+					valJ = addrs[0].Name
+				} else {
+					valJ = addrs[0].Address
+				}
+			}
+			cmp = strings.Compare(valI, valJ)
 		case imap.SortKeyFrom:
-			cmp = strings.Compare(msgI.header.Get("From"), msgJ.header.Get("From"))
+			hI := mail.Header{Header: gomessage.Header{Header: msgI.header}}
+			hJ := mail.Header{Header: gomessage.Header{Header: msgJ.header}}
+			var valI, valJ string
+			if addrs, err := hI.AddressList("From"); err == nil && len(addrs) > 0 {
+				valI = addrs[0].Address
+			}
+			if addrs, err := hJ.AddressList("From"); err == nil && len(addrs) > 0 {
+				valJ = addrs[0].Address
+			}
+			cmp = strings.Compare(valI, valJ)
 		case imap.SortKeySize:
 			if msgI.size < msgJ.size {
 				cmp = -1

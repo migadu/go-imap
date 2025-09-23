@@ -7,6 +7,7 @@ const (
 	SortKeyArrival SortKey = "ARRIVAL"
 	SortKeyCc      SortKey = "CC"
 	SortKeyDate    SortKey = "DATE"
+	SortKeyDisplay SortKey = "DISPLAY"
 	SortKeyFrom    SortKey = "FROM"
 	SortKeySize    SortKey = "SIZE"
 	SortKeySubject SortKey = "SUBJECT"
