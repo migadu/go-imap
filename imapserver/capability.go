@@ -118,3 +118,12 @@ func addAvailableCaps(caps *[]imap.Cap, available imap.CapSet, l []imap.Cap) {
 		}
 	}
 }
+
+func (c *Conn) availableCapsSet() imap.CapSet {
+	caps := c.availableCaps()
+	capSet := make(imap.CapSet)
+	for _, cap := range caps {
+		capSet[cap] = struct{}{}
+	}
+	return capSet
+}
