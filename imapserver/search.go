@@ -87,7 +87,22 @@ func (c *Conn) handleSearch(tag string, dec *imapwire.Decoder, numKind NumKind) 
 		return err
 	}
 
-	if c.enabled.Has(imap.CapIMAP4rev2) || extended {
+	var supportsESEARCH bool
+	if capSession, ok := c.session.(SessionCapabilities); ok {
+		sessionCaps := capSession.GetCapabilities()
+		supportsESEARCH = sessionCaps.Has(imap.CapESearch) || sessionCaps.Has(imap.CapIMAP4rev2)
+	} else {
+		availableCaps := c.availableCaps()
+		for _, cap := range availableCaps {
+			if cap == imap.CapESearch || cap == imap.CapIMAP4rev2 {
+				supportsESEARCH = true
+				break
+			}
+		}
+	}
+
+	// Use ESEARCH format only if session supports it AND client used extended syntax
+	if supportsESEARCH && extended {
 		return c.writeESearch(tag, data, &options, numKind)
 	} else {
 		return c.writeSearch(data.All)
