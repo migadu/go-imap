@@ -55,10 +55,10 @@ func (c *Conn) handleSearch(tag string, dec *imapwire.Decoder, numKind NumKind) 
 	for {
 		var err error
 		if atom != "" {
-			err = readSearchKeyWithAtom(&criteria, dec, atom)
+			err = readSearchKeyWithAtom(c, &criteria, dec, atom)
 			atom = ""
 		} else {
-			err = readSearchKey(&criteria, dec)
+			err = readSearchKey(c, &criteria, dec)
 		}
 		if err != nil {
 			return fmt.Errorf("in search-key: %w", err)
@@ -92,13 +92,7 @@ func (c *Conn) handleSearch(tag string, dec *imapwire.Decoder, numKind NumKind) 
 		sessionCaps := capSession.GetCapabilities()
 		supportsESEARCH = sessionCaps.Has(imap.CapESearch) || sessionCaps.Has(imap.CapIMAP4rev2)
 	} else {
-		availableCaps := c.availableCaps()
-		for _, cap := range availableCaps {
-			if cap == imap.CapESearch || cap == imap.CapIMAP4rev2 {
-				supportsESEARCH = true
-				break
-			}
-		}
+		supportsESEARCH = c.availableCapsSet().Has(imap.CapESearch) || c.availableCapsSet().Has(imap.CapIMAP4rev2)
 	}
 
 	// Use ESEARCH format only if session supports it AND client used extended syntax
@@ -136,7 +130,7 @@ func (c *Conn) writeESearch(tag string, data *imap.SearchData, options *imap.Sea
 	if options.ReturnCount {
 		enc.SP().Atom("COUNT").SP().Number(data.Count)
 	}
-	if data.ModSeq > 0 {
+	if data.ModSeq > 0 && c.supportsCondStore() {
 		enc.SP().Special('(').Atom("MODSEQ").SP().ModSeq(data.ModSeq).Special(')')
 	}
 	return enc.CRLF()
@@ -216,14 +210,14 @@ func maybeReadSearchKeyAtom(dec *imapwire.Decoder, ptr *string) bool {
 	})
 }
 
-func readSearchKey(criteria *imap.SearchCriteria, dec *imapwire.Decoder) error {
+func readSearchKey(c *Conn, criteria *imap.SearchCriteria, dec *imapwire.Decoder) error {
 	var key string
 	if maybeReadSearchKeyAtom(dec, &key) {
-		return readSearchKeyWithAtom(criteria, dec, key)
+		return readSearchKeyWithAtom(c, criteria, dec, key)
 	}
 	return dec.ExpectList(func() error {
 		for {
-			if err := readSearchKey(criteria, dec); err != nil {
+			if err := readSearchKey(c, criteria, dec); err != nil {
 				return err
 			}
 			if !dec.SP() {
@@ -234,7 +228,7 @@ func readSearchKey(criteria *imap.SearchCriteria, dec *imapwire.Decoder) error {
 	})
 }
 
-func readSearchKeyWithAtom(criteria *imap.SearchCriteria, dec *imapwire.Decoder, key string) error {
+func readSearchKeyWithAtom(c *Conn, criteria *imap.SearchCriteria, dec *imapwire.Decoder, key string) error {
 	key = strings.ToUpper(key)
 	switch key {
 	case "ALL":
@@ -341,7 +335,7 @@ func readSearchKeyWithAtom(criteria *imap.SearchCriteria, dec *imapwire.Decoder,
 			return dec.Err()
 		}
 		var not imap.SearchCriteria
-		if err := readSearchKey(&not, dec); err != nil {
+		if err := readSearchKey(c, &not, dec); err != nil {
 			return err
 		}
 		criteria.Not = append(criteria.Not, not)
@@ -350,13 +344,13 @@ func readSearchKeyWithAtom(criteria *imap.SearchCriteria, dec *imapwire.Decoder,
 			return dec.Err()
 		}
 		var or [2]imap.SearchCriteria
-		if err := readSearchKey(&or[0], dec); err != nil {
+		if err := readSearchKey(c, &or[0], dec); err != nil {
 			return err
 		}
 		if !dec.ExpectSP() {
 			return dec.Err()
 		}
-		if err := readSearchKey(&or[1], dec); err != nil {
+		if err := readSearchKey(c, &or[1], dec); err != nil {
 			return err
 		}
 		criteria.Or = append(criteria.Or, or)
@@ -384,10 +378,13 @@ func readSearchKeyWithAtom(criteria *imap.SearchCriteria, dec *imapwire.Decoder,
 			return dec.Err()
 		}
 
-		criteria.ModSeq = &imap.SearchCriteriaModSeq{
-			ModSeq:       modSeq,
-			MetadataName: name,
-			MetadataType: metadataType,
+		// Only apply MODSEQ criteria if CONDSTORE is supported, otherwise ignore
+		if c.supportsCondStore() {
+			criteria.ModSeq = &imap.SearchCriteriaModSeq{
+				ModSeq:       modSeq,
+				MetadataName: name,
+				MetadataType: metadataType,
+			}
 		}
 	default:
 		seqSet, err := imapwire.ParseSeqSet(key)

@@ -105,7 +105,7 @@ func (c *Conn) handleSort(tag string, dec *imapwire.Decoder, numKind NumKind) er
 	// Parse search criteria (same as SEARCH command)
 	var searchCriteria imap.SearchCriteria
 	for {
-		if err := readSearchKey(&searchCriteria, dec); err != nil {
+		if err := readSearchKey(c, &searchCriteria, dec); err != nil {
 			return fmt.Errorf("in search-key: %w", err)
 		}
 

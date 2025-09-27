@@ -27,7 +27,7 @@ func (c *Conn) handleSelect(tag string, dec *imapwire.Decoder, readOnly bool) er
 			switch strings.ToUpper(param) {
 			case "CONDSTORE":
 				// Per RFC 7162, ignore the parameter if not supported.
-				if c.server.options.caps().Has(imap.CapCondStore) || c.enabled.Has(imap.CapIMAP4rev2) {
+				if c.supportsCondStore() {
 					options.CondStore = true
 				}
 			case "QRESYNC":
@@ -154,7 +154,8 @@ func (c *Conn) handleSelect(tag string, dec *imapwire.Decoder, readOnly bool) er
 		}
 	}
 
-	if c.server.options.caps().Has(imap.CapCondStore) {
+	// CondStore could be disabled for this client or not enabled in session
+	if c.supportsCondStore() {
 		if data.HighestModSeq > 0 {
 			writeHighestModSeq(enc.Encoder, data.HighestModSeq)
 		} else {

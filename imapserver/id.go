@@ -18,6 +18,11 @@ func (c *Conn) handleID(tag string, dec *imapwire.Decoder) error {
 		return dec.Err()
 	}
 
+	// Store client ID information for capability decisions
+	c.mutex.Lock()
+	c.clientID = idData
+	c.mutex.Unlock()
+
 	var serverIDData *imap.IDData
 	if idSess, ok := c.session.(SessionID); ok {
 		serverIDData = idSess.ID(idData)

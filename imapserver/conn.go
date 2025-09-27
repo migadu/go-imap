@@ -40,9 +40,10 @@ type Conn struct {
 	bw       *bufio.Writer
 	encMutex sync.Mutex
 
-	mutex   sync.Mutex
-	conn    net.Conn
-	enabled imap.CapSet
+	mutex    sync.Mutex
+	conn     net.Conn
+	enabled  imap.CapSet
+	clientID *imap.IDData // Store client identification info
 
 	state   imap.ConnState
 	session Session

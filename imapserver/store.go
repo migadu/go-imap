@@ -29,6 +29,10 @@ func (c *Conn) handleStore(dec *imapwire.Decoder, numKind NumKind) error {
 			if !dec.ExpectSP() || !dec.ExpectModSeq(&options.UnchangedSince) {
 				return dec.Err()
 			}
+			// Only apply UNCHANGEDSINCE if CONDSTORE is supported, otherwise ignore
+			if !c.supportsCondStore() {
+				options.UnchangedSince = 0 // Reset to ignore the modifier
+			}
 		} else {
 			return newClientBugError(fmt.Sprintf("unknown STORE modifier: %v", param))
 		}

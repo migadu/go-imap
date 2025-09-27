@@ -40,7 +40,7 @@ func (c *Conn) handleFetch(dec *imapwire.Decoder, numKind NumKind) error {
 		case "ALL", "FAST", "FULL":
 			return newClientBugError("FETCH macros are not allowed in a list")
 		}
-		return handleFetchAtt(dec, name, &options, &writerOptions)
+		return handleFetchAtt(c, dec, name, &options, &writerOptions)
 	})
 	if err != nil {
 		return err
@@ -69,7 +69,7 @@ func (c *Conn) handleFetch(dec *imapwire.Decoder, numKind NumKind) error {
 			options.Envelope = true
 			handleFetchBodyStructure(&options, &writerOptions, false)
 		default:
-			if err := handleFetchAtt(dec, name, &options, &writerOptions); err != nil {
+			if err := handleFetchAtt(c, dec, name, &options, &writerOptions); err != nil {
 				return err
 			}
 		}
@@ -85,7 +85,10 @@ func (c *Conn) handleFetch(dec *imapwire.Decoder, numKind NumKind) error {
 			if !dec.ExpectSP() || !dec.ExpectModSeq(&options.ChangedSince) {
 				return dec.Err()
 			}
-			options.ModSeq = true
+			// Only enable ModSeq if CONDSTORE is supported
+			if c.supportsCondStore() {
+				options.ModSeq = true
+			}
 		} else {
 			return fmt.Errorf("unknown FETCH modifier: %v", param)
 		}
@@ -128,7 +131,7 @@ func (c *Conn) handleFetch(dec *imapwire.Decoder, numKind NumKind) error {
 	return nil
 }
 
-func handleFetchAtt(dec *imapwire.Decoder, attName string, options *imap.FetchOptions, writerOptions *fetchWriterOptions) error {
+func handleFetchAtt(c *Conn, dec *imapwire.Decoder, attName string, options *imap.FetchOptions, writerOptions *fetchWriterOptions) error {
 	switch attName {
 	case "BODYSTRUCTURE":
 		handleFetchBodyStructure(options, writerOptions, true)
@@ -143,7 +146,10 @@ func handleFetchAtt(dec *imapwire.Decoder, attName string, options *imap.FetchOp
 	case "UID":
 		options.UID = true
 	case "MODSEQ":
-		options.ModSeq = true
+		// Only enable ModSeq if CONDSTORE is supported, otherwise ignore
+		if c.supportsCondStore() {
+			options.ModSeq = true
+		}
 	case "RFC822": // equivalent to BODY[]
 		bs := &imap.FetchItemBodySection{}
 		writerOptions.obsolete[bs] = attName
