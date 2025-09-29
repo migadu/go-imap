@@ -66,13 +66,13 @@ func (c *Conn) availableCaps() []imap.Cap {
 			caps = append(caps, []imap.Cap{
 				imap.CapUnselect,
 				imap.CapEnable,
-				imap.CapIdle,
 				imap.CapUTF8Accept,
 			}...)
 
 			// IMAP4rev1-specific capabilities which require backend support
 			// and are not applicable to IMAP4rev2
 			addAvailableCaps(&caps, available, []imap.Cap{
+				imap.CapIdle,
 				imap.CapNamespace,
 				imap.CapUIDPlus,
 				imap.CapESearch,
