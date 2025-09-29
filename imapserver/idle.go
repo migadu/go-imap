@@ -18,6 +18,22 @@ func (c *Conn) handleIdle(dec *imapwire.Decoder) error {
 		return err
 	}
 
+	// Check if IDLE is supported by the session
+	var supportsIDLE bool
+	if capSession, ok := c.session.(SessionCapabilities); ok {
+		sessionCaps := capSession.GetCapabilities()
+		supportsIDLE = sessionCaps.Has(imap.CapIdle) || sessionCaps.Has(imap.CapIMAP4rev2)
+	} else {
+		supportsIDLE = c.availableCapsSet().Has(imap.CapIdle) || c.availableCapsSet().Has(imap.CapIMAP4rev2)
+	}
+
+	if !supportsIDLE {
+		return &imap.Error{
+			Type: imap.StatusResponseTypeNo,
+			Text: "IDLE not supported",
+		}
+	}
+
 	if err := c.writeContReq("idling"); err != nil {
 		return err
 	}
