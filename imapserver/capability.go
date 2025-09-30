@@ -30,6 +30,12 @@ func (c *Conn) handleCapability(dec *imapwire.Decoder) error {
 func (c *Conn) availableCaps() []imap.Cap {
 	available := c.server.options.caps()
 
+	// If the session provides its own capabilities, it completely overrides
+	// the server-wide ones.
+	if capSession, ok := c.session.(SessionCapabilities); ok {
+		available = capSession.GetCapabilities()
+	}
+
 	var caps []imap.Cap
 	addAvailableCaps(&caps, available, []imap.Cap{
 		imap.CapIMAP4rev2,
