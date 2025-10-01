@@ -2,7 +2,7 @@ package imapserver
 
 import (
 	"strings"
-	
+
 	"github.com/emersion/go-imap/v2"
 )
 
@@ -11,20 +11,20 @@ func (c *Conn) isIOSClient() bool {
 	c.mutex.Lock()
 	clientID := c.clientID
 	c.mutex.Unlock()
-	
+
 	if clientID == nil {
 		return false
 	}
-	
+
 	// Check if client identifies as iOS Mail
 	name := strings.ToLower(clientID.Name)
 	vendor := strings.ToLower(clientID.Vendor)
 	os := strings.ToLower(clientID.OS)
-	
+
 	// Common iOS Mail identification patterns
-	isIOSMail := strings.Contains(name, "mail") && 
+	isIOSMail := strings.Contains(name, "mail") &&
 		(strings.Contains(vendor, "apple") || strings.Contains(os, "ios") || strings.Contains(os, "iphone") || strings.Contains(os, "ipad"))
-	
+
 	return isIOSMail
 }
 
@@ -37,7 +37,7 @@ func (c *Conn) supportsCondStore() bool {
 	if c.isIOSClient() {
 		return false
 	}
-	
+
 	if capSession, ok := c.session.(SessionCapabilities); ok {
 		sessionCaps := capSession.GetCapabilities()
 		return sessionCaps.Has(imap.CapCondStore) || sessionCaps.Has(imap.CapIMAP4rev2)

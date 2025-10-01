@@ -130,7 +130,10 @@ func (s *Server) Serve(ln net.Listener) error {
 	var delay time.Duration
 	for {
 		conn, err := ln.Accept()
-		if ne, ok := err.(net.Error); ok && ne.Temporary() {
+		var temporary interface {
+			Temporary() bool
+		}
+		if errors.As(err, &temporary) && temporary.Temporary() {
 			if delay == 0 {
 				delay = 5 * time.Millisecond
 			} else {
