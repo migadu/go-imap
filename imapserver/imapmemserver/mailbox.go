@@ -18,21 +18,31 @@ type Mailbox struct {
 	tracker     *imapserver.MailboxTracker
 	uidValidity uint32
 
-	mutex      sync.Mutex
-	name       string
-	subscribed bool
-	specialUse []imap.MailboxAttr
-	l          []*message
-	uidNext    imap.UID
+	mutex         sync.Mutex
+	name          string
+	subscribed    bool
+	specialUse    []imap.MailboxAttr
+	l             []*message
+	uidNext       imap.UID
+	highestModSeq uint64
+	expunged      []expungedMessage
+	metadata      map[string]*[]byte
+}
+
+type expungedMessage struct {
+	uid    imap.UID
+	modSeq uint64
 }
 
 // NewMailbox creates a new mailbox.
 func NewMailbox(name string, uidValidity uint32) *Mailbox {
 	return &Mailbox{
-		tracker:     imapserver.NewMailboxTracker(0),
-		uidValidity: uidValidity,
-		name:        name,
-		uidNext:     1,
+		tracker:       imapserver.NewMailboxTracker(0),
+		uidValidity:   uidValidity,
+		name:          name,
+		uidNext:       1,
+		highestModSeq: 1,
+		metadata:      make(map[string]*[]byte),
 	}
 }
 

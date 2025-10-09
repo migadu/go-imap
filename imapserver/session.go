@@ -124,3 +124,29 @@ type SessionAppendLimit interface {
 	// this server in an APPEND command.
 	AppendLimit() uint32
 }
+
+// SessionCapabilities is an IMAP session which can provide its current
+// capabilities for capability filtering.
+type SessionCapabilities interface {
+	Session
+
+	// GetCapabilities returns the session-specific capabilities.
+	// This allows sessions to filter capabilities based on client behavior
+	// or other session-specific factors.
+	GetCapabilities() imap.CapSet
+}
+
+// SessionMetadata is an IMAP session which supports the METADATA extension (RFC 5464).
+type SessionMetadata interface {
+	Session
+
+	// GetMetadata retrieves server or mailbox annotations.
+	// If mailbox is empty string "", retrieve server annotations.
+	// entries contains the list of entry names to retrieve.
+	GetMetadata(mailbox string, entries []string, options *imap.GetMetadataOptions) (*imap.GetMetadataData, error)
+
+	// SetMetadata sets or removes server or mailbox annotations.
+	// If mailbox is empty string "", set server annotations.
+	// To remove an entry, set its value to nil.
+	SetMetadata(mailbox string, entries map[string]*[]byte) error
+}
