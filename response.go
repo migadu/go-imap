@@ -44,8 +44,10 @@ const (
 	ResponseCodeUnknownCTE           ResponseCode = "UNKNOWN-CTE"
 
 	// METADATA
-	ResponseCodeTooMany   ResponseCode = "TOOMANY"
-	ResponseCodeNoPrivate ResponseCode = "NOPRIVATE"
+	ResponseCodeTooMany     ResponseCode = "TOOMANY"
+	ResponseCodeNoPrivate   ResponseCode = "NOPRIVATE"
+	ResponseCodeLongEntries ResponseCode = "LONGENTRIES"
+	ResponseCodeMaxSize     ResponseCode = "MAXSIZE"
 
 	// APPENDLIMIT
 	ResponseCodeTooBig ResponseCode = "TOOBIG"

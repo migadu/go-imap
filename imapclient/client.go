@@ -692,7 +692,6 @@ func (c *Client) readResponseTagged(tag, typ string) (startTLS *startTLSCommand,
 		if !c.dec.ExpectAtom(&code) {
 			return nil, fmt.Errorf("in resp-text-code: %v", c.dec.Err())
 		}
-		// TODO: LONGENTRIES and MAXSIZE from METADATA
 		switch code {
 		case "CAPABILITY": // capability-data
 			caps, err := readCapabilities(c.dec)
@@ -700,6 +699,17 @@ func (c *Client) readResponseTagged(tag, typ string) (startTLS *startTLSCommand,
 				return nil, fmt.Errorf("in capability-data: %v", err)
 			}
 			c.setCaps(caps)
+		case "LONGENTRIES", "MAXSIZE": // METADATA response codes with size parameter
+			var size uint32
+			if !c.dec.ExpectSP() || !c.dec.ExpectNumber(&size) {
+				return nil, fmt.Errorf("in resp-code-metadata: %v", c.dec.Err())
+			}
+			if cmd, ok := cmd.(*GetMetadataCommand); ok {
+				if cmd.data.ResponseCodeData == nil {
+					cmd.data.ResponseCodeData = &imap.MetadataResponseCodeData{}
+				}
+				cmd.data.ResponseCodeData.Size = size
+			}
 		case "APPENDUID":
 			var (
 				uidValidity uint32

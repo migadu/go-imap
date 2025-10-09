@@ -18,13 +18,15 @@ type User struct {
 	mutex           sync.Mutex
 	mailboxes       map[string]*Mailbox
 	prevUidValidity uint32
+	serverMetadata  map[string]*[]byte
 }
 
 func NewUser(username, password string) *User {
 	return &User{
-		username:  username,
-		password:  password,
-		mailboxes: make(map[string]*Mailbox),
+		username:       username,
+		password:       password,
+		mailboxes:      make(map[string]*Mailbox),
+		serverMetadata: make(map[string]*[]byte),
 	}
 }
 

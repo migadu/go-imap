@@ -104,6 +104,7 @@ func newMemClientServerPair(t *testing.T) (net.Conn, io.Closer) {
 			imap.CapIMAP4rev2: {},
 			imap.CapCondStore: {},
 			imap.CapQResync:   {},
+			imap.CapMetadata:  {},
 		},
 	})
 

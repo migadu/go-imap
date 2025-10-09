@@ -3,37 +3,11 @@ package imapclient
 import (
 	"fmt"
 
+	"github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/internal/imapwire"
 )
 
-type GetMetadataDepth int
-
-const (
-	GetMetadataDepthZero     GetMetadataDepth = 0
-	GetMetadataDepthOne      GetMetadataDepth = 1
-	GetMetadataDepthInfinity GetMetadataDepth = -1
-)
-
-func (depth GetMetadataDepth) String() string {
-	switch depth {
-	case GetMetadataDepthZero:
-		return "0"
-	case GetMetadataDepthOne:
-		return "1"
-	case GetMetadataDepthInfinity:
-		return "infinity"
-	default:
-		panic(fmt.Errorf("imapclient: unknown GETMETADATA depth %d", depth))
-	}
-}
-
-// GetMetadataOptions contains options for the GETMETADATA command.
-type GetMetadataOptions struct {
-	MaxSize *uint32
-	Depth   GetMetadataDepth
-}
-
-func (options *GetMetadataOptions) names() []string {
+func getMetadataOptionNames(options *imap.GetMetadataOptions) []string {
 	if options == nil {
 		return nil
 	}
@@ -41,7 +15,7 @@ func (options *GetMetadataOptions) names() []string {
 	if options.MaxSize != nil {
 		l = append(l, "MAXSIZE")
 	}
-	if options.Depth != GetMetadataDepthZero {
+	if options.Depth != imap.GetMetadataDepthZero {
 		l = append(l, "DEPTH")
 	}
 	return l
@@ -50,11 +24,20 @@ func (options *GetMetadataOptions) names() []string {
 // GetMetadata sends a GETMETADATA command.
 //
 // This command requires support for the METADATA or METADATA-SERVER extension.
-func (c *Client) GetMetadata(mailbox string, entries []string, options *GetMetadataOptions) *GetMetadataCommand {
+func (c *Client) GetMetadata(mailbox string, entries []string, options *imap.GetMetadataOptions) *GetMetadataCommand {
+	// Validate entry names before sending to server
+	for _, entry := range entries {
+		if err := imap.ValidateMetadataEntry(entry); err != nil {
+			cmd := &GetMetadataCommand{mailbox: mailbox}
+			cmd.err = fmt.Errorf("invalid entry name %q: %w", entry, err)
+			return cmd
+		}
+	}
+
 	cmd := &GetMetadataCommand{mailbox: mailbox}
 	enc := c.beginCommand("GETMETADATA", cmd)
 	enc.SP().Mailbox(mailbox)
-	if opts := options.names(); len(opts) > 0 {
+	if opts := getMetadataOptionNames(options); len(opts) > 0 {
 		enc.SP().List(len(opts), func(i int) {
 			opt := opts[i]
 			enc.Atom(opt).SP()
@@ -81,6 +64,16 @@ func (c *Client) GetMetadata(mailbox string, entries []string, options *GetMetad
 //
 // This command requires support for the METADATA or METADATA-SERVER extension.
 func (c *Client) SetMetadata(mailbox string, entries map[string]*[]byte) *Command {
+	// Validate entry names before sending to server
+	for entry := range entries {
+		if err := imap.ValidateMetadataEntry(entry); err != nil {
+			// Create command that will fail immediately
+			cmd := &Command{}
+			cmd.err = fmt.Errorf("invalid entry name %q: %w", entry, err)
+			return cmd
+		}
+	}
+
 	cmd := &Command{}
 	enc := c.beginCommand("SETMETADATA", cmd)
 	enc.SP().Mailbox(mailbox).SP().Special('(')
@@ -134,17 +127,11 @@ func (c *Client) handleMetadata() error {
 type GetMetadataCommand struct {
 	commandBase
 	mailbox string
-	data    GetMetadataData
+	data    imap.GetMetadataData
 }
 
-func (cmd *GetMetadataCommand) Wait() (*GetMetadataData, error) {
+func (cmd *GetMetadataCommand) Wait() (*imap.GetMetadataData, error) {
 	return &cmd.data, cmd.wait()
-}
-
-// GetMetadataData is the data returned by the GETMETADATA command.
-type GetMetadataData struct {
-	Mailbox string
-	Entries map[string]*[]byte
 }
 
 type metadataResp struct {

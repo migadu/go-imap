@@ -1,6 +1,8 @@
 package imapmemserver
 
 import (
+	"strings"
+
 	"github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/imapserver"
 )
@@ -142,4 +144,120 @@ func (sess *UserSession) Idle(w *imapserver.UpdateWriter, stop <-chan struct{}) 
 
 func (sess *UserSession) Sort(kind imapserver.NumKind, sortCriteria []imap.SortCriterion, charset string, searchCriteria *imap.SearchCriteria, options *imap.SortOptions) (*imap.SortData, error) {
 	return sess.mailbox.Sort(kind, sortCriteria, charset, searchCriteria, options)
+}
+
+func (sess *UserSession) GetMetadata(mailboxName string, entries []string, options *imap.GetMetadataOptions) (*imap.GetMetadataData, error) {
+	sess.user.mutex.Lock()
+	defer sess.user.mutex.Unlock()
+
+	var source map[string]*[]byte
+	if mailboxName == "" {
+		source = sess.user.serverMetadata
+	} else {
+		mbox, err := sess.user.mailboxLocked(mailboxName)
+		if err != nil {
+			return nil, err
+		}
+		mbox.mutex.Lock()
+		source = mbox.metadata
+		mbox.mutex.Unlock()
+	}
+
+	result := make(map[string]*[]byte)
+
+	for _, requestedEntry := range entries {
+		for entryName, value := range source {
+			if matchesWithDepth(entryName, requestedEntry, options) {
+				if options != nil && options.MaxSize != nil && value != nil {
+					if uint32(len(*value)) > *options.MaxSize {
+						continue
+					}
+				}
+				result[entryName] = value
+			}
+		}
+	}
+
+	return &imap.GetMetadataData{
+		Mailbox: mailboxName,
+		Entries: result,
+	}, nil
+}
+
+func (sess *UserSession) SetMetadata(mailboxName string, entries map[string]*[]byte) error {
+	sess.user.mutex.Lock()
+	defer sess.user.mutex.Unlock()
+
+	var target map[string]*[]byte
+	if mailboxName == "" {
+		target = sess.user.serverMetadata
+	} else {
+		mbox, err := sess.user.mailboxLocked(mailboxName)
+		if err != nil {
+			return err
+		}
+		mbox.mutex.Lock()
+		defer mbox.mutex.Unlock()
+		target = mbox.metadata
+	}
+
+	for entry, value := range entries {
+		if value == nil {
+			delete(target, entry)
+		} else {
+			if len(*value) > 10240 {
+				return &imap.Error{
+					Type: imap.StatusResponseTypeNo,
+					Code: imap.ResponseCodeLimit,
+					Text: "Annotation value too large",
+				}
+			}
+			target[entry] = value
+		}
+	}
+
+	if len(target) > 100 {
+		return &imap.Error{
+			Type: imap.StatusResponseTypeNo,
+			Code: imap.ResponseCodeTooMany,
+			Text: "Too many annotations",
+		}
+	}
+
+	return nil
+}
+
+func matchesWithDepth(entryName, requestedEntry string, options *imap.GetMetadataOptions) bool {
+	depth := imap.GetMetadataDepthZero
+	if options != nil {
+		depth = options.Depth
+	}
+
+	switch depth {
+	case imap.GetMetadataDepthZero:
+		return entryName == requestedEntry
+	case imap.GetMetadataDepthOne:
+		if entryName == requestedEntry {
+			return true
+		}
+		if len(entryName) > len(requestedEntry) &&
+			entryName[:len(requestedEntry)] == requestedEntry &&
+			entryName[len(requestedEntry)] == '/' {
+			remainder := entryName[len(requestedEntry)+1:]
+			return !strings.Contains(remainder, "/")
+		}
+		return false
+	case imap.GetMetadataDepthInfinity:
+		if entryName == requestedEntry {
+			return true
+		}
+		if len(entryName) > len(requestedEntry) &&
+			entryName[:len(requestedEntry)] == requestedEntry &&
+			entryName[len(requestedEntry)] == '/' {
+			return true
+		}
+		return false
+	default:
+		return false
+	}
 }
