@@ -891,6 +891,10 @@ func (c *Client) readResponseData(typ string) error {
 				}
 			case "NOMODSEQ":
 				// ignore
+			case "NOTIFICATIONOVERFLOW":
+				if handler := c.options.unilateralDataHandler().NotificationOverflow; handler != nil {
+					handler()
+				}
 			default: // [SP 1*<any TEXT-CHAR except "]">]
 				if c.dec.SP() {
 					c.dec.DiscardUntilByte(']')
@@ -1208,17 +1212,32 @@ type UnilateralDataMailbox struct {
 //
 // The handler will be invoked in an arbitrary goroutine.
 //
+// These handlers are important when using the IDLE or NOTIFY commands, as the
+// server will send unsolicited STATUS, FETCH, and EXPUNGE responses for
+// mailbox events.
+//
 // See Options.UnilateralDataHandler.
 type UnilateralDataHandler struct {
 	Expunge func(seqNum uint32)
 	Mailbox func(data *UnilateralDataMailbox)
 	Fetch   func(msg *FetchMessageData)
 
-	// requires ENABLE QRESYNC
+	// Requires ENABLE QRESYNC.
 	Vanished func(data *imap.VanishedData)
 
-	// requires ENABLE METADATA or ENABLE SERVER-METADATA
+	// Requires ENABLE METADATA or ENABLE SERVER-METADATA.
 	Metadata func(mailbox string, entries []string)
+
+	// Called when the server sends an unsolicited STATUS response.
+	//
+	// Commonly used with NOTIFY to receive mailbox status updates
+	// for non-selected mailboxes (RFC 5465).
+	Status func(data *imap.StatusData)
+
+	// Called when the server sends NOTIFICATIONOVERFLOW (RFC 5465).
+	//
+	// Indicates the server has disabled all NOTIFY notifications.
+	NotificationOverflow func()
 }
 
 // command is an interface for IMAP commands.
