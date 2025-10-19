@@ -24,6 +24,7 @@ type Mailbox struct {
 	specialUse []imap.MailboxAttr
 	l          []*message
 	uidNext    imap.UID
+	acl        map[imap.RightsIdentifier]imap.RightSet
 }
 
 // NewMailbox creates a new mailbox.
@@ -33,6 +34,7 @@ func NewMailbox(name string, uidValidity uint32) *Mailbox {
 		uidValidity: uidValidity,
 		name:        name,
 		uidNext:     1,
+		acl:         make(map[imap.RightsIdentifier]imap.RightSet),
 	}
 }
 

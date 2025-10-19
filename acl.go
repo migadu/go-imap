@@ -5,26 +5,35 @@ import (
 	"strings"
 )
 
-// IMAP4 ACL extension (RFC 2086)
+// IMAP4 ACL extension (RFC 4314, obsoletes RFC 2086)
 
 // Right describes a set of operations controlled by the IMAP ACL extension.
 type Right byte
 
 const (
-	// Standard rights
-	RightLookup     = Right('l') // mailbox is visible to LIST/LSUB commands
-	RightRead       = Right('r') // SELECT the mailbox, perform CHECK, FETCH, PARTIAL, SEARCH, COPY from mailbox
-	RightSeen       = Right('s') // keep seen/unseen information across sessions (STORE SEEN flag)
-	RightWrite      = Right('w') // STORE flags other than SEEN and DELETED
-	RightInsert     = Right('i') // perform APPEND, COPY into mailbox
-	RightPost       = Right('p') // send mail to submission address for mailbox, not enforced by IMAP4 itself
-	RightCreate     = Right('c') // CREATE new sub-mailboxes in any implementation-defined hierarchy
-	RightDelete     = Right('d') // STORE DELETED flag, perform EXPUNGE
-	RightAdminister = Right('a') // perform SETACL
+	// Standard rights (RFC 4314 Section 2)
+	RightLookup      = Right('l') // mailbox is visible to LIST/LSUB commands
+	RightRead        = Right('r') // SELECT the mailbox, perform CHECK, FETCH, PARTIAL, SEARCH, COPY from mailbox
+	RightSeen        = Right('s') // keep seen/unseen information across sessions (STORE SEEN flag)
+	RightWrite       = Right('w') // STORE flags other than SEEN and DELETED
+	RightInsert      = Right('i') // perform APPEND, COPY into mailbox
+	RightPost        = Right('p') // send mail to submission address for mailbox, not enforced by IMAP4 itself
+	RightCreateChild = Right('k') // CREATE new sub-mailboxes (new in RFC 4314, replaces 'c')
+	RightDeleteMbox  = Right('x') // DELETE mailbox (new in RFC 4314, replaces 'd' for mailbox deletion)
+	RightDeleteMsg   = Right('t') // STORE DELETED flag (new in RFC 4314)
+	RightExpunge     = Right('e') // perform EXPUNGE (new in RFC 4314, split from 'd')
+	RightAdminister  = Right('a') // perform SETACL, DELETEACL, GETACL, LISTRIGHTS
+
+	// Obsolete rights from RFC 2086 (still supported for backwards compatibility)
+	RightCreate = Right('c') // obsolete, use RightCreateChild instead
+	RightDelete = Right('d') // obsolete, use RightDeleteMsg + RightExpunge instead
 )
 
-// RightSetAll contains all standard rights.
-var RightSetAll = RightSet("lrswipcda")
+// RightSetAll contains all standard rights (RFC 4314).
+var RightSetAll = RightSet("lrswipkxtea")
+
+// RightSetAllCompat contains all rights including obsolete RFC 2086 rights.
+var RightSetAllCompat = RightSet("lrswipkxteacd")
 
 // RightsIdentifier is an ACL identifier.
 type RightsIdentifier string
@@ -101,4 +110,30 @@ func (rs1 RightSet) Equal(rs2 RightSet) bool {
 	}
 
 	return true
+}
+
+// ACLEntry represents a single ACL entry for a mailbox.
+type ACLEntry struct {
+	Identifier RightsIdentifier // User identifier (email address, group, "anyone", etc.)
+	Rights     RightSet         // Rights granted to this identifier
+}
+
+// GetACLData represents the response to a GETACL command.
+type GetACLData struct {
+	Mailbox string     // Mailbox name
+	ACL     []ACLEntry // List of ACL entries
+}
+
+// ListRightsData represents the response to a LISTRIGHTS command.
+type ListRightsData struct {
+	Mailbox        string           // Mailbox name
+	Identifier     RightsIdentifier // User identifier
+	RequiredRights RightSet         // Rights that are always granted (usually empty)
+	OptionalRights []RightSet       // Groups of optional rights that may be granted
+}
+
+// MyRightsData represents the response to a MYRIGHTS command.
+type MyRightsData struct {
+	Mailbox string   // Mailbox name
+	Rights  RightSet // Rights the user has on this mailbox
 }

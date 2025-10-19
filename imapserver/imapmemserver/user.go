@@ -138,7 +138,12 @@ func (u *User) Create(name string, options *imap.CreateOptions) error {
 	// UIDVALIDITY must change if a mailbox is deleted and re-created with the
 	// same name.
 	u.prevUidValidity++
-	u.mailboxes[name] = NewMailbox(name, u.prevUidValidity)
+	mbox := NewMailbox(name, u.prevUidValidity)
+
+	// Initialize ACL with full rights for the owner
+	mbox.acl[imap.RightsIdentifier(u.username)] = imap.RightSetAll
+
+	u.mailboxes[name] = mbox
 	return nil
 }
 
