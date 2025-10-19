@@ -1,6 +1,7 @@
 package imapclient_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/emersion/go-imap/v2"
@@ -321,9 +322,76 @@ func TestACLRFC4314Rights(t *testing.T) {
 		t.Fatalf("MyRights().Wait() error: %v", err)
 	}
 
-	// Verify obsolete rights were added
-	expectedWithObsolete := imap.RightSet("kxteacd")
-	if !expectedWithObsolete.Equal(myRightsData.Rights) {
-		t.Errorf("Rights with obsolete: expected %s, got %s", expectedWithObsolete, myRightsData.Rights)
+	// Verify obsolete rights were added AND translated to modern equivalents
+	// When 'c' is added, 'k' should also be present (may already be there)
+	// When 'd' is added, 't' and 'e' should also be present
+	if !strings.Contains(string(myRightsData.Rights), "c") {
+		t.Errorf("Obsolete right 'c' not found in rights: %s", myRightsData.Rights)
+	}
+	if !strings.Contains(string(myRightsData.Rights), "d") {
+		t.Errorf("Obsolete right 'd' not found in rights: %s", myRightsData.Rights)
+	}
+	if !strings.Contains(string(myRightsData.Rights), "k") {
+		t.Errorf("Modern equivalent 'k' for obsolete 'c' not found in rights: %s", myRightsData.Rights)
+	}
+	if !strings.Contains(string(myRightsData.Rights), "t") {
+		t.Errorf("Modern equivalent 't' for obsolete 'd' not found in rights: %s", myRightsData.Rights)
+	}
+	if !strings.Contains(string(myRightsData.Rights), "e") {
+		t.Errorf("Modern equivalent 'e' for obsolete 'd' not found in rights: %s", myRightsData.Rights)
+	}
+}
+
+// TestACLObsoleteRightsTranslation specifically tests that obsolete RFC 2086 rights
+// are translated to their RFC 4314 equivalents
+func TestACLObsoleteRightsTranslation(t *testing.T) {
+	client, server := newClientServerPair(t, imap.ConnStateAuthenticated)
+	defer client.Close()
+	defer server.Close()
+
+	if !client.Caps().Has(imap.CapACL) {
+		t.Skipf("server doesn't support ACL")
+	}
+
+	mailbox := "INBOX"
+	identifier := imap.RightsIdentifier(testUsername)
+
+	// Set only obsolete right 'c' - should also grant 'k'
+	err := client.SetACL(mailbox, identifier, imap.RightModificationReplace, imap.RightSet("ca")).Wait()
+	if err != nil {
+		t.Fatalf("SetACL() with obsolete 'c' error: %v", err)
+	}
+
+	myRightsData, err := client.MyRights(mailbox).Wait()
+	if err != nil {
+		t.Fatalf("MyRights().Wait() error: %v", err)
+	}
+
+	if !strings.Contains(string(myRightsData.Rights), "c") {
+		t.Errorf("Obsolete right 'c' not stored: %s", myRightsData.Rights)
+	}
+	if !strings.Contains(string(myRightsData.Rights), "k") {
+		t.Errorf("Setting obsolete 'c' should also grant modern 'k': %s", myRightsData.Rights)
+	}
+
+	// Set only obsolete right 'd' - should also grant 't' and 'e'
+	err = client.SetACL(mailbox, identifier, imap.RightModificationReplace, imap.RightSet("da")).Wait()
+	if err != nil {
+		t.Fatalf("SetACL() with obsolete 'd' error: %v", err)
+	}
+
+	myRightsData, err = client.MyRights(mailbox).Wait()
+	if err != nil {
+		t.Fatalf("MyRights().Wait() error: %v", err)
+	}
+
+	if !strings.Contains(string(myRightsData.Rights), "d") {
+		t.Errorf("Obsolete right 'd' not stored: %s", myRightsData.Rights)
+	}
+	if !strings.Contains(string(myRightsData.Rights), "t") {
+		t.Errorf("Setting obsolete 'd' should also grant modern 't': %s", myRightsData.Rights)
+	}
+	if !strings.Contains(string(myRightsData.Rights), "e") {
+		t.Errorf("Setting obsolete 'd' should also grant modern 'e': %s", myRightsData.Rights)
 	}
 }
