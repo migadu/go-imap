@@ -112,6 +112,11 @@ func (c *Conn) availableCaps() []imap.Cap {
 			caps = append(caps, imap.CapMetadata)
 		}
 
+		// Add ACL capability if the session supports it
+		if _, ok := c.session.(SessionACL); ok {
+			caps = append(caps, imap.Cap("ACL"))
+		}
+
 		if appendLimitSession, ok := c.session.(SessionAppendLimit); ok {
 			limit := appendLimitSession.AppendLimit()
 			caps = append(caps, imap.Cap(fmt.Sprintf("APPENDLIMIT=%d", limit)))

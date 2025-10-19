@@ -275,6 +275,16 @@ func (c *Conn) readCommand(dec *imapwire.Decoder) error {
 		err = c.handleLSub(dec)
 	case "NAMESPACE":
 		err = c.handleNamespace(dec)
+	case "GETACL":
+		err = c.handleGetACL(dec)
+	case "SETACL":
+		err = c.handleSetACL(dec)
+	case "DELETEACL":
+		err = c.handleDeleteACL(dec)
+	case "LISTRIGHTS":
+		err = c.handleListRights(dec)
+	case "MYRIGHTS":
+		err = c.handleMyRights(dec)
 	case "IDLE":
 		err = c.handleIdle(dec)
 	case "SELECT", "EXAMINE":

@@ -40,6 +40,47 @@ func (cmd *SetACLCommand) Wait() error {
 	return cmd.wait()
 }
 
+// DeleteACL sends a DELETEACL command.
+//
+// This command requires support for the ACL extension.
+func (c *Client) DeleteACL(mailbox string, ri imap.RightsIdentifier) *DeleteACLCommand {
+	cmd := &DeleteACLCommand{}
+	enc := c.beginCommand("DELETEACL", cmd)
+	enc.SP().Mailbox(mailbox).SP().String(string(ri))
+	enc.end()
+	return cmd
+}
+
+// DeleteACLCommand is a DELETEACL command.
+type DeleteACLCommand struct {
+	commandBase
+}
+
+func (cmd *DeleteACLCommand) Wait() error {
+	return cmd.wait()
+}
+
+// ListRights sends a LISTRIGHTS command.
+//
+// This command requires support for the ACL extension.
+func (c *Client) ListRights(mailbox string, ri imap.RightsIdentifier) *ListRightsCommand {
+	cmd := &ListRightsCommand{}
+	enc := c.beginCommand("LISTRIGHTS", cmd)
+	enc.SP().Mailbox(mailbox).SP().String(string(ri))
+	enc.end()
+	return cmd
+}
+
+// ListRightsCommand is a LISTRIGHTS command.
+type ListRightsCommand struct {
+	commandBase
+	data ListRightsData
+}
+
+func (cmd *ListRightsCommand) Wait() (*ListRightsData, error) {
+	return &cmd.data, cmd.wait()
+}
+
 // GetACL sends a GETACL command.
 //
 // This command requires support for the ACL extension.
@@ -78,6 +119,17 @@ func (c *Client) handleGetACL() error {
 		return fmt.Errorf("in getacl-response: %v", err)
 	}
 	if cmd := findPendingCmdByType[*GetACLCommand](c); cmd != nil {
+		cmd.data = *data
+	}
+	return nil
+}
+
+func (c *Client) handleListRights() error {
+	data, err := readListRights(c.dec)
+	if err != nil {
+		return fmt.Errorf("in listrights-response: %v", err)
+	}
+	if cmd := findPendingCmdByType[*ListRightsCommand](c); cmd != nil {
 		cmd.data = *data
 	}
 	return nil
@@ -135,4 +187,40 @@ func readGetACL(dec *imapwire.Decoder) (*GetACLData, error) {
 	}
 
 	return data, nil
+}
+
+// ListRightsData is the data returned by the LISTRIGHTS command.
+type ListRightsData struct {
+	Mailbox        string
+	Identifier     imap.RightsIdentifier
+	RequiredRights imap.RightSet
+	OptionalRights []imap.RightSet
+}
+
+func readListRights(dec *imapwire.Decoder) (*ListRightsData, error) {
+	var (
+		data          ListRightsData
+		identifierStr string
+		requiredStr   string
+	)
+
+	if !dec.ExpectMailbox(&data.Mailbox) || !dec.ExpectSP() ||
+		!dec.ExpectAString(&identifierStr) || !dec.ExpectSP() ||
+		!dec.ExpectAString(&requiredStr) {
+		return nil, dec.Err()
+	}
+
+	data.Identifier = imap.RightsIdentifier(identifierStr)
+	data.RequiredRights = imap.RightSet(requiredStr)
+
+	// Read optional rights groups
+	for dec.SP() {
+		var optionalStr string
+		if !dec.ExpectAString(&optionalStr) {
+			return nil, dec.Err()
+		}
+		data.OptionalRights = append(data.OptionalRights, imap.RightSet(optionalStr))
+	}
+
+	return &data, nil
 }

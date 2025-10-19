@@ -32,6 +32,7 @@ type Mailbox struct {
 	highestModSeq uint64
 	expunged      []expungedMessage
 	metadata      map[string]*[]byte
+	acl           map[imap.RightsIdentifier]imap.RightSet
 }
 
 type expungedMessage struct {
@@ -48,6 +49,7 @@ func NewMailbox(name string, uidValidity uint32) *Mailbox {
 		uidNext:       1,
 		highestModSeq: 1,
 		metadata:      make(map[string]*[]byte),
+		acl:           make(map[imap.RightsIdentifier]imap.RightSet),
 	}
 }
 

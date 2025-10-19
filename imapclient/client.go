@@ -999,6 +999,11 @@ func (c *Client) readResponseData(typ string) error {
 			return c.dec.Err()
 		}
 		return c.handleGetACL()
+	case "LISTRIGHTS":
+		if !c.dec.ExpectSP() {
+			return c.dec.Err()
+		}
+		return c.handleListRights()
 	default:
 		return fmt.Errorf("unsupported response type %q", typ)
 	}
