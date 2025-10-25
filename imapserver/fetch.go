@@ -778,6 +778,8 @@ func writeBodyTypeMpart(enc *imapwire.Encoder, bs *imap.BodyStructureMultiPart, 
 		}, extended)
 	} else {
 		for _, child := range bs.Children {
+			// ABNF for body-type-mpart doesn't have SP between body entries, and
+			// Outlook for iOS chokes on SP
 			writeBodyStructure(enc, child, extended)
 		}
 	}
