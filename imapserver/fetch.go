@@ -663,9 +663,9 @@ func writeBodyType1part(enc *imapwire.Encoder, bs *imap.BodyStructureSinglePart,
 	writeNString(enc, bs.Description)
 	enc.SP()
 	if bs.Encoding == "" {
-		enc.String("7BIT")
+		enc.String("7bit")
 	} else {
-		enc.String(strings.ToUpper(bs.Encoding))
+		enc.String(strings.ToLower(bs.Encoding))
 	}
 	enc.SP().Number(bs.Size)
 
