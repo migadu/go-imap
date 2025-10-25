@@ -733,6 +733,7 @@ func writeBodyType1part(enc *imapwire.Encoder, bs *imap.BodyStructureSinglePart,
 	if bs.Encoding == "" {
 		enc.String("7bit")
 	} else {
+		// Outlook for iOS chokes on upper-case encodings
 		enc.String(strings.ToLower(bs.Encoding))
 	}
 	enc.SP().Number(bs.Size)
