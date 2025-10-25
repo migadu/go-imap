@@ -650,10 +650,7 @@ func writeBodyTypeMpart(enc *imapwire.Encoder, bs *imap.BodyStructureMultiPart, 
 	if len(bs.Children) == 0 {
 		panic("imapserver: imap.BodyStructureMultiPart must have at least one child")
 	}
-	for i, child := range bs.Children {
-		if i > 0 {
-			enc.SP()
-		}
+	for _, child := range bs.Children {
 		writeBodyStructure(enc, child, extended)
 	}
 
