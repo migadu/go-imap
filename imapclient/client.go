@@ -1100,7 +1100,7 @@ func (c *Client) Subscribe(mailbox string) *Command {
 	return cmd
 }
 
-// Subscribe sends an UNSUBSCRIBE command.
+// Unsubscribe sends an UNSUBSCRIBE command.
 func (c *Client) Unsubscribe(mailbox string) *Command {
 	cmd := &Command{}
 	enc := c.beginCommand("UNSUBSCRIBE", cmd)
