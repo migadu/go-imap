@@ -1,10 +1,12 @@
 package imapserver
 
 import (
+	"bufio"
 	"strings"
 	"testing"
 
 	"github.com/emersion/go-imap/v2"
+	"github.com/emersion/go-imap/v2/internal/imapwire"
 )
 
 func TestValidateMetadataEntry(t *testing.T) {
@@ -224,6 +226,183 @@ func TestGetMetadataDepth_String_Invalid(t *testing.T) {
 	// Invalid depth value should panic
 	invalidDepth := imap.GetMetadataDepth(999)
 	_ = invalidDepth.String()
+}
+
+// mockMetadataSession implements SessionMetadata for testing
+type mockMetadataSession struct {
+	Session
+	getMetadataCalled bool
+	lastMailbox       string
+	lastEntries       []string
+	lastOptions       *imap.GetMetadataOptions
+}
+
+func (s *mockMetadataSession) GetMetadata(mailbox string, entries []string, options *imap.GetMetadataOptions) (*imap.GetMetadataData, error) {
+	s.getMetadataCalled = true
+	s.lastMailbox = mailbox
+	s.lastEntries = entries
+	s.lastOptions = options
+
+	// Return empty response
+	return &imap.GetMetadataData{
+		Mailbox: mailbox,
+		Entries: make(map[string]*[]byte),
+	}, nil
+}
+
+func (s *mockMetadataSession) SetMetadata(mailbox string, entries map[string]*[]byte) error {
+	return nil
+}
+
+// TestHandleGetMetadata_Integration tests the actual GETMETADATA command parsing
+// by calling handleGetMetadata directly with test data.
+func TestHandleGetMetadata_Integration(t *testing.T) {
+	tests := []struct {
+		name        string
+		input       string // IMAP wire format after "GETMETADATA "
+		wantOptions bool
+		wantEntries []string
+		wantMaxSize *uint32
+		wantDepth   imap.GetMetadataDepth
+		wantErr     bool
+		errContains string
+	}{
+		{
+			name:        "single unquoted entry",
+			input:       ` "" (/private/comment)` + "\r\n",
+			wantOptions: false,
+			wantEntries: []string{"/private/comment"},
+		},
+		{
+			name:        "single quoted entry",
+			input:       ` "" ("/private/comment")` + "\r\n",
+			wantOptions: false,
+			wantEntries: []string{"/private/comment"},
+		},
+		{
+			name:        "multiple unquoted entries",
+			input:       ` "" (/private/comment /shared/comment)` + "\r\n",
+			wantOptions: false,
+			wantEntries: []string{"/private/comment", "/shared/comment"},
+		},
+		{
+			name:        "multiple mixed quoted and unquoted entries",
+			input:       ` "" ("/private/comment" /shared/comment)` + "\r\n",
+			wantOptions: false,
+			wantEntries: []string{"/private/comment", "/shared/comment"},
+		},
+		{
+			name:        "with MAXSIZE option",
+			input:       ` "" (MAXSIZE 1024) (/private/comment)` + "\r\n",
+			wantOptions: true,
+			wantEntries: []string{"/private/comment"},
+			wantMaxSize: uint32Ptr(1024),
+		},
+		{
+			name:        "with DEPTH option",
+			input:       ` "" (DEPTH 1) (/private/comment)` + "\r\n",
+			wantOptions: true,
+			wantEntries: []string{"/private/comment"},
+			wantDepth:   imap.GetMetadataDepthOne,
+		},
+		{
+			name:        "with multiple options",
+			input:       ` "" (MAXSIZE 1024 DEPTH infinity) (/private/comment /shared/comment)` + "\r\n",
+			wantOptions: true,
+			wantEntries: []string{"/private/comment", "/shared/comment"},
+			wantMaxSize: uint32Ptr(1024),
+			wantDepth:   imap.GetMetadataDepthInfinity,
+		},
+		{
+			name:        "invalid option name",
+			input:       ` "" (FOOBAR) (/private/comment)` + "\r\n",
+			wantErr:     true,
+			errContains: "Unknown GETMETADATA option",
+		},
+		{
+			name:        "invalid entry name - no slash prefix",
+			input:       ` "" (invalid)` + "\r\n",
+			wantErr:     true,
+			errContains: "Unknown GETMETADATA option: INVALID",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create mock session
+			session := &mockMetadataSession{}
+
+			// Create server connection with mock session
+			conn := &Conn{
+				session: session,
+				state:   imap.ConnStateAuthenticated, // Skip auth for testing
+			}
+
+			// Parse the input using a decoder
+			dec := imapwire.NewDecoder(bufio.NewReader(strings.NewReader(tt.input)), 0)
+
+			// Call handleGetMetadata directly
+			err := conn.handleGetMetadata(dec)
+
+			// Check error expectations
+			if tt.wantErr {
+				if err == nil {
+					t.Errorf("Expected error containing %q, got no error", tt.errContains)
+					return
+				}
+				if !strings.Contains(err.Error(), tt.errContains) {
+					t.Errorf("Expected error containing %q, got %q", tt.errContains, err.Error())
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+
+			// Verify GetMetadata was called
+			if !session.getMetadataCalled {
+				t.Fatal("GetMetadata was not called")
+			}
+
+			// Verify entries
+			if len(session.lastEntries) != len(tt.wantEntries) {
+				t.Errorf("Got %d entries, want %d", len(session.lastEntries), len(tt.wantEntries))
+			}
+			for i, want := range tt.wantEntries {
+				if i >= len(session.lastEntries) {
+					break
+				}
+				if session.lastEntries[i] != want {
+					t.Errorf("Entry[%d] = %q, want %q", i, session.lastEntries[i], want)
+				}
+			}
+
+			// Verify options
+			if tt.wantOptions && session.lastOptions == nil {
+				t.Error("Expected options to be present, got nil")
+			} else if !tt.wantOptions && session.lastOptions != nil {
+				t.Error("Expected no options, got non-nil")
+			}
+
+			// Verify specific option values
+			if tt.wantMaxSize != nil {
+				if session.lastOptions == nil || session.lastOptions.MaxSize == nil {
+					t.Error("Expected MaxSize option, got nil")
+				} else if *session.lastOptions.MaxSize != *tt.wantMaxSize {
+					t.Errorf("MaxSize = %d, want %d", *session.lastOptions.MaxSize, *tt.wantMaxSize)
+				}
+			}
+
+			if tt.wantDepth != imap.GetMetadataDepthZero {
+				if session.lastOptions == nil {
+					t.Error("Expected options with Depth, got nil")
+				} else if session.lastOptions.Depth != tt.wantDepth {
+					t.Errorf("Depth = %v, want %v", session.lastOptions.Depth, tt.wantDepth)
+				}
+			}
+		})
+	}
 }
 
 func uint32Ptr(v uint32) *uint32 {
