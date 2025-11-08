@@ -22,28 +22,12 @@ func (c *Conn) handleGetMetadata(dec *imapwire.Decoder) error {
 
 	// Try to parse - could be options list or entry list
 	if err := dec.ExpectList(func() error {
-		// Check if this is options (starts with atom) or entries (starts with astring)
+		// Check if this is options (MAXSIZE/DEPTH atoms) or entries (astrings starting with /)
 		var first string
-		if dec.Atom(&first) {
-			// It's an atom, so this must be options
-			hasOptions = true
-			firstUpper := strings.ToUpper(first)
-			if err := readGetMetadataOption(dec, firstUpper, &options); err != nil {
-				return err
-			}
-			// Continue reading more options if present
-			for dec.SP() {
-				var optName string
-				if !dec.ExpectAtom(&optName) {
-					return dec.Err()
-				}
-				if err := readGetMetadataOption(dec, strings.ToUpper(optName), &options); err != nil {
-					return err
-				}
-			}
-			return nil
-		} else if dec.String(&first) || dec.Literal(&first) {
-			// It's a string, so this is the entry list
+
+		// Try string/literal first (quoted entries)
+		if dec.String(&first) || dec.Literal(&first) {
+			// It's a quoted string or literal, so this is the entry list
 			if err := imap.ValidateMetadataEntry(first); err != nil {
 				return &imap.Error{
 					Type: imap.StatusResponseTypeBad,
@@ -66,6 +50,59 @@ func (c *Conn) handleGetMetadata(dec *imapwire.Decoder) error {
 				entries = append(entries, entry)
 			}
 			return nil
+		} else if dec.Atom(&first) {
+			// It's an atom - could be option name or unquoted entry
+			firstUpper := strings.ToUpper(first)
+
+			// Check if it's a known option name
+			if firstUpper == "MAXSIZE" || firstUpper == "DEPTH" {
+				// It's an option
+				hasOptions = true
+				if err := readGetMetadataOption(dec, firstUpper, &options); err != nil {
+					return err
+				}
+				// Continue reading more options if present
+				for dec.SP() {
+					var optName string
+					if !dec.ExpectAtom(&optName) {
+						return dec.Err()
+					}
+					if err := readGetMetadataOption(dec, strings.ToUpper(optName), &options); err != nil {
+						return err
+					}
+				}
+				return nil
+			} else if strings.HasPrefix(first, "/") {
+				// It's an unquoted entry name (e.g., /private/comment)
+				if err := imap.ValidateMetadataEntry(first); err != nil {
+					return &imap.Error{
+						Type: imap.StatusResponseTypeBad,
+						Text: err.Error(),
+					}
+				}
+				entries = append(entries, first)
+				// Continue reading more entries
+				for dec.SP() {
+					var entry string
+					if !dec.ExpectAString(&entry) {
+						return dec.Err()
+					}
+					if err := imap.ValidateMetadataEntry(entry); err != nil {
+						return &imap.Error{
+							Type: imap.StatusResponseTypeBad,
+							Text: err.Error(),
+						}
+					}
+					entries = append(entries, entry)
+				}
+				return nil
+			} else {
+				// Unknown atom - treat as bad option
+				return &imap.Error{
+					Type: imap.StatusResponseTypeBad,
+					Text: fmt.Sprintf("Unknown GETMETADATA option: %s", firstUpper),
+				}
+			}
 		}
 		return dec.Err()
 	}); err != nil {
