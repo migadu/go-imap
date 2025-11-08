@@ -14,14 +14,13 @@ func (c *Conn) handleGetMetadata(dec *imapwire.Decoder) error {
 		return dec.Err()
 	}
 
-	// Options are optional and start with ATOM (MAXSIZE/DEPTH)
-	// Entries start with astring (typically quoted string)
+	// RFC 5464: options are optional, entries can be single or list
 	var options imap.GetMetadataOptions
 	var entries []string
 	hasOptions := false
 
-	// Try to parse - could be options list or entry list
-	if err := dec.ExpectList(func() error {
+	// Check if it's a list or single entry (RFC 5464: entries = entry / "(" entry *(SP entry) ")")
+	isList, err := dec.List(func() error {
 		// Check if this is options (MAXSIZE/DEPTH atoms) or entries (astrings starting with /)
 		var first string
 
@@ -105,8 +104,24 @@ func (c *Conn) handleGetMetadata(dec *imapwire.Decoder) error {
 			}
 		}
 		return dec.Err()
-	}); err != nil {
+	})
+	if err != nil {
 		return err
+	}
+
+	// If not a list, parse single entry
+	if !isList {
+		var entry string
+		if !dec.ExpectAString(&entry) {
+			return dec.Err()
+		}
+		if err := imap.ValidateMetadataEntry(entry); err != nil {
+			return &imap.Error{
+				Type: imap.StatusResponseTypeBad,
+				Text: err.Error(),
+			}
+		}
+		entries = append(entries, entry)
 	}
 
 	// If we parsed options, we now need to parse the entry list
