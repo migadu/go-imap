@@ -305,29 +305,44 @@ func TestHandleGetMetadata_Integration(t *testing.T) {
 		},
 		{
 			name:        "with MAXSIZE option",
-			input:       ` "" (MAXSIZE 1024) (/private/comment)` + "\r\n",
+			input:       ` (MAXSIZE 1024) "" (/private/comment)` + "\r\n",
 			wantOptions: true,
 			wantEntries: []string{"/private/comment"},
 			wantMaxSize: uint32Ptr(1024),
 		},
 		{
 			name:        "with DEPTH option",
-			input:       ` "" (DEPTH 1) (/private/comment)` + "\r\n",
+			input:       ` (DEPTH 1) "" (/private/comment)` + "\r\n",
 			wantOptions: true,
 			wantEntries: []string{"/private/comment"},
 			wantDepth:   imap.GetMetadataDepthOne,
 		},
 		{
-			name:        "with multiple options",
-			input:       ` "" (MAXSIZE 1024 DEPTH infinity) (/private/comment /shared/comment)` + "\r\n",
+			name:        "with multiple options and single entry",
+			input:       ` (MAXSIZE 1024 DEPTH infinity) "" (/private/comment)` + "\r\n",
+			wantOptions: true,
+			wantEntries: []string{"/private/comment"},
+			wantMaxSize: uint32Ptr(1024),
+			wantDepth:   imap.GetMetadataDepthInfinity,
+		},
+		{
+			name:        "with multiple options and multiple entries",
+			input:       ` (MAXSIZE 1024 DEPTH infinity) "" (/private/comment /shared/comment)` + "\r\n",
 			wantOptions: true,
 			wantEntries: []string{"/private/comment", "/shared/comment"},
 			wantMaxSize: uint32Ptr(1024),
 			wantDepth:   imap.GetMetadataDepthInfinity,
 		},
 		{
+			name:        "with DEPTH option and three entries",
+			input:       ` (DEPTH 1) "" (/private/comment /shared/comment /private/title)` + "\r\n",
+			wantOptions: true,
+			wantEntries: []string{"/private/comment", "/shared/comment", "/private/title"},
+			wantDepth:   imap.GetMetadataDepthOne,
+		},
+		{
 			name:        "invalid option name",
-			input:       ` "" (FOOBAR) (/private/comment)` + "\r\n",
+			input:       ` (FOOBAR) "" (/private/comment)` + "\r\n",
 			wantErr:     true,
 			errContains: "Unknown GETMETADATA option",
 		},
@@ -335,7 +350,7 @@ func TestHandleGetMetadata_Integration(t *testing.T) {
 			name:        "invalid entry name - no slash prefix",
 			input:       ` "" (invalid)` + "\r\n",
 			wantErr:     true,
-			errContains: "Unknown GETMETADATA option: INVALID",
+			errContains: "entry name must start with",
 		},
 	}
 
@@ -379,10 +394,11 @@ func TestHandleGetMetadata_Integration(t *testing.T) {
 
 			// Verify entries
 			if len(session.lastEntries) != len(tt.wantEntries) {
-				t.Errorf("Got %d entries, want %d", len(session.lastEntries), len(tt.wantEntries))
+				t.Errorf("Got %d entries, want %d. Entries: %v", len(session.lastEntries), len(tt.wantEntries), session.lastEntries)
 			}
 			for i, want := range tt.wantEntries {
 				if i >= len(session.lastEntries) {
+					t.Errorf("Missing entry[%d] = %q", i, want)
 					break
 				}
 				if session.lastEntries[i] != want {
