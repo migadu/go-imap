@@ -9,101 +9,57 @@ import (
 )
 
 func (c *Conn) handleGetMetadata(dec *imapwire.Decoder) error {
-	var mailbox string
-	if !dec.ExpectSP() || !dec.ExpectMailbox(&mailbox) || !dec.ExpectSP() {
+	if !dec.ExpectSP() {
 		return dec.Err()
 	}
 
-	// RFC 5464: options are optional, entries can be single or list
+	// RFC 5464: "GETMETADATA" [SP getmetadata-options] SP mailbox SP entries
 	var options imap.GetMetadataOptions
 	var entries []string
 	hasOptions := false
 
-	// Check if it's a list or single entry (RFC 5464: entries = entry / "(" entry *(SP entry) ")")
+	// Check for optional options list
+	_, err := dec.List(func() error {
+		// Parse options: MAXSIZE <number> or DEPTH <0|1|infinity>
+		var optName string
+		if !dec.ExpectAtom(&optName) {
+			return dec.Err()
+		}
+		if err := readGetMetadataOption(dec, strings.ToUpper(optName), &options); err != nil {
+			return err
+		}
+		hasOptions = true
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+
+	// Read mailbox
+	if hasOptions {
+		if !dec.ExpectSP() {
+			return dec.Err()
+		}
+	}
+	var mailbox string
+	if !dec.ExpectMailbox(&mailbox) || !dec.ExpectSP() {
+		return dec.Err()
+	}
+
+	// Parse entries: single entry or list
 	isList, err := dec.List(func() error {
-		// Check if this is options (MAXSIZE/DEPTH atoms) or entries (astrings starting with /)
-		var first string
-
-		// Try string/literal first (quoted entries)
-		if dec.String(&first) || dec.Literal(&first) {
-			// It's a quoted string or literal, so this is the entry list
-			if err := imap.ValidateMetadataEntry(first); err != nil {
-				return &imap.Error{
-					Type: imap.StatusResponseTypeBad,
-					Text: err.Error(),
-				}
-			}
-			entries = append(entries, first)
-			// Continue reading more entries
-			for dec.SP() {
-				var entry string
-				if !dec.ExpectAString(&entry) {
-					return dec.Err()
-				}
-				if err := imap.ValidateMetadataEntry(entry); err != nil {
-					return &imap.Error{
-						Type: imap.StatusResponseTypeBad,
-						Text: err.Error(),
-					}
-				}
-				entries = append(entries, entry)
-			}
-			return nil
-		} else if dec.Atom(&first) {
-			// It's an atom - could be option name or unquoted entry
-			firstUpper := strings.ToUpper(first)
-
-			// Check if it's a known option name
-			if firstUpper == "MAXSIZE" || firstUpper == "DEPTH" {
-				// It's an option
-				hasOptions = true
-				if err := readGetMetadataOption(dec, firstUpper, &options); err != nil {
-					return err
-				}
-				// Continue reading more options if present
-				for dec.SP() {
-					var optName string
-					if !dec.ExpectAtom(&optName) {
-						return dec.Err()
-					}
-					if err := readGetMetadataOption(dec, strings.ToUpper(optName), &options); err != nil {
-						return err
-					}
-				}
-				return nil
-			} else if strings.HasPrefix(first, "/") {
-				// It's an unquoted entry name (e.g., /private/comment)
-				if err := imap.ValidateMetadataEntry(first); err != nil {
-					return &imap.Error{
-						Type: imap.StatusResponseTypeBad,
-						Text: err.Error(),
-					}
-				}
-				entries = append(entries, first)
-				// Continue reading more entries
-				for dec.SP() {
-					var entry string
-					if !dec.ExpectAString(&entry) {
-						return dec.Err()
-					}
-					if err := imap.ValidateMetadataEntry(entry); err != nil {
-						return &imap.Error{
-							Type: imap.StatusResponseTypeBad,
-							Text: err.Error(),
-						}
-					}
-					entries = append(entries, entry)
-				}
-				return nil
-			} else {
-				// Unknown atom - treat as bad option
-				return &imap.Error{
-					Type: imap.StatusResponseTypeBad,
-					Text: fmt.Sprintf("Unknown GETMETADATA option: %s", firstUpper),
-				}
+		var entry string
+		if !dec.ExpectAString(&entry) {
+			return dec.Err()
+		}
+		if err := imap.ValidateMetadataEntry(entry); err != nil {
+			return &imap.Error{
+				Type: imap.StatusResponseTypeBad,
+				Text: err.Error(),
 			}
 		}
-		return dec.Err()
+		entries = append(entries, entry)
+		return nil
 	})
 	if err != nil {
 		return err
@@ -122,29 +78,6 @@ func (c *Conn) handleGetMetadata(dec *imapwire.Decoder) error {
 			}
 		}
 		entries = append(entries, entry)
-	}
-
-	// If we parsed options, we now need to parse the entry list
-	if hasOptions {
-		if !dec.ExpectSP() {
-			return dec.Err()
-		}
-		if err := dec.ExpectList(func() error {
-			var entry string
-			if !dec.ExpectAString(&entry) {
-				return dec.Err()
-			}
-			if err := imap.ValidateMetadataEntry(entry); err != nil {
-				return &imap.Error{
-					Type: imap.StatusResponseTypeBad,
-					Text: err.Error(),
-				}
-			}
-			entries = append(entries, entry)
-			return nil
-		}); err != nil {
-			return err
-		}
 	}
 
 	if !dec.ExpectCRLF() {
