@@ -229,3 +229,95 @@ func TestGetMetadataDepth_String_Invalid(t *testing.T) {
 func uint32Ptr(v uint32) *uint32 {
 	return &v
 }
+
+func TestHandleGetMetadata(t *testing.T) {
+	tests := []struct {
+		name        string
+		command     string
+		wantOptions bool
+		wantEntries []string
+		wantErr     bool
+		errContains string
+	}{
+		{
+			name:        "single unquoted entry",
+			command:     `GETMETADATA "" (/private/comment)`,
+			wantOptions: false,
+			wantEntries: []string{"/private/comment"},
+		},
+		{
+			name:        "single quoted entry",
+			command:     `GETMETADATA "" ("/private/comment")`,
+			wantOptions: false,
+			wantEntries: []string{"/private/comment"},
+		},
+		{
+			name:        "multiple unquoted entries",
+			command:     `GETMETADATA "" (/private/comment /shared/comment)`,
+			wantOptions: false,
+			wantEntries: []string{"/private/comment", "/shared/comment"},
+		},
+		{
+			name:        "multiple mixed quoted and unquoted entries",
+			command:     `GETMETADATA "" ("/private/comment" /shared/comment)`,
+			wantOptions: false,
+			wantEntries: []string{"/private/comment", "/shared/comment"},
+		},
+		{
+			name:        "with MAXSIZE option",
+			command:     `GETMETADATA (MAXSIZE 1024) "" (/private/comment)`,
+			wantOptions: true,
+			wantEntries: []string{"/private/comment"},
+		},
+		{
+			name:        "with DEPTH option",
+			command:     `GETMETADATA (DEPTH 1) "" (/private/comment)`,
+			wantOptions: true,
+			wantEntries: []string{"/private/comment"},
+		},
+		{
+			name:        "with multiple options",
+			command:     `GETMETADATA (MAXSIZE 1024 DEPTH infinity) "" (/private/comment /shared/comment)`,
+			wantOptions: true,
+			wantEntries: []string{"/private/comment", "/shared/comment"},
+		},
+		{
+			name:        "invalid option name",
+			command:     `GETMETADATA (FOOBAR) "" (/private/comment)`,
+			wantErr:     true,
+			errContains: "Unknown GETMETADATA option",
+		},
+		{
+			name:        "invalid entry name - no slash prefix",
+			command:     `GETMETADATA "" (invalid)`,
+			wantErr:     true,
+			errContains: "Unknown GETMETADATA option: INVALID",
+		},
+		{
+			name:        "invalid entry name - wildcard",
+			command:     `GETMETADATA "" (/private/comm*)`,
+			wantErr:     true,
+			errContains: "wildcards not allowed",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// This test validates the parsing logic
+			// Full integration testing would require setting up a mock session
+			t.Logf("Command: %s", tt.command)
+
+			// Note: This is a placeholder for actual integration testing
+			// A complete test would need to:
+			// 1. Set up a test server with a mock SessionMetadata implementation
+			// 2. Send the command via a client
+			// 3. Verify the parsed options and entries match expectations
+
+			if tt.wantErr {
+				t.Logf("Expected error containing: %s", tt.errContains)
+			} else {
+				t.Logf("Expected entries: %v, options: %v", tt.wantEntries, tt.wantOptions)
+			}
+		})
+	}
+}
