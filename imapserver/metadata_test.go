@@ -268,7 +268,19 @@ func TestHandleGetMetadata_Integration(t *testing.T) {
 		errContains string
 	}{
 		{
-			name:        "single unquoted entry",
+			name:        "single unquoted entry without parentheses",
+			input:       ` "" /private/comment` + "\r\n",
+			wantOptions: false,
+			wantEntries: []string{"/private/comment"},
+		},
+		{
+			name:        "single quoted entry without parentheses",
+			input:       ` "" "/private/comment"` + "\r\n",
+			wantOptions: false,
+			wantEntries: []string{"/private/comment"},
+		},
+		{
+			name:        "single unquoted entry with parentheses",
 			input:       ` "" (/private/comment)` + "\r\n",
 			wantOptions: false,
 			wantEntries: []string{"/private/comment"},
