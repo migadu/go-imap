@@ -56,8 +56,10 @@ func (c *Conn) handleSort(tag string, dec *imapwire.Decoder, numKind NumKind) er
 			criterion.Key = imap.SortKeyCc
 		case "DATE":
 			criterion.Key = imap.SortKeyDate
-		case "DISPLAY":
-			criterion.Key = imap.SortKeyDisplay
+		case "DISPLAYFROM":
+			criterion.Key = imap.SortKeyDisplayFrom
+		case "DISPLAYTO":
+			criterion.Key = imap.SortKeyDisplayTo
 		case "FROM":
 			criterion.Key = imap.SortKeyFrom
 		case "SIZE":

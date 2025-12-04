@@ -4,14 +4,15 @@ package imap
 type SortKey string
 
 const (
-	SortKeyArrival SortKey = "ARRIVAL"
-	SortKeyCc      SortKey = "CC"
-	SortKeyDate    SortKey = "DATE"
-	SortKeyDisplay SortKey = "DISPLAY"
-	SortKeyFrom    SortKey = "FROM"
-	SortKeySize    SortKey = "SIZE"
-	SortKeySubject SortKey = "SUBJECT"
-	SortKeyTo      SortKey = "TO"
+	SortKeyArrival     SortKey = "ARRIVAL"
+	SortKeyCc          SortKey = "CC"
+	SortKeyDate        SortKey = "DATE"
+	SortKeyDisplayFrom SortKey = "DISPLAYFROM"
+	SortKeyDisplayTo   SortKey = "DISPLAYTO"
+	SortKeyFrom        SortKey = "FROM"
+	SortKeySize        SortKey = "SIZE"
+	SortKeySubject     SortKey = "SUBJECT"
+	SortKeyTo          SortKey = "TO"
 )
 
 // SortCriterion is a sort criterion for the SORT command.
