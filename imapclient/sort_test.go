@@ -1,7 +1,6 @@
 package imapclient_test
 
 import (
-	"os"
 	"reflect"
 	"testing"
 	"time"
@@ -132,11 +131,6 @@ func TestSort(t *testing.T) {
 
 		for _, tt := range tests {
 			t.Run(tt.name, func(t *testing.T) {
-				// Skip DISPLAYFROM/DISPLAYTO tests for Dovecot as it doesn't support SORT=DISPLAY
-				if (tt.name == "DISPLAYFROM" || tt.name == "DISPLAYTO") && os.Getenv("GOIMAP_TEST_DOVECOT") == "1" {
-					t.Skip("Dovecot doesn't support SORT=DISPLAY extension (RFC 5957)")
-				}
-
 				data, err := client.Sort(tt.options).Wait()
 				if err != nil {
 					t.Fatalf("Sort() failed: %v", err)
@@ -173,11 +167,6 @@ func TestSort(t *testing.T) {
 	})
 
 	t.Run("ESORT", func(t *testing.T) {
-		// Skip for Dovecot as it doesn't support ESORT extension
-		if os.Getenv("GOIMAP_TEST_DOVECOT") == "1" {
-			t.Skip("Dovecot doesn't support ESORT")
-		}
-
 		options := &imapclient.SortOptions{
 			SortCriteria:   []imap.SortCriterion{{Key: imap.SortKeyArrival}},
 			SearchCriteria: allMsgs,
