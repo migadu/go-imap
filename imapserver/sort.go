@@ -198,31 +198,36 @@ func readSortReturnOpts(dec *imapwire.Decoder, options *imap.SortOptions) error 
 	if !dec.ExpectSP() {
 		return dec.Err()
 	}
-	var numOpts int
+	var numRecognizedOpts int
 	if err := dec.ExpectList(func() error {
 		var name string
 		if !dec.ExpectAtom(&name) {
 			return dec.Err()
 		}
-		numOpts++
 		switch strings.ToUpper(name) {
 		case "MIN":
 			options.ReturnMin = true
+			numRecognizedOpts++
 		case "MAX":
 			options.ReturnMax = true
+			numRecognizedOpts++
 		case "ALL":
 			options.ReturnAll = true
+			numRecognizedOpts++
 		case "COUNT":
 			options.ReturnCount = true
+			numRecognizedOpts++
 		default:
-			return newClientBugError("unknown SORT RETURN option")
+			// RFC 5267: Servers MUST ignore any unknown sort-return-opt
 		}
 		return nil
 	}); err != nil {
 		return err
 	}
-	if numOpts == 0 {
-		return newClientBugError("empty SORT RETURN option list")
+	// RFC 5267: If the list of return options is present but empty (or only has unknown options),
+	// then the server provides the ALL return data item
+	if numRecognizedOpts == 0 {
+		options.ReturnAll = true
 	}
 	return nil
 }

@@ -212,4 +212,9 @@ func TestSort(t *testing.T) {
 			t.Errorf("SeqNums = %v, want empty", data.SeqNums)
 		}
 	})
+
+	// RFC 5267 compliance tests:
+	// - Empty RETURN list defaults to ALL
+	// - Unknown RETURN options are silently ignored
+	// These are tested at the server/protocol level in imapserver package
 }
