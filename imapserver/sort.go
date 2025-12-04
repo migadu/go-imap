@@ -185,7 +185,7 @@ func (c *Conn) writeESort(tag string, data *imap.SortData, options *imap.SortOpt
 	if options.ReturnMin && data.Min > 0 {
 		enc.SP().Atom("MIN").SP().Number(data.Min)
 	}
-	if options.ReturnMax && data.Count > 0 {
+	if options.ReturnMax && data.Max > 0 {
 		enc.SP().Atom("MAX").SP().Number(data.Max)
 	}
 	if options.ReturnCount {
