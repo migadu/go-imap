@@ -132,9 +132,9 @@ func TestSort(t *testing.T) {
 
 		for _, tt := range tests {
 			t.Run(tt.name, func(t *testing.T) {
-				// Skip DISPLAY test for Dovecot as it doesn't support SORT=DISPLAY
-				if tt.name == "DISPLAY" && os.Getenv("GOIMAP_TEST_DOVECOT") == "1" {
-					t.Skip("Dovecot doesn't support SORT=DISPLAY")
+				// Skip DISPLAYFROM/DISPLAYTO tests for Dovecot as it doesn't support SORT=DISPLAY
+				if (tt.name == "DISPLAYFROM" || tt.name == "DISPLAYTO") && os.Getenv("GOIMAP_TEST_DOVECOT") == "1" {
+					t.Skip("Dovecot doesn't support SORT=DISPLAY extension (RFC 5957)")
 				}
 
 				data, err := client.Sort(tt.options).Wait()
