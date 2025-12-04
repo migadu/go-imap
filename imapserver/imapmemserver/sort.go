@@ -127,7 +127,7 @@ func (ms *memSort) Less(i, j int) bool {
 				dateJ = ms.parseDate(msgJ)
 			}
 			cmp = dateI.Compare(dateJ)
-		case imap.SortKeyDisplay:
+		case imap.SortKeyDisplayFrom:
 			if !headerIParsed {
 				headerI, _ = ms.parseHeader(msgI)
 				headerIParsed = true
@@ -147,6 +147,33 @@ func (ms *memSort) Less(i, j int) bool {
 				}
 			}
 			if addrs, err := hJ.AddressList("From"); err == nil && len(addrs) > 0 {
+				if addrs[0].Name != "" {
+					valJ = addrs[0].Name
+				} else {
+					valJ = addrs[0].Address
+				}
+			}
+			cmp = strings.Compare(valI, valJ)
+		case imap.SortKeyDisplayTo:
+			if !headerIParsed {
+				headerI, _ = ms.parseHeader(msgI)
+				headerIParsed = true
+			}
+			if !headerJParsed {
+				headerJ, _ = ms.parseHeader(msgJ)
+				headerJParsed = true
+			}
+			hI := mail.Header{Header: headerI}
+			hJ := mail.Header{Header: headerJ}
+			var valI, valJ string
+			if addrs, err := hI.AddressList("To"); err == nil && len(addrs) > 0 {
+				if addrs[0].Name != "" {
+					valI = addrs[0].Name
+				} else {
+					valI = addrs[0].Address
+				}
+			}
+			if addrs, err := hJ.AddressList("To"); err == nil && len(addrs) > 0 {
 				if addrs[0].Name != "" {
 					valJ = addrs[0].Name
 				} else {
