@@ -1,6 +1,8 @@
 package imapmemserver
 
 import (
+	"strings"
+
 	"github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/imapserver"
 )
@@ -204,6 +206,16 @@ func (sess *UserSession) SetACL(name string, identifier imap.RightsIdentifier, m
 
 	// Apply modification
 	currentRights := mbox.acl[identifier]
+
+	// Handle obsolete rights for backwards compatibility
+	if strings.Contains(string(rights), "c") {
+		rights = rights.Add(imap.RightSet("k"))
+	}
+
+	if strings.Contains(string(rights), "d") {
+		rights = rights.Add(imap.RightSet("te"))
+	}
+
 	switch modification {
 	case imap.RightModificationReplace:
 		mbox.acl[identifier] = rights
