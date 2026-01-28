@@ -109,43 +109,61 @@ func readID(dec *imapwire.Decoder) (*imap.IDData, error) {
 		Raw: make(map[string]string),
 	}
 	currKey := ""
+	var params []string // Track all parameters for error reporting
 	err := dec.ExpectList(func() error {
-		var keyOrValue string
-		if !dec.String(&keyOrValue) {
-			return fmt.Errorf("in id key-val list: %v", dec.Err())
-		}
-
 		if currKey == "" {
-			currKey = keyOrValue
+			// Reading a key - must be a string (not NIL)
+			var key string
+			if !dec.String(&key) {
+				return fmt.Errorf("in id key-val list: %v", dec.Err())
+			}
+			params = append(params, key)
+			currKey = key
 			return nil
 		}
 
+		// Reading a value - can be string or NIL
+		var value string
+		if !dec.ExpectNString(&value) {
+			// If we have an orphaned key, provide a clear error
+			if currKey != "" {
+				return &imap.Error{
+					Type: imap.StatusResponseTypeBad,
+					Code: imap.ResponseCodeClientBug,
+					Text: fmt.Sprintf("ID: missing value for key %q (received %d parameters: %v)", currKey, len(params), params),
+				}
+			}
+			return fmt.Errorf("in id key-val list: %v", dec.Err())
+		}
+
+		params = append(params, value)
+
 		lowerKey := strings.ToLower(currKey)
-		data.Raw[lowerKey] = keyOrValue
+		data.Raw[lowerKey] = value
 
 		switch lowerKey {
 		case "name":
-			data.Name = keyOrValue
+			data.Name = value
 		case "version":
-			data.Version = keyOrValue
+			data.Version = value
 		case "os":
-			data.OS = keyOrValue
+			data.OS = value
 		case "os-version":
-			data.OSVersion = keyOrValue
+			data.OSVersion = value
 		case "vendor":
-			data.Vendor = keyOrValue
+			data.Vendor = value
 		case "support-url":
-			data.SupportURL = keyOrValue
+			data.SupportURL = value
 		case "address":
-			data.Address = keyOrValue
+			data.Address = value
 		case "date":
-			data.Date = keyOrValue
+			data.Date = value
 		case "command":
-			data.Command = keyOrValue
+			data.Command = value
 		case "arguments":
-			data.Arguments = keyOrValue
+			data.Arguments = value
 		case "environment":
-			data.Environment = keyOrValue
+			data.Environment = value
 		default:
 			// Unknown key, already stored in Raw
 		}
@@ -156,6 +174,15 @@ func readID(dec *imapwire.Decoder) (*imap.IDData, error) {
 
 	if err != nil {
 		return nil, err
+	}
+
+	// Validate that all keys have values (even number of items)
+	if currKey != "" {
+		return nil, &imap.Error{
+			Type: imap.StatusResponseTypeBad,
+			Code: imap.ResponseCodeClientBug,
+			Text: fmt.Sprintf("ID: odd number of parameters, missing value for key %q (received %d parameters: %v)", currKey, len(params), params),
+		}
 	}
 
 	return data, nil
