@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"runtime/debug"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/emersion/go-imap/v2"
@@ -31,6 +33,28 @@ var internalServerErrorResp = &imap.StatusResponse{
 	Type: imap.StatusResponseTypeNo,
 	Code: imap.ResponseCodeServerBug,
 	Text: "Internal server error",
+}
+
+// isConnectionClosedError returns true for errors that indicate the remote
+// end has disconnected. These are normal during client/proxy disconnect and
+// should not be logged as errors.
+func isConnectionClosedError(err error) bool {
+	if errors.Is(err, net.ErrClosed) || errors.Is(err, io.EOF) {
+		return true
+	}
+	var opErr *net.OpError
+	if errors.As(err, &opErr) {
+		if errors.Is(opErr.Err, syscall.EPIPE) || errors.Is(opErr.Err, syscall.ECONNRESET) {
+			return true
+		}
+	}
+	var syscallErr *os.SyscallError
+	if errors.As(err, &syscallErr) {
+		if errors.Is(syscallErr.Err, syscall.EPIPE) || errors.Is(syscallErr.Err, syscall.ECONNRESET) {
+			return true
+		}
+	}
+	return false
 }
 
 // A Conn represents an IMAP connection to the server.
@@ -128,7 +152,9 @@ func (c *Conn) serve() {
 			resp = internalServerErrorResp
 		}
 		if err := c.writeStatusResp("", resp); err != nil {
-			c.server.logger().Printf("failed to write greeting (remote %v): %v", c.conn.RemoteAddr(), err)
+			if !isConnectionClosedError(err) {
+				c.server.logger().Printf("failed to write greeting (remote %v): %v", c.conn.RemoteAddr(), err)
+			}
 		}
 		return
 	}
@@ -162,7 +188,9 @@ func (c *Conn) serve() {
 		statusType = imap.StatusResponseTypePreAuth
 	}
 	if err := c.writeCapabilityStatus("", statusType, "IMAP server ready"); err != nil {
-		c.server.logger().Printf("failed to write greeting (remote %v): %v", c.conn.RemoteAddr(), err)
+		if !isConnectionClosedError(err) {
+			c.server.logger().Printf("failed to write greeting (remote %v): %v", c.conn.RemoteAddr(), err)
+		}
 		return
 	}
 
@@ -195,7 +223,7 @@ func (c *Conn) serve() {
 
 		c.setReadTimeout(cmdReadTimeout)
 		if err := c.readCommand(dec); err != nil {
-			if !errors.Is(err, net.ErrClosed) {
+			if !isConnectionClosedError(err) {
 				c.server.logger().Printf("failed to read command (remote %v): %v", c.conn.RemoteAddr(), err)
 			}
 			break
