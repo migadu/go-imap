@@ -101,7 +101,10 @@ func readID(dec *imapwire.Decoder) (*imap.IDData, error) {
 		return nil, dec.Err()
 	}
 
-	if dec.ExpectNIL() {
+	// Check for NIL without using ExpectNIL which leaves decoder in error state
+	// Use Atom() instead of ExpectAtom() to avoid setting error
+	var nilCheck string
+	if dec.Atom(&nilCheck) && nilCheck == "NIL" {
 		return nil, nil
 	}
 
@@ -125,6 +128,10 @@ func readID(dec *imapwire.Decoder) (*imap.IDData, error) {
 		// Reading a value - can be string or NIL
 		var value string
 		if !dec.ExpectNString(&value) {
+			// First check if there's a decoder error (e.g., invalid token or leftover error from ExpectNIL)
+			if decErr := dec.Err(); decErr != nil {
+				return fmt.Errorf("in id key-val list: %v", decErr)
+			}
 			// If we have an orphaned key, provide a clear error
 			if currKey != "" {
 				return &imap.Error{
@@ -133,7 +140,7 @@ func readID(dec *imapwire.Decoder) (*imap.IDData, error) {
 					Text: fmt.Sprintf("ID: missing value for key %q (received %d parameters: %v)", currKey, len(params), params),
 				}
 			}
-			return fmt.Errorf("in id key-val list: %v", dec.Err())
+			return fmt.Errorf("in id key-val list: unexpected error")
 		}
 
 		params = append(params, value)

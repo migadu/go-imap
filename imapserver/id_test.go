@@ -2,6 +2,7 @@ package imapserver
 
 import (
 	"bufio"
+	"io"
 	"strings"
 	"testing"
 
@@ -99,6 +100,18 @@ func TestReadID(t *testing.T) {
 			wantErr:     true,
 			errContains: "missing value for key",
 		},
+		{
+			name:        "invalid atom as value - equals sign",
+			input:       ` ("name" =something)` + "\r\n",
+			wantErr:     true,
+			errContains: "in id key-val list",
+		},
+		{
+			name:        "invalid atom as value in middle",
+			input:       ` ("name" "test" "version" =1.0)` + "\r\n",
+			wantErr:     true,
+			errContains: "in id key-val list",
+		},
 	}
 
 	for _, tt := range tests {
@@ -163,6 +176,76 @@ func TestReadID(t *testing.T) {
 					t.Error("Expected 'event' key in Raw map")
 				} else if eventValue != "" {
 					t.Errorf("Expected 'event' value to be empty string for NIL, got %q", eventValue)
+				}
+			}
+		})
+	}
+}
+
+// TestReadID_NoUnparsedData verifies that when readID encounters an error,
+// it doesn't leave unparsed data in the decoder that would cause subsequent
+// parsing failures (like "expected CRLF, got '='")
+func TestReadID_NoUnparsedData(t *testing.T) {
+	tests := []struct {
+		name        string
+		input       string
+		wantErr     bool
+		errContains string
+	}{
+		{
+			name:        "invalid atom with equals - should not leave data",
+			input:       ` ("name" =something)` + "\r\n",
+			wantErr:     true,
+			errContains: "in id key-val list",
+		},
+		{
+			name:        "invalid atom in middle - should not leave data",
+			input:       ` ("name" "test" "version" =1.0)` + "\r\n",
+			wantErr:     true,
+			errContains: "in id key-val list",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create a reader with the full input including CRLF
+			reader := bufio.NewReader(strings.NewReader(tt.input))
+			dec := imapwire.NewDecoder(reader, 0)
+
+			// Call readID - this should consume all invalid tokens
+			data, err := readID(dec)
+
+			if !tt.wantErr {
+				if err != nil {
+					t.Fatalf("Unexpected error: %v", err)
+				}
+				if data == nil {
+					t.Fatal("Expected non-nil data")
+				}
+				return
+			}
+
+			// Verify we got the expected error
+			if err == nil {
+				t.Fatalf("Expected error containing %q, got no error", tt.errContains)
+			}
+			if !strings.Contains(err.Error(), tt.errContains) {
+				t.Errorf("Expected error containing %q, got %q", tt.errContains, err.Error())
+			}
+
+			// The decoder should be in an error state, and the error should be the same
+			if decErr := dec.Err(); decErr == nil {
+				t.Error("Expected decoder to have an error set")
+			}
+
+			// Verify that we don't have "expected CRLF" errors when trying to read CRLF
+			// This simulates what handleID does after calling readID
+			if !dec.ExpectCRLF() {
+				err := dec.Err()
+				if err != nil && strings.Contains(err.Error(), "expected CRLF") {
+					// Check what character was left unparsed
+					remaining, _ := io.ReadAll(reader)
+					t.Errorf("After readID error, ExpectCRLF failed with CRLF error: %v. Remaining unparsed: %q", err, remaining)
 				}
 			}
 		})
