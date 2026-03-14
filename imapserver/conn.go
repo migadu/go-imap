@@ -209,7 +209,10 @@ func (c *Conn) readCommand(dec *imapwire.Decoder) error {
 			return nil
 		}
 
-		if dec.ExpectCRLF() {
+		// Use non-destructive CRLF() instead of ExpectCRLF() to avoid
+		// setting decoder error when we encounter non-empty lines.
+		// If this fails (not a CRLF), we break and parse the command.
+		if dec.CRLF() {
 			continue
 		}
 		break
