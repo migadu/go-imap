@@ -96,7 +96,7 @@ func (c *Conn) EnabledCaps() imap.CapSet {
 func (c *Conn) serve() {
 	defer func() {
 		if v := recover(); v != nil {
-			c.server.logger().Printf("panic handling command: %v\n%s", v, debug.Stack())
+			c.server.logger().Printf("panic handling command (remote %v): %v\n%s", c.conn.RemoteAddr(), v, debug.Stack())
 		}
 
 		c.conn.Close()
@@ -124,11 +124,11 @@ func (c *Conn) serve() {
 		if errors.As(err, &imapErr) && imapErr.Type == imap.StatusResponseTypeBye {
 			resp = (*imap.StatusResponse)(imapErr)
 		} else {
-			c.server.logger().Printf("failed to create session: %v", err)
+			c.server.logger().Printf("failed to create session (remote %v): %v", c.conn.RemoteAddr(), err)
 			resp = internalServerErrorResp
 		}
 		if err := c.writeStatusResp("", resp); err != nil {
-			c.server.logger().Printf("failed to write greeting: %v", err)
+			c.server.logger().Printf("failed to write greeting (remote %v): %v", c.conn.RemoteAddr(), err)
 		}
 		return
 	}
@@ -136,7 +136,7 @@ func (c *Conn) serve() {
 	defer func() {
 		if c.session != nil {
 			if err := c.session.Close(); err != nil {
-				c.server.logger().Printf("failed to close session: %v", err)
+				c.server.logger().Printf("failed to close session (remote %v): %v", c.conn.RemoteAddr(), err)
 			}
 		}
 	}()
@@ -162,7 +162,7 @@ func (c *Conn) serve() {
 		statusType = imap.StatusResponseTypePreAuth
 	}
 	if err := c.writeCapabilityStatus("", statusType, "IMAP server ready"); err != nil {
-		c.server.logger().Printf("failed to write greeting: %v", err)
+		c.server.logger().Printf("failed to write greeting (remote %v): %v", c.conn.RemoteAddr(), err)
 		return
 	}
 
@@ -196,7 +196,7 @@ func (c *Conn) serve() {
 		c.setReadTimeout(cmdReadTimeout)
 		if err := c.readCommand(dec); err != nil {
 			if !errors.Is(err, net.ErrClosed) {
-				c.server.logger().Printf("failed to read command: %v", err)
+				c.server.logger().Printf("failed to read command (remote %v): %v", c.conn.RemoteAddr(), err)
 			}
 			break
 		}
@@ -349,7 +349,7 @@ func (c *Conn) readCommand(dec *imapwire.Decoder) error {
 			Text: "Syntax error: " + decErr.Message,
 		}
 	} else if err != nil {
-		c.server.logger().Printf("handling %v command: %v", name, err)
+		c.server.logger().Printf("handling %v command (remote %v): %v", name, c.conn.RemoteAddr(), err)
 		resp = internalServerErrorResp
 	} else {
 		if !sendOK {
