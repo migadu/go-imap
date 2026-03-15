@@ -17,6 +17,35 @@ var sessionTrackerSeqNumTests = []struct {
 	clientSeqNum, serverSeqNum uint32
 }{
 	{
+		// Bug: QueueNumMessages increments by more than 1.
+		// EncodeSeqNum must return 0 for ALL new seqNums (prevNumMessages+1 ..
+		// numMessages), not just the last one.
+		// Mailbox starts at 42; 3 messages appended → numMessages=45.
+		// New messages are at server seqNums 43, 44, 45 — all must map to 0.
+		name:         "append_multi_first_new",
+		pending:      []trackerUpdate{{numMessages: 45}},
+		clientSeqNum: 0,
+		serverSeqNum: 43, // first new message — was returning 43 before the fix
+	},
+	{
+		name:         "append_multi_middle_new",
+		pending:      []trackerUpdate{{numMessages: 45}},
+		clientSeqNum: 0,
+		serverSeqNum: 44, // middle new message
+	},
+	{
+		name:         "append_multi_last_new",
+		pending:      []trackerUpdate{{numMessages: 45}},
+		clientSeqNum: 0,
+		serverSeqNum: 45, // last new message — was already handled correctly
+	},
+	{
+		name:         "append_multi_old_msg",
+		pending:      []trackerUpdate{{numMessages: 45}},
+		clientSeqNum: 42,
+		serverSeqNum: 42, // pre-existing message — must not be affected
+	},
+	{
 		name:         "noop",
 		pending:      nil,
 		clientSeqNum: 20,

@@ -49,6 +49,13 @@ func (t *MailboxTracker) queueUpdate(update *trackerUpdate, source *SessionTrack
 		panic(fmt.Errorf("imapserver: cannot decrease mailbox number of messages from %v to %v", t.numMessages, update.numMessages))
 	}
 
+	// Capture the current count before applying the update so that
+	// EncodeSeqNum can determine which seqNums are new (not yet seen
+	// by the client).
+	if update.numMessages != 0 {
+		update.prevNumMessages = t.numMessages
+	}
+
 	for st := range t.sessions {
 		if source != nil && st == source {
 			continue
@@ -98,10 +105,11 @@ func (t *MailboxTracker) QueueMessageFlags(seqNum uint32, uid imap.UID, flags []
 }
 
 type trackerUpdate struct {
-	expunge      uint32
-	numMessages  uint32
-	mailboxFlags []imap.Flag
-	fetch        *trackerUpdateFetch
+	expunge         uint32
+	numMessages     uint32
+	prevNumMessages uint32 // numMessages before this update; used by EncodeSeqNum
+	mailboxFlags    []imap.Flag
+	fetch           *trackerUpdateFetch
 }
 
 type trackerUpdateFetch struct {
@@ -272,9 +280,17 @@ func (t *SessionTracker) EncodeSeqNum(seqNum uint32) uint32 {
 
 	for i := len(t.queue) - 1; i >= 0; i-- {
 		update := t.queue[i]
-		// TODO: this doesn't handle increments > 1
-		if update.numMessages != 0 && seqNum == update.numMessages {
-			return 0
+		if update.numMessages != 0 {
+			// Messages added by this update occupy positions
+			//   (prevNumMessages+1) .. numMessages
+			// from the server's perspective at the time of the append.
+			// The client has not seen these messages yet, so they have no
+			// client-side sequence number.
+			if seqNum > update.prevNumMessages && seqNum <= update.numMessages {
+				return 0
+			}
+			// seqNum <= prevNumMessages: the message existed before this
+			// append, so no adjustment is needed for this update.
 		}
 		if update.expunge != 0 && seqNum >= update.expunge {
 			seqNum++
