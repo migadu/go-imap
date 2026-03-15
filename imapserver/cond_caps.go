@@ -1,43 +1,24 @@
 package imapserver
 
 import (
-	"strings"
-
 	"github.com/emersion/go-imap/v2"
 )
 
-// isIOSClient returns true if the client identifies as iOS Mail.app
-func (c *Conn) isIOSClient() bool {
-	c.mutex.Lock()
-	clientID := c.clientID
-	c.mutex.Unlock()
-
-	if clientID == nil {
-		return false
-	}
-
-	// Check if client identifies as iOS Mail
-	name := strings.ToLower(clientID.Name)
-	vendor := strings.ToLower(clientID.Vendor)
-	os := strings.ToLower(clientID.OS)
-
-	// Common iOS Mail identification patterns
-	isIOSMail := strings.Contains(name, "mail") &&
-		(strings.Contains(vendor, "apple") || strings.Contains(os, "ios") || strings.Contains(os, "iphone") || strings.Contains(os, "ipad"))
-
-	return isIOSMail
-}
-
 // supportsCondStore returns true if the connection supports CONDSTORE extension.
 // This checks both session-specific capabilities (if available) and server capabilities,
-// as well as enabled capabilities. iOS Mail clients are excluded from CONDSTORE support
-// due to compatibility issues.
+// as well as enabled capabilities.
+//
+// Note: the previous iOS Mail workaround that disabled CONDSTORE for iOS clients
+// has been removed.  That workaround caused a capability lie (CONDSTORE was
+// advertised but then silently disabled) and the underlying server-side protocol
+// bugs that originally caused iOS compatibility issues have since been fixed:
+//   - MODSEQ in FETCH responses now correctly uses the "MODSEQ (value)" form
+//     (RFC 7162 §2.3.2).
+//   - ESEARCH MODSEQ result now uses the bare "MODSEQ value" form (RFC 7162
+//     §3.4).
+//   - UID FETCH CHANGEDSINCE+VANISHED now uses the canonical parenthesised
+//     form (RFC 4466 §2.2 / RFC 7162 §6).
 func (c *Conn) supportsCondStore() bool {
-	// Disable CONDSTORE for iOS clients due to compatibility issues
-	if c.isIOSClient() {
-		return false
-	}
-
 	if capSession, ok := c.session.(SessionCapabilities); ok {
 		sessionCaps := capSession.GetCapabilities()
 		return sessionCaps.Has(imap.CapCondStore) || sessionCaps.Has(imap.CapIMAP4rev2)

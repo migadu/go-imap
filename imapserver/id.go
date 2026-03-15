@@ -18,7 +18,7 @@ func (c *Conn) handleID(tag string, dec *imapwire.Decoder) error {
 		return dec.Err()
 	}
 
-	// Store client ID information for capability decisions
+	// Store client ID for potential use by the session or other connection logic.
 	c.mutex.Lock()
 	c.clientID = idData
 	c.mutex.Unlock()
