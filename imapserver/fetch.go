@@ -696,10 +696,22 @@ func writeBodyType1part(enc *imapwire.Encoder, bs *imap.BodyStructureSinglePart,
 
 func writeBodyTypeMpart(enc *imapwire.Encoder, bs *imap.BodyStructureMultiPart, extended bool) {
 	if len(bs.Children) == 0 {
-		panic("imapserver: imap.BodyStructureMultiPart must have at least one child")
-	}
-	for _, child := range bs.Children {
-		writeBodyStructure(enc, child, extended)
+		// RFC 3501 body-type-mpart requires "1*body" (at least one child).
+		// A zero-children BodyStructureMultiPart is invalid, but may arrive
+		// from a backend that persisted body structures before
+		// extractBodyStructure was fixed to inject a synthetic child.
+		// Synthesize a placeholder here rather than panicking so that stale
+		// cached data does not crash the server.
+		writeBodyStructure(enc, &imap.BodyStructureSinglePart{
+			Type:     "text",
+			Subtype:  "plain",
+			Params:   map[string]string{"charset": "utf-8"},
+			Extended: &imap.BodyStructureSinglePartExt{},
+		}, extended)
+	} else {
+		for _, child := range bs.Children {
+			writeBodyStructure(enc, child, extended)
+		}
 	}
 
 	enc.SP().String(bs.Subtype)

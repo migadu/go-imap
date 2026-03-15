@@ -270,6 +270,27 @@ func extractBodyStructure(rawHeader textproto.Header, r io.Reader) imap.BodyStru
 			}
 			bs.Children = append(bs.Children, extractBodyStructure(part.Header, part))
 		}
+		// RFC 2046 §5.1.1 / RFC 3501 body-type-mpart grammar require at least
+		// one child part ("1*body").  If the multipart reader yielded nothing
+		// (e.g. a malformed message whose boundary never matches), inject a
+		// synthetic text/plain child so that writeBodyTypeMpart never receives
+		// an empty slice.  We preserve the outer multipart type so that IMAP
+		// clients still see the correct Content-Type of the message.
+		if len(bs.Children) == 0 {
+			body, _ := io.ReadAll(r)
+			bs.Children = []imap.BodyStructure{
+				&imap.BodyStructureSinglePart{
+					Type:    "text",
+					Subtype: "plain",
+					Params:  map[string]string{"charset": "utf-8"},
+					Size:    uint32(len(body)),
+					Text: &imap.BodyStructureText{
+						NumLines: int64(bytes.Count(body, []byte("\n"))),
+					},
+					Extended: &imap.BodyStructureSinglePartExt{},
+				},
+			}
+		}
 		bs.Extended = &imap.BodyStructureMultiPartExt{
 			Params:      typeParams,
 			Disposition: getContentDisposition(header),
