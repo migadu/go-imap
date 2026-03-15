@@ -33,11 +33,20 @@ func (c *Client) Fetch(numSet imap.NumSet, options *imap.FetchOptions) *FetchCom
 	enc := c.beginCommand(uidCmdName("FETCH", numKind), cmd)
 	enc.SP().NumSet(numSet).SP()
 	writeFetchItems(enc.Encoder, numKind, options)
-	if options.ChangedSince != 0 {
-		enc.SP().Special('(').Atom("CHANGEDSINCE").SP().ModSeq(options.ChangedSince).Special(')')
-	}
-	if options.Vanished && numKind == imapwire.NumKindUID {
-		enc.SP().Atom("VANISHED")
+	// RFC 4466 §2.2 / RFC 7162 §6: both CHANGEDSINCE and VANISHED are
+	// fetch-modifier items and must appear inside the parenthesised
+	// fetch-modifiers group: (CHANGEDSINCE n [VANISHED]).
+	if options.ChangedSince != 0 || (options.Vanished && numKind == imapwire.NumKindUID) {
+		enc.SP().Special('(')
+		if options.ChangedSince != 0 {
+			enc.Atom("CHANGEDSINCE").SP().ModSeq(options.ChangedSince)
+			if options.Vanished && numKind == imapwire.NumKindUID {
+				enc.SP().Atom("VANISHED")
+			}
+		} else if options.Vanished && numKind == imapwire.NumKindUID {
+			enc.Atom("VANISHED")
+		}
+		enc.Special(')')
 	}
 	enc.end()
 	return cmd

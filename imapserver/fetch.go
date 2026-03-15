@@ -75,41 +75,97 @@ func (c *Conn) handleFetch(dec *imapwire.Decoder, numKind NumKind) error {
 		}
 	}
 
-	if dec.SP() && dec.Special('(') {
-		var param string
-		if !dec.ExpectAtom(&param) {
-			return dec.Err()
-		}
-
-		if strings.ToUpper(param) == "CHANGEDSINCE" {
-			if !dec.ExpectSP() || !dec.ExpectModSeq(&options.ChangedSince) {
+	// Parse FETCH modifiers.
+	//
+	// Per RFC 4466 §2.2 and RFC 7162 §6, both CHANGEDSINCE and VANISHED are
+	// fetch-modifier items; the canonical form is a parenthesised group:
+	//   (CHANGEDSINCE n)            — CHANGEDSINCE only
+	//   (CHANGEDSINCE n VANISHED)   — both modifiers (RFC-correct)
+	//
+	// For broad compatibility the parser also accepts:
+	//   (CHANGEDSINCE n) VANISHED   — non-standard hybrid (old library versions)
+	//   CHANGEDSINCE n [VANISHED]   — bare/unparenthesised (non-standard)
+	if dec.SP() {
+		if dec.Special('(') {
+			// Parenthesised modifier list.
+			for {
+				var param string
+				if !dec.ExpectAtom(&param) {
+					return dec.Err()
+				}
+				switch strings.ToUpper(param) {
+				case "CHANGEDSINCE":
+					if !dec.ExpectSP() || !dec.ExpectModSeq(&options.ChangedSince) {
+						return dec.Err()
+					}
+					if c.supportsCondStore() {
+						options.ModSeq = true
+					}
+				case "VANISHED":
+					if numKind != NumKindUID {
+						return fmt.Errorf("VANISHED modifier only allowed with UID FETCH")
+					}
+					options.Vanished = true
+				default:
+					return fmt.Errorf("unknown FETCH modifier: %v", param)
+				}
+				if !dec.SP() {
+					break
+				}
+			}
+			if !dec.ExpectSpecial(')') {
 				return dec.Err()
 			}
-			// Only enable ModSeq if CONDSTORE is supported
-			if c.supportsCondStore() {
-				options.ModSeq = true
+			// After the closing ), accept a trailing bare VANISHED to handle
+			// the non-standard "(CHANGEDSINCE n) VANISHED" hybrid emitted by
+			// older versions of this library.
+			if dec.SP() {
+				var atom string
+				if dec.ExpectAtom(&atom) {
+					if strings.ToUpper(atom) == "VANISHED" {
+						if numKind != NumKindUID {
+							return fmt.Errorf("VANISHED modifier only allowed with UID FETCH")
+						}
+						options.Vanished = true
+					} else {
+						return fmt.Errorf("unexpected FETCH modifier: %v", atom)
+					}
+				}
 			}
 		} else {
-			return fmt.Errorf("unknown FETCH modifier: %v", param)
-		}
-
-		if !dec.ExpectSpecial(')') {
-			return dec.Err()
+			// Bare uid-fetch-modifier items (RFC 7162 §6):
+			//   CHANGEDSINCE n [VANISHED]
+			for {
+				var modifier string
+				if !dec.Atom(&modifier) {
+					break
+				}
+				switch strings.ToUpper(modifier) {
+				case "CHANGEDSINCE":
+					if !dec.ExpectSP() || !dec.ExpectModSeq(&options.ChangedSince) {
+						return dec.Err()
+					}
+					if c.supportsCondStore() {
+						options.ModSeq = true
+					}
+				case "VANISHED":
+					if numKind != NumKindUID {
+						return fmt.Errorf("VANISHED modifier only allowed with UID FETCH")
+					}
+					options.Vanished = true
+				default:
+					return fmt.Errorf("unknown FETCH modifier: %v", modifier)
+				}
+				if !dec.SP() {
+					break
+				}
+			}
 		}
 	}
 
-	// Check for VANISHED modifier (separate from parenthesized modifiers)
-	if dec.SP() {
-		var atom string
-		if dec.ExpectAtom(&atom) && strings.ToUpper(atom) == "VANISHED" {
-			if numKind != NumKindUID {
-				return fmt.Errorf("VANISHED modifier only allowed with UID FETCH")
-			}
-			options.Vanished = true
-		} else {
-			// Put the atom back by returning an error that we don't recognize it
-			return fmt.Errorf("unexpected token: %v", atom)
-		}
+	// RFC 7162 §3.2.6: VANISHED MUST only be used together with CHANGEDSINCE.
+	if options.Vanished && options.ChangedSince == 0 {
+		return newClientBugError("VANISHED modifier requires CHANGEDSINCE modifier (RFC 7162 §3.2.6)")
 	}
 
 	if !dec.ExpectCRLF() {

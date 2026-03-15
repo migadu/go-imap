@@ -195,6 +195,35 @@ func TestSelect_QResync_ModifiedModSeq(t *testing.T) {
 	}
 }
 
+// TestUIDFetch_Vanished_WithoutChangedSince verifies that the server rejects a
+// UID FETCH command that uses the VANISHED modifier without the required
+// CHANGEDSINCE modifier.
+//
+// RFC 7162 §3.2.6: "The VANISHED UID FETCH modifier MUST only be used when
+// the UID FETCH command also contains the CHANGEDSINCE modifier."
+func TestUIDFetch_Vanished_WithoutChangedSince(t *testing.T) {
+	client, server := newClientServerPair(t, imap.ConnStateSelected)
+	defer client.Close()
+	defer server.Close()
+
+	// Enable QRESYNC — required before using VANISHED.
+	if _, err := client.Enable(imap.CapQResync).Wait(); err != nil {
+		t.Fatalf("Enable(QRESYNC) = %v", err)
+	}
+
+	// Send UID FETCH with Vanished=true but ChangedSince=0 (not set).
+	// The server must respond with BAD per RFC 7162 §3.2.6.
+	_, err := client.Fetch(imap.UIDSetNum(1), &imap.FetchOptions{
+		Flags:    true,
+		Vanished: true,
+		// ChangedSince intentionally omitted
+	}).Collect()
+	if err == nil {
+		t.Fatalf("UID FETCH VANISHED without CHANGEDSINCE should return BAD, got nil error")
+	}
+	t.Logf("Got expected error: %v", err)
+}
+
 func TestVanished_Response(t *testing.T) {
 	client, server := newClientServerPair(t, imap.ConnStateSelected)
 	defer client.Close()
