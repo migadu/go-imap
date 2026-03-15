@@ -276,7 +276,7 @@ func writeQResyncFetch(enc *imapwire.Encoder, mod imap.SelectModifiedData) error
 	enc.SP().Atom("FLAGS").SP().List(len(mod.Flags), func(i int) {
 		enc.Flag(mod.Flags[i])
 	})
-	enc.SP().Atom("MODSEQ").SP().ModSeq(mod.ModSeq)
+	enc.SP().Atom("MODSEQ").SP().Special('(').ModSeq(mod.ModSeq).Special(')')
 	enc.Special(')')
 	return enc.CRLF()
 }

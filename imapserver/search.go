@@ -129,7 +129,7 @@ func (c *Conn) writeESearch(tag string, data *imap.SearchData, options *imap.Sea
 		enc.SP().Atom("COUNT").SP().Number(data.Count)
 	}
 	if data.ModSeq > 0 && c.supportsCondStore() {
-		enc.SP().Special('(').Atom("MODSEQ").SP().ModSeq(data.ModSeq).Special(')')
+		enc.SP().Atom("MODSEQ").SP().ModSeq(data.ModSeq)
 	}
 	return enc.CRLF()
 }

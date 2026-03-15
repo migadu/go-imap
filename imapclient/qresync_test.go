@@ -149,6 +149,52 @@ func TestUIDFetch_Vanished(t *testing.T) {
 	t.Logf("UID FETCH with VANISHED returned %d messages", len(messages))
 }
 
+// TestSelect_QResync_ModifiedModSeq exercises the writeQResyncFetch code path
+// that emits untagged FETCH responses during a QRESYNC SELECT for messages
+// that were modified since the supplied mod-sequence.
+//
+// RFC 7162 §2.3.2 requires MODSEQ to be formatted as "MODSEQ (value)" in
+// FETCH responses.  Without the fix, writeQResyncFetch emits "MODSEQ value"
+// (without the mandatory parentheses), which the imapclient FETCH parser
+// rejects, causing Select().Wait() to return a parse error.
+func TestSelect_QResync_ModifiedModSeq(t *testing.T) {
+	client, server := newClientServerPair(t, imap.ConnStateAuthenticated)
+	defer client.Close()
+	defer server.Close()
+
+	// Enable QRESYNC — required before a QRESYNC SELECT.
+	if _, err := client.Enable(imap.CapQResync).Wait(); err != nil {
+		t.Fatalf("Enable(QRESYNC) = %v", err)
+	}
+
+	// First SELECT: learn UIDValidity for the mailbox.  At this point the
+	// mailbox contains exactly one message (appended by newClientServerPair)
+	// whose modSeq is > 0.
+	firstData, err := client.Select("INBOX", nil).Wait()
+	if err != nil {
+		t.Fatalf("First Select() = %v", err)
+	}
+
+	if err := client.Unselect().Wait(); err != nil {
+		t.Fatalf("Unselect() = %v", err)
+	}
+
+	// Second SELECT with QRESYNC and ModSeq=0.  Every message in the mailbox
+	// has modSeq > 0, so the server will include all of them in the Modified
+	// list and call writeQResyncFetch for each.  If MODSEQ is not wrapped in
+	// parentheses the client FETCH parser will return an error and
+	// Select().Wait() will fail.
+	_, err = client.Select("INBOX", &imap.SelectOptions{
+		QResync: &imap.QResyncData{
+			UIDValidity: firstData.UIDValidity,
+			ModSeq:      0, // request all modifications
+		},
+	}).Wait()
+	if err != nil {
+		t.Fatalf("QRESYNC Select() with modified messages = %v", err)
+	}
+}
+
 func TestVanished_Response(t *testing.T) {
 	client, server := newClientServerPair(t, imap.ConnStateSelected)
 	defer client.Close()

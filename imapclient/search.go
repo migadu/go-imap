@@ -328,9 +328,8 @@ func readESearchResponse(dec *imapwire.Decoder) (tag string, data *imap.SearchDa
 			if isUID {
 				numKind = imapwire.NumKindUID
 			}
-			if !dec.ExpectSP() {
-				return "", nil, dec.Err()
-			}
+			// The loop's own ExpectSP above already consumed the SP between
+			// "ALL" and the sequence-set; do not read a second one here.
 			if !dec.ExpectNumSet(numKind, &data.All) {
 				return "", nil, dec.Err()
 			}
@@ -343,6 +342,14 @@ func readESearchResponse(dec *imapwire.Decoder) (tag string, data *imap.SearchDa
 				return "", nil, dec.Err()
 			}
 			data.Count = num
+		case "MODSEQ":
+			// RFC 7162 §3.4: MODSEQ appears as a bare "MODSEQ <value>" item
+			// in an ESEARCH response.
+			var modSeq uint64
+			if !dec.ExpectModSeq(&modSeq) {
+				return "", nil, dec.Err()
+			}
+			data.ModSeq = modSeq
 		default:
 			if !dec.DiscardValue() {
 				return "", nil, dec.Err()
@@ -352,7 +359,9 @@ func readESearchResponse(dec *imapwire.Decoder) (tag string, data *imap.SearchDa
 		if !dec.SP() {
 			break
 		} else if dec.Special('(') {
-			// Handle parenthesized items like (MODSEQ 123)
+			// Compatibility path: some servers incorrectly wrap MODSEQ in
+			// parentheses as "(MODSEQ n)" instead of the RFC-correct bare
+			// "MODSEQ n".  Accept both forms.
 			var atomName string
 			if !dec.ExpectAtom(&atomName) {
 				return "", nil, dec.Err()
