@@ -51,7 +51,25 @@ func (c *Conn) handleLSub(dec *imapwire.Decoder) error {
 	return c.session.List(w, ref, []string{pattern}, options)
 }
 
-func (c *Conn) writeList(data *imap.ListData) error {
+// isExtendedListOptions returns true if the client used LIST-EXTENDED syntax,
+// i.e. specified any select or return option.  Extended response data items
+// (CHILDINFO, OLDNAME) must not be sent in response to a plain LIST command.
+func isExtendedListOptions(opts *imap.ListOptions) bool {
+	if opts == nil {
+		return false
+	}
+	return opts.SelectSubscribed || opts.SelectRemote ||
+		opts.SelectRecursiveMatch || opts.SelectSpecialUse ||
+		opts.ReturnSubscribed || opts.ReturnChildren ||
+		opts.ReturnSpecialUse || opts.ReturnStatus != nil
+}
+
+// writeList writes a single LIST response line.
+//
+// opts is the set of options from the LIST command; it is used to gate which
+// extended-data items are included in the response.  Pass nil when writing
+// LIST data outside of a LIST command context (e.g. inside a SELECT response).
+func (c *Conn) writeList(data *imap.ListData, opts *imap.ListOptions) error {
 	enc := newResponseEncoder(c)
 	defer enc.end()
 
@@ -68,14 +86,25 @@ func (c *Conn) writeList(data *imap.ListData) error {
 	enc.SP().Mailbox(data.Mailbox)
 
 	var ext []string
-	if data.ChildInfo != nil {
+	// CHILDINFO: only when the client used the RECURSIVEMATCH selection option.
+	//
+	// RFC 5258 §3.4/§3.5.1: CHILDINFO is returned to inform the client that a
+	// mailbox which itself does not match the selection criteria has children
+	// that do.  This is only meaningful (and SHOULD NOT be sent otherwise) when
+	// RECURSIVEMATCH was requested.
+	//
+	// Note: RETURN (CHILDREN) is a separate mechanism that requests
+	// \HasChildren/\HasNoChildren mailbox attribute flags — it is unrelated to
+	// the CHILDINFO extended data item.
+	if data.ChildInfo != nil && opts != nil && opts.SelectRecursiveMatch {
 		ext = append(ext, "CHILDINFO")
 	}
-	if data.OldName != "" {
+	// OLDNAME: only in LIST-EXTENDED responses.
+	// Sending it in response to a plain LIST command violates RFC 5258 §3.
+	if data.OldName != "" && isExtendedListOptions(opts) {
 		ext = append(ext, "OLDNAME")
 	}
 
-	// TODO: omit extended data if the client didn't ask for it
 	if len(ext) > 0 {
 		enc.SP().List(len(ext), func(i int) {
 			name := ext[i]
@@ -265,7 +294,7 @@ func (w *ListWriter) WriteList(data *imap.ListData) error {
 		return w.conn.writeLSub(data)
 	}
 
-	if err := w.conn.writeList(data); err != nil {
+	if err := w.conn.writeList(data, w.options); err != nil {
 		return err
 	}
 	if w.options.ReturnStatus != nil && data.Status != nil {

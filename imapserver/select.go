@@ -149,7 +149,7 @@ func (c *Conn) handleSelect(tag string, dec *imapwire.Decoder, readOnly bool) er
 	writeFlags(enc.Encoder, data.Flags)
 	writePermanentFlags(enc.Encoder, data.PermanentFlags)
 	if data.List != nil {
-		if err := c.writeList(data.List); err != nil {
+		if err := c.writeList(data.List, nil); err != nil {
 			return err
 		}
 	}
