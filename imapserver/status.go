@@ -1,6 +1,7 @@
 package imapserver
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/emersion/go-imap/v2"
@@ -53,8 +54,17 @@ func (c *Conn) writeStatus(data *imap.StatusData, options *imap.StatusOptions) e
 	defer enc.end()
 
 	enc.Atom("*").SP().Atom("STATUS").SP().Mailbox(data.Mailbox).SP()
+	// RFC 9051 §7.3.2: the server MUST include every requested STATUS item.
+	// If the backend's Status() method returns nil for a pointer field that
+	// was requested, that is a backend implementation bug.  Return an error
+	// rather than panicking (which would crash the connection) or silently
+	// omitting the field (which would produce a malformed STATUS response and
+	// hide the bug).
 	listEnc := enc.BeginList()
 	if options.NumMessages {
+		if data.NumMessages == nil {
+			return fmt.Errorf("imapserver: backend did not populate NumMessages in StatusData")
+		}
 		listEnc.Item().Atom("MESSAGES").SP().Number(*data.NumMessages)
 	}
 	if options.UIDNext {
@@ -64,12 +74,21 @@ func (c *Conn) writeStatus(data *imap.StatusData, options *imap.StatusOptions) e
 		listEnc.Item().Atom("UIDVALIDITY").SP().Number(data.UIDValidity)
 	}
 	if options.NumUnseen {
+		if data.NumUnseen == nil {
+			return fmt.Errorf("imapserver: backend did not populate NumUnseen in StatusData")
+		}
 		listEnc.Item().Atom("UNSEEN").SP().Number(*data.NumUnseen)
 	}
 	if options.NumDeleted {
+		if data.NumDeleted == nil {
+			return fmt.Errorf("imapserver: backend did not populate NumDeleted in StatusData")
+		}
 		listEnc.Item().Atom("DELETED").SP().Number(*data.NumDeleted)
 	}
 	if options.Size {
+		if data.Size == nil {
+			return fmt.Errorf("imapserver: backend did not populate Size in StatusData")
+		}
 		listEnc.Item().Atom("SIZE").SP().Number64(*data.Size)
 	}
 	if options.AppendLimit {
@@ -81,9 +100,15 @@ func (c *Conn) writeStatus(data *imap.StatusData, options *imap.StatusOptions) e
 		}
 	}
 	if options.DeletedStorage {
+		if data.DeletedStorage == nil {
+			return fmt.Errorf("imapserver: backend did not populate DeletedStorage in StatusData")
+		}
 		listEnc.Item().Atom("DELETED-STORAGE").SP().Number64(*data.DeletedStorage)
 	}
 	if options.NumRecent {
+		if data.NumRecent == nil {
+			return fmt.Errorf("imapserver: backend did not populate NumRecent in StatusData")
+		}
 		listEnc.Item().Atom("RECENT").SP().Number(*data.NumRecent)
 	}
 	if options.HighestModSeq {
