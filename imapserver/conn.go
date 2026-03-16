@@ -162,7 +162,9 @@ func (c *Conn) serve() {
 	defer func() {
 		if c.session != nil {
 			if err := c.session.Close(); err != nil {
-				c.server.logger().Printf("failed to close session (remote %v): %v", c.conn.RemoteAddr(), err)
+				if !isConnectionClosedError(err) {
+					c.server.logger().Printf("failed to close session (remote %v): %v", c.conn.RemoteAddr(), err)
+				}
 			}
 		}
 	}()
@@ -223,7 +225,8 @@ func (c *Conn) serve() {
 
 		c.setReadTimeout(cmdReadTimeout)
 		if err := c.readCommand(dec); err != nil {
-			if !isConnectionClosedError(err) {
+			var imapErr *imap.Error
+			if !isConnectionClosedError(err) && !(errors.As(err, &imapErr) && imapErr.Type == imap.StatusResponseTypeBye) {
 				c.server.logger().Printf("failed to read command (remote %v): %v", c.conn.RemoteAddr(), err)
 			}
 			break
