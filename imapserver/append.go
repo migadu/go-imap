@@ -70,6 +70,21 @@ func (c *Conn) handleAppend(tag string, dec *imapwire.Decoder) error {
 	}
 
 	if lit.Size() > appendLimit {
+		// For LITERAL+ (non-synchronizing), the client has already sent the literal data.
+		// We must drain it from the stream before returning the error, otherwise it will
+		// leak into the command parser and cause subsequent commands to fail with errors like:
+		// "Subject: BAD Unknown command" or "expected SP, got \"\r\""
+		if nonSync {
+			// Drain the literal data to prevent it from corrupting the command stream
+			if _, err := io.Copy(io.Discard, lit); err != nil {
+				return fmt.Errorf("failed to drain oversized literal: %w", err)
+			}
+			// Consume the CRLF after the literal
+			if !dec.CRLF() {
+				return dec.Err()
+			}
+		}
+
 		return &imap.Error{
 			Type: imap.StatusResponseTypeNo,
 			Code: imap.ResponseCodeTooBig,
