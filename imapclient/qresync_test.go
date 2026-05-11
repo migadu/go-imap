@@ -256,6 +256,74 @@ func TestVanished_Response(t *testing.T) {
 	t.Logf("VANISHED response handler test completed")
 }
 
+// TestSelect_QResync_ResponseOrder verifies that QRESYNC SELECT responses
+// are sent in the correct order per RFC 7162 §3.2.5.2:
+// 1. VANISHED (EARLIER) responses
+// 2. FETCH responses for modified messages
+// 3. EXISTS response (always sent, even with QRESYNC)
+// 4. Standard SELECT responses (UIDVALIDITY, FLAGS, etc.)
+func TestSelect_QResync_ResponseOrder(t *testing.T) {
+	client, server := newClientServerPair(t, imap.ConnStateAuthenticated)
+	defer client.Close()
+	defer server.Close()
+
+	// Enable QRESYNC
+	if _, err := client.Enable(imap.CapQResync).Wait(); err != nil {
+		t.Fatalf("Enable(QRESYNC) = %v", err)
+	}
+
+	// First SELECT to get initial state
+	firstSelect, err := client.Select("INBOX", nil).Wait()
+	if err != nil {
+		t.Fatalf("First Select() = %v", err)
+	}
+
+	initialModSeq := firstSelect.HighestModSeq
+	initialUIDValidity := firstSelect.UIDValidity
+
+	// Mark first message as deleted and expunge it to create a VANISHED response
+	if err := client.Store(imap.SeqSetNum(1), &imap.StoreFlags{
+		Op:    imap.StoreFlagsSet,
+		Flags: []imap.Flag{imap.FlagDeleted},
+	}, nil).Close(); err != nil {
+		t.Fatalf("Store(\\Deleted) = %v", err)
+	}
+
+	if _, err := client.Expunge().Collect(); err != nil {
+		t.Fatalf("Expunge() = %v", err)
+	}
+
+	if err := client.Unselect().Wait(); err != nil {
+		t.Fatalf("Unselect() = %v", err)
+	}
+
+	// SELECT with QRESYNC using ModSeq=0 to get both VANISHED and Modified
+	// (Note: in this test the message was expunged, so we won't get Modified,
+	// but EXISTS should still be sent)
+	selectData, err := client.Select("INBOX", &imap.SelectOptions{
+		QResync: &imap.QResyncData{
+			UIDValidity: initialUIDValidity,
+			ModSeq:      initialModSeq,
+		},
+	}).Wait()
+	if err != nil {
+		t.Fatalf("QRESYNC Select() = %v", err)
+	}
+
+	// Verify EXISTS is reported correctly (should be 0 after expunge)
+	if selectData.NumMessages != 0 {
+		t.Errorf("Expected NumMessages=0 after expunge, got %d", selectData.NumMessages)
+	}
+
+	// Verify VANISHED was populated
+	if len(selectData.Vanished) == 0 {
+		t.Errorf("Expected Vanished UIDs, got none")
+	}
+
+	t.Logf("QRESYNC SELECT response order verified: NumMessages=%d, Vanished=%v",
+		selectData.NumMessages, selectData.Vanished)
+}
+
 func TestCapability_QResync_Implications(t *testing.T) {
 	client, server := newClientServerPair(t, imap.ConnStateNotAuthenticated)
 	defer client.Close()

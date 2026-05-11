@@ -121,19 +121,9 @@ func (c *Conn) handleSelect(tag string, dec *imapwire.Decoder, readOnly bool) er
 	enc := newResponseEncoder(c)
 	defer enc.end()
 
-	isQResync := options.QResync != nil && data.UIDValidity == options.QResync.UIDValidity
-	if !isQResync {
-		writeExists(enc.Encoder, data.NumMessages)
-		if !c.enabled.Has(imap.CapIMAP4rev2) && c.server.options.caps().Has(imap.CapIMAP4rev1) {
-			writeObsoleteRecent(enc.Encoder, data.NumRecent)
-			if data.FirstUnseenSeqNum != 0 {
-				writeObsoleteUnseen(enc.Encoder, data.FirstUnseenSeqNum)
-			}
-		}
-	}
-
+	// Write QRESYNC-specific responses first per RFC 7162 §3.2.5
 	if len(data.Vanished) > 0 {
-		// QRESYNC SELECT responses use VANISHED (EARLIER) per RFC 7162 §3.2.5
+		// QRESYNC SELECT responses use VANISHED (EARLIER)
 		if err := writeVanishedEarlier(enc.Encoder, data.Vanished); err != nil {
 			return err
 		}
@@ -144,6 +134,17 @@ func (c *Conn) handleSelect(tag string, dec *imapwire.Decoder, readOnly bool) er
 			if err := writeQResyncFetch(enc.Encoder, mod); err != nil {
 				return err
 			}
+		}
+	}
+
+	// Always write EXISTS per RFC 7162 §3.2.5.2
+	// "The server MUST send EXISTS and RECENT responses, as documented
+	// in RFC 3501, even when QRESYNC is active."
+	writeExists(enc.Encoder, data.NumMessages)
+	if !c.enabled.Has(imap.CapIMAP4rev2) && c.server.options.caps().Has(imap.CapIMAP4rev1) {
+		writeObsoleteRecent(enc.Encoder, data.NumRecent)
+		if data.FirstUnseenSeqNum != 0 {
+			writeObsoleteUnseen(enc.Encoder, data.FirstUnseenSeqNum)
 		}
 	}
 
