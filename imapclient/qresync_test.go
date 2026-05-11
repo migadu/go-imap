@@ -184,7 +184,7 @@ func TestSelect_QResync_ModifiedModSeq(t *testing.T) {
 	// list and call writeQResyncFetch for each.  If MODSEQ is not wrapped in
 	// parentheses the client FETCH parser will return an error and
 	// Select().Wait() will fail.
-	_, err = client.Select("INBOX", &imap.SelectOptions{
+	secondData, err := client.Select("INBOX", &imap.SelectOptions{
 		QResync: &imap.QResyncData{
 			UIDValidity: firstData.UIDValidity,
 			ModSeq:      0, // request all modifications
@@ -192,6 +192,16 @@ func TestSelect_QResync_ModifiedModSeq(t *testing.T) {
 	}).Wait()
 	if err != nil {
 		t.Fatalf("QRESYNC Select() with modified messages = %v", err)
+	}
+
+	// Verify the Modified field is populated
+	if len(secondData.Modified) == 0 {
+		t.Errorf("Expected Modified messages in SelectData, got none")
+	} else {
+		t.Logf("Modified messages: %d", len(secondData.Modified))
+		for _, mod := range secondData.Modified {
+			t.Logf("  SeqNum=%d UID=%d Flags=%v ModSeq=%d", mod.SeqNum, mod.UID, mod.Flags, mod.ModSeq)
+		}
 	}
 }
 
@@ -350,11 +360,14 @@ func TestSelect_QResync_VanishedEarlier(t *testing.T) {
 	t.Logf("QRESYNC SELECT successful: UIDValidity=%d, HighestModSeq=%d",
 		selectData.UIDValidity, selectData.HighestModSeq)
 
-	// Note: The VANISHED (EARLIER) response is sent as an untagged response
-	// and handled by the UnilateralDataHandler if set. Our fix ensures the
-	// server writes the correct wire format with the EARLIER modifier.
-	// This can be verified by:
-	// 1. Running with -v flag to see debug output
-	// 2. Testing against real IMAP servers with QRESYNC support
-	// 3. Unit testing the writeVanished function directly
+	// Verify the Vanished field is populated
+	if len(selectData.Vanished) == 0 {
+		t.Errorf("Expected Vanished UIDs in SelectData, got none")
+	} else {
+		t.Logf("Vanished UIDs: %v", selectData.Vanished)
+		// Verify the expunged message UID is in the Vanished list
+		if !selectData.Vanished.Contains(1) {
+			t.Errorf("Expected UID 1 in Vanished list, got: %v", selectData.Vanished)
+		}
+	}
 }

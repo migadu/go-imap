@@ -1039,7 +1039,12 @@ func (c *Client) handleVanished() error {
 		return c.dec.Err()
 	}
 
-	if handler := c.options.unilateralDataHandler().Vanished; handler != nil {
+	// Check if there's a pending SELECT command
+	cmd := findPendingCmdByType[*SelectCommand](c)
+	if cmd != nil && data.Earlier {
+		// VANISHED (EARLIER) during SELECT should populate SelectData
+		cmd.data.Vanished = data.UIDs
+	} else if handler := c.options.unilateralDataHandler().Vanished; handler != nil {
 		handler(&data)
 	}
 

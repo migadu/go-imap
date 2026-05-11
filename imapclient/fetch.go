@@ -622,9 +622,27 @@ func (c *Client) handleFetch(seqNum uint32) error {
 	// fashion: it can contain literals. Assume that the UID will be returned
 	// before any literal.
 	var uid imap.UID
+	var flags []imap.Flag
+	var modSeq uint64
 	handled := false
 	handleMsg := func() {
 		if handled {
+			return
+		}
+
+		// Check if this is a QRESYNC SELECT response
+		selectCmd := findPendingCmdByType[*SelectCommand](c)
+		if selectCmd != nil && uid != 0 && modSeq != 0 {
+			// This is a Modified message during QRESYNC SELECT
+			// Note: flags can be empty (nil), so we only check uid and modSeq
+			selectCmd.data.Modified = append(selectCmd.data.Modified, imap.SelectModifiedData{
+				SeqNum: seqNum,
+				UID:    uid,
+				Flags:  flags,
+				ModSeq: modSeq,
+			})
+			handled = true
+			go msg.discard() // Discard remaining data
 			return
 		}
 
@@ -672,12 +690,13 @@ func (c *Client) handleFetch(seqNum uint32) error {
 				return dec.Err()
 			}
 
-			flags, err := internal.ExpectFlagList(dec)
+			parsedFlags, err := internal.ExpectFlagList(dec)
 			if err != nil {
 				return err
 			}
 
-			item = FetchItemDataFlags{Flags: flags}
+			flags = parsedFlags
+			item = FetchItemDataFlags{Flags: parsedFlags}
 		case "ENVELOPE":
 			if !dec.ExpectSP() {
 				return dec.Err()
@@ -808,7 +827,6 @@ func (c *Client) handleFetch(seqNum uint32) error {
 				Size: size,
 			}
 		case "MODSEQ":
-			var modSeq uint64
 			if !dec.ExpectSP() || !dec.ExpectSpecial('(') || !dec.ExpectModSeq(&modSeq) || !dec.ExpectSpecial(')') {
 				return dec.Err()
 			}
