@@ -133,7 +133,10 @@ func (c *Conn) handleSelect(tag string, dec *imapwire.Decoder, readOnly bool) er
 	}
 
 	if len(data.Vanished) > 0 {
-		writeVanished(enc.Encoder, data.Vanished)
+		// QRESYNC SELECT responses use VANISHED (EARLIER) per RFC 7162 §3.2.5
+		if err := writeVanishedEarlier(enc.Encoder, data.Vanished); err != nil {
+			return err
+		}
 	}
 
 	if len(data.Modified) > 0 {
@@ -264,9 +267,10 @@ func writeNoModSeq(enc *imapwire.Encoder) error {
 	return enc.CRLF()
 }
 
-func writeVanished(enc *imapwire.Encoder, uids imap.UIDSet) error {
+func writeVanishedEarlier(enc *imapwire.Encoder, uids imap.UIDSet) error {
 	enc.Atom("*").SP().Atom("VANISHED").SP()
-	enc.NumSet(uids)
+	enc.Special('(').Atom("EARLIER").Special(')')
+	enc.SP().NumSet(uids)
 	return enc.CRLF()
 }
 

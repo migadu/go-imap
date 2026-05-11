@@ -426,6 +426,18 @@ type FetchWriter struct {
 	options fetchWriterOptions
 }
 
+// WriteVanished writes a VANISHED response for QRESYNC FETCH operations.
+//
+// This should be called when handling UID FETCH with the VANISHED modifier
+// (RFC 7162 §3.2.6). The earlier parameter should be true when used with
+// CHANGEDSINCE to indicate historical data.
+//
+// Server implementations should call this before writing any FETCH message
+// responses to provide the list of expunged UIDs.
+func (w *FetchWriter) WriteVanished(uids imap.UIDSet, earlier bool) error {
+	return w.conn.writeVanished(uids, earlier)
+}
+
 // CreateMessage writes a FETCH response for a message.
 //
 // FetchResponseWriter.Close must be called.
