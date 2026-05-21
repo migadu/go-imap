@@ -42,7 +42,7 @@ func (c *Conn) handleThread(tag string, dec *imapwire.Decoder, numKind NumKind) 
 	var criteria imap.SearchCriteria
 	for {
 		var err error
-		err = readSearchKey(&criteria, dec)
+		err = readSearchKey(c, &criteria, dec)
 		if err != nil {
 			return fmt.Errorf("in search-key: %w", err)
 		}
