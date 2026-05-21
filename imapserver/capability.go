@@ -114,6 +114,11 @@ func (c *Conn) availableCaps() []imap.Cap {
 			caps = append(caps, imap.CapMetadata)
 		}
 
+		// MULTISEARCH capability
+		if _, ok := c.session.(SessionMultiSearch); ok && available.Has(imap.Cap("MULTISEARCH")) {
+			caps = append(caps, imap.Cap("MULTISEARCH"))
+		}
+
 		// Add ACL capability if the session supports it
 		if _, ok := c.session.(SessionACL); ok {
 			caps = append(caps, imap.Cap("ACL"))

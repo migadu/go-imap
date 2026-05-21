@@ -350,6 +350,8 @@ func (c *Conn) readCommand(dec *imapwire.Decoder) error {
 		err = c.handleGetMetadata(dec)
 	case "SETMETADATA":
 		err = c.handleSetMetadata(dec)
+	case "MULTISEARCH", "UID MULTISEARCH":
+		err = c.handleMultiSearch(tag, dec, numKind)
 	case "THREAD", "UID THREAD":
 		err = c.handleThread(tag, dec, numKind)
 	default:

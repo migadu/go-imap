@@ -142,6 +142,9 @@ type SearchData struct {
 	Max   uint32
 	Count uint32
 
+	// requires MULTISEARCH
+	Mailbox string
+
 	// requires CONDSTORE
 	ModSeq uint64
 }

@@ -82,6 +82,50 @@ func (c *Client) UIDSearch(criteria *imap.SearchCriteria, options *imap.SearchOp
 	return c.search(imapwire.NumKindUID, criteria, options)
 }
 
+func (c *Client) multiSearch(numKind imapwire.NumKind, mailboxes []string, criteria *imap.SearchCriteria, options *imap.SearchOptions) *SearchCommand {
+	var charset string
+	if !c.Caps().Has(imap.CapIMAP4rev2) && !c.enabled.Has(imap.CapUTF8Accept) && !searchCriteriaIsASCII(criteria) {
+		charset = "UTF-8"
+	}
+
+	var all imap.NumSet
+	switch numKind {
+	case imapwire.NumKindSeq:
+		all = imap.SeqSet(nil)
+	case imapwire.NumKindUID:
+		all = imap.UIDSet(nil)
+	}
+
+	cmd := &SearchCommand{}
+	cmd.data.All = all
+	enc := c.beginCommand(uidCmdName("MULTISEARCH", numKind), cmd)
+	if returnOpts := returnSearchOptions(options); len(returnOpts) > 0 {
+		enc.SP().Atom("RETURN").SP().List(len(returnOpts), func(i int) {
+			enc.Atom(returnOpts[i])
+		})
+	}
+	enc.SP().List(len(mailboxes), func(i int) {
+		enc.Mailbox(mailboxes[i])
+	})
+	enc.SP()
+	if charset != "" {
+		enc.Atom("CHARSET").SP().Atom(charset).SP()
+	}
+	writeSearchKey(enc.Encoder, criteria, c.Caps().Has(imap.CapCondStore))
+	enc.end()
+	return cmd
+}
+
+// MultiSearch sends a MULTISEARCH command.
+func (c *Client) MultiSearch(mailboxes []string, criteria *imap.SearchCriteria, options *imap.SearchOptions) *SearchCommand {
+	return c.multiSearch(imapwire.NumKindSeq, mailboxes, criteria, options)
+}
+
+// UIDMultiSearch sends a UID MULTISEARCH command.
+func (c *Client) UIDMultiSearch(mailboxes []string, criteria *imap.SearchCriteria, options *imap.SearchOptions) *SearchCommand {
+	return c.multiSearch(imapwire.NumKindUID, mailboxes, criteria, options)
+}
+
 func (c *Client) handleSearch() error {
 	cmd := findPendingCmdByType[*SearchCommand](c)
 	for c.dec.SP() {
@@ -311,6 +355,12 @@ func readESearchResponse(dec *imapwire.Decoder) (tag string, data *imap.SearchDa
 		}
 
 		switch strings.ToUpper(name) {
+		case "MAILBOX":
+			var mbox string
+			if !dec.ExpectMailbox(&mbox) {
+				return "", nil, dec.Err()
+			}
+			data.Mailbox = mbox
 		case "MIN":
 			var num uint32
 			if !dec.ExpectNumber(&num) {

@@ -59,3 +59,33 @@ func TestESearch(t *testing.T) {
 		t.Errorf("Count = %v, want %v", data.Count, want)
 	}
 }
+
+func TestMultiSearch(t *testing.T) {
+	client, server := newClientServerPair(t, imap.ConnStateSelected)
+	defer client.Close()
+	defer server.Close()
+
+	if !client.Caps().Has(imap.Cap("MULTISEARCH")) {
+		t.Skip("server doesn't support MULTISEARCH")
+	}
+
+	criteria := imap.SearchCriteria{
+		Header: []imap.SearchCriteriaHeaderField{{
+			Key:   "Message-Id",
+			Value: "<191101702316132@example.com>",
+		}},
+	}
+	options := imap.SearchOptions{
+		ReturnCount: true,
+	}
+	data, err := client.MultiSearch([]string{"INBOX", "archive"}, &criteria, &options).Wait()
+	if err != nil {
+		t.Fatalf("MultiSearch().Wait() = %v", err)
+	}
+	if want := uint32(1); data.Count != want {
+		t.Errorf("Count = %v, want %v", data.Count, want)
+	}
+	if want := "INBOX"; data.Mailbox != want {
+		t.Errorf("Mailbox = %v, want %v", data.Mailbox, want)
+	}
+}

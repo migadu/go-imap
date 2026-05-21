@@ -115,6 +115,10 @@ func (c *Conn) writeESearch(tag string, data *imap.SearchData, options *imap.Sea
 		enc.SP().Atom("UID")
 	}
 
+	if data.Mailbox != "" {
+		enc.SP().Atom("MAILBOX").SP().Mailbox(data.Mailbox)
+	}
+
 	if options.ReturnAll && data.All != nil && !isNumSetEmpty(data.All) {
 		enc.SP().Atom("ALL")
 		enc.SP().NumSet(data.All)
