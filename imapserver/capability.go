@@ -105,6 +105,8 @@ func (c *Conn) availableCaps() []imap.Cap {
 			imap.CapSortDisplay,
 			imap.CapESort,
 			imap.CapID,
+			imap.Cap("THREAD=REFERENCES"),
+			imap.Cap("THREAD=ORDEREDSUBJECT"),
 		})
 
 		// METADATA capability

@@ -53,21 +53,16 @@ func (c *Client) handleThread() error {
 // ThreadCommand is a THREAD command.
 type ThreadCommand struct {
 	commandBase
-	data []ThreadData
+	data []imap.ThreadData
 }
 
-func (cmd *ThreadCommand) Wait() ([]ThreadData, error) {
+func (cmd *ThreadCommand) Wait() ([]imap.ThreadData, error) {
 	err := cmd.wait()
 	return cmd.data, err
 }
 
-type ThreadData struct {
-	Chain      []uint32
-	SubThreads []ThreadData
-}
-
-func readThreadList(dec *imapwire.Decoder) (*ThreadData, error) {
-	var data ThreadData
+func readThreadList(dec *imapwire.Decoder) (*imap.ThreadData, error) {
+	var data imap.ThreadData
 	err := dec.ExpectList(func() error {
 		var num uint32
 		if len(data.SubThreads) == 0 && dec.Number(&num) {

@@ -350,6 +350,8 @@ func (c *Conn) readCommand(dec *imapwire.Decoder) error {
 		err = c.handleGetMetadata(dec)
 	case "SETMETADATA":
 		err = c.handleSetMetadata(dec)
+	case "THREAD", "UID THREAD":
+		err = c.handleThread(tag, dec, numKind)
 	default:
 		if c.state == imap.ConnStateNotAuthenticated {
 			// Don't allow a single unknown command before authentication to
