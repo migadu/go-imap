@@ -353,7 +353,7 @@ func (c *Conn) readCommand(dec *imapwire.Decoder) error {
 	case "MULTISEARCH", "UID MULTISEARCH":
 		err = c.handleMultiSearch(tag, dec, numKind)
 	case "THREAD", "UID THREAD":
-		err = c.handleThread(tag, dec, numKind)
+		err = c.handleThread(dec, numKind)
 	default:
 		if c.state == imap.ConnStateNotAuthenticated {
 			// Don't allow a single unknown command before authentication to

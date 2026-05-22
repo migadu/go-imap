@@ -157,6 +157,13 @@ func (sess *UserSession) Thread(numKind imapserver.NumKind, algorithm imap.Threa
 		}
 	}
 
+	if algorithm != imap.ThreadReferences && algorithm != imap.ThreadOrderedSubject {
+		return nil, &imap.Error{
+			Type: imap.StatusResponseTypeBad,
+			Text: "Unsupported algorithm in mock",
+		}
+	}
+
 	// For testing, just return a dummy thread matching our client test expectation
 	return []imap.ThreadData{
 		{Chain: []uint32{1}},

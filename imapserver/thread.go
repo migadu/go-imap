@@ -13,7 +13,7 @@ type SessionThread interface {
 	Thread(numKind NumKind, algorithm imap.ThreadAlgorithm, charset string, criteria *imap.SearchCriteria) ([]imap.ThreadData, error)
 }
 
-func (c *Conn) handleThread(tag string, dec *imapwire.Decoder, numKind NumKind) error {
+func (c *Conn) handleThread(dec *imapwire.Decoder, numKind NumKind) error {
 	if !dec.ExpectSP() {
 		return dec.Err()
 	}
@@ -22,7 +22,14 @@ func (c *Conn) handleThread(tag string, dec *imapwire.Decoder, numKind NumKind) 
 	if !dec.ExpectAtom(&algStr) || !dec.ExpectSP() {
 		return dec.Err()
 	}
+
 	algorithm := imap.ThreadAlgorithm(strings.ToUpper(algStr))
+	if algorithm != imap.ThreadReferences && algorithm != imap.ThreadOrderedSubject {
+		return &imap.Error{
+			Type: imap.StatusResponseTypeBad,
+			Text: fmt.Sprintf("Unsupported THREAD algorithm: %s", algorithm),
+		}
+	}
 
 	var charset string
 	if !dec.ExpectAString(&charset) || !dec.ExpectSP() {
@@ -30,7 +37,8 @@ func (c *Conn) handleThread(tag string, dec *imapwire.Decoder, numKind NumKind) 
 	}
 	switch strings.ToUpper(charset) {
 	case "US-ASCII", "UTF-8":
-		// nothing to do
+		// IMAP4rev2 mandates US-ASCII and UTF-8 support. The backend
+		// receives this charset string and can enforce its own restrictions.
 	default:
 		return &imap.Error{
 			Type: imap.StatusResponseTypeNo,
