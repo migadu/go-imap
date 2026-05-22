@@ -156,7 +156,7 @@ func (sess *UserSession) Thread(numKind imapserver.NumKind, algorithm imap.Threa
 			Text: "No mailbox selected",
 		}
 	}
-	
+
 	// For testing, just return a dummy thread matching our client test expectation
 	return []imap.ThreadData{
 		{Chain: []uint32{1}},

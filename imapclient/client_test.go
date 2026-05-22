@@ -100,14 +100,14 @@ func newMemClientServerPair(t *testing.T) (net.Conn, io.Closer) {
 		},
 		InsecureAuth: true,
 		Caps: imap.CapSet{
-			imap.CapIMAP4rev1:             {},
-			imap.CapIMAP4rev2:             {},
-			imap.CapCondStore:             {},
-			imap.CapQResync:               {},
-			imap.CapMetadata:              {},
-			imap.Cap("THREAD=REFERENCES"): {},
+			imap.CapIMAP4rev1:                 {},
+			imap.CapIMAP4rev2:                 {},
+			imap.CapCondStore:                 {},
+			imap.CapQResync:                   {},
+			imap.CapMetadata:                  {},
+			imap.Cap("THREAD=REFERENCES"):     {},
 			imap.Cap("THREAD=ORDEREDSUBJECT"): {},
-			imap.Cap("MULTISEARCH"):       {},
+			imap.Cap("MULTISEARCH"):           {},
 		},
 	})
 

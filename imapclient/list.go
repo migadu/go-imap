@@ -49,9 +49,6 @@ func getReturnOpts(options *imap.ListOptions) []string {
 	if options.ReturnSpecialUse {
 		l = append(l, "SPECIAL-USE")
 	}
-	if len(options.ReturnMetadata) > 0 {
-		l = append(l, "METADATA")
-	}
 	return l
 }
 
