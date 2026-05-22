@@ -33,8 +33,11 @@ type GetMetadataOptions struct {
 
 // GetMetadataData is the data returned by the GETMETADATA command.
 type GetMetadataData struct {
-	Mailbox          string
-	Entries          map[string]*[]byte
+	Mailbox string
+	Entries map[string]*[]byte
+	// LongEntries indicates the size of the largest skipped entry due to MAXSIZE.
+	// A value of 0 means no entries were skipped.
+	LongEntries      uint32
 	ResponseCodeData *MetadataResponseCodeData // Response code data from server (e.g., LONGENTRIES size)
 }
 

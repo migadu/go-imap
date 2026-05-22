@@ -8,7 +8,7 @@ import (
 	"github.com/emersion/go-imap/v2/internal/imapwire"
 )
 
-func (c *Conn) handleGetMetadata(dec *imapwire.Decoder) error {
+func (c *Conn) handleGetMetadata(tag string, dec *imapwire.Decoder) error {
 	if !dec.ExpectSP() {
 		return dec.Err()
 	}
@@ -100,14 +100,26 @@ func (c *Conn) handleGetMetadata(dec *imapwire.Decoder) error {
 
 	data, err := session.GetMetadata(mailbox, entries, opts)
 	if err != nil {
-		return err
+		return fmt.Errorf("GETMETADATA for mailbox %q: %w", mailbox, err)
 	}
 
 	if err := c.writeMetadataResp(data.Mailbox, data.Entries); err != nil {
-		return err
+		return fmt.Errorf("writing METADATA response for mailbox %q: %w", mailbox, err)
 	}
 
-	return nil
+	return c.writeGetMetadataOK(tag, data)
+}
+
+func (c *Conn) writeGetMetadataOK(tag string, data *imap.GetMetadataData) error {
+	enc := newResponseEncoder(c)
+	defer enc.end()
+
+	enc.Atom(tag).SP().Atom("OK").SP()
+	if data.LongEntries > 0 {
+		enc.Special('[').Atom("METADATA").SP().Atom("LONGENTRIES").SP().Number(data.LongEntries).Special(']').SP()
+	}
+	enc.Text("GETMETADATA completed")
+	return enc.CRLF()
 }
 
 func (c *Conn) handleSetMetadata(dec *imapwire.Decoder) error {
@@ -159,7 +171,11 @@ func (c *Conn) handleSetMetadata(dec *imapwire.Decoder) error {
 		return newClientBugError("SETMETADATA is not supported")
 	}
 
-	return session.SetMetadata(mailbox, entries)
+	if err := session.SetMetadata(mailbox, entries); err != nil {
+		return fmt.Errorf("SETMETADATA for mailbox %q: %w", mailbox, err)
+	}
+
+	return nil
 }
 
 func (c *Conn) writeMetadataResp(mailbox string, entries map[string]*[]byte) error {

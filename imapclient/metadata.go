@@ -1,7 +1,9 @@
 package imapclient
 
 import (
+	"bytes"
 	"fmt"
+	"io"
 
 	"github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/internal/imapwire"
@@ -87,7 +89,13 @@ func (c *Client) SetMetadata(mailbox string, entries map[string]*[]byte) *Comman
 		if v == nil {
 			enc.NIL()
 		} else {
-			enc.String(string(*v)) // TODO: use literals if required
+			if len(*v) > 4096 || bytes.ContainsAny(*v, "\r\n\"\\") {
+				lit := enc.Literal(int64(len(*v)))
+				_, _ = lit.Write(*v)
+				lit.Close()
+			} else {
+				enc.String(string(*v))
+			}
 		}
 		i++
 	}
@@ -103,11 +111,21 @@ func (c *Client) handleMetadata() error {
 	}
 
 	cmd := c.findPendingCmdFunc(func(anyCmd command) bool {
-		cmd, ok := anyCmd.(*GetMetadataCommand)
-		return ok && cmd.mailbox == data.Mailbox
+		switch cmd := anyCmd.(type) {
+		case *GetMetadataCommand:
+			return cmd.mailbox == data.Mailbox
+		case *ListCommand:
+			return cmd.returnMetadata && cmd.pendingData != nil && cmd.pendingData.Mailbox == data.Mailbox
+		default:
+			return false
+		}
 	})
-	if cmd != nil && len(data.EntryValues) > 0 {
-		cmd := cmd.(*GetMetadataCommand)
+	if len(data.EntryValues) == 0 {
+		cmd = nil // Response is unsolicited
+	}
+
+	switch cmd := cmd.(type) {
+	case *GetMetadataCommand:
 		cmd.data.Mailbox = data.Mailbox
 		if cmd.data.Entries == nil {
 			cmd.data.Entries = make(map[string]*[]byte)
@@ -117,8 +135,20 @@ func (c *Client) handleMetadata() error {
 		for k, v := range data.EntryValues {
 			cmd.data.Entries[k] = v
 		}
-	} else if handler := c.options.unilateralDataHandler().Metadata; handler != nil && len(data.EntryList) > 0 {
-		handler(data.Mailbox, data.EntryList)
+	case *ListCommand:
+		if cmd.pendingData.Metadata == nil {
+			cmd.pendingData.Metadata = &imap.GetMetadataData{
+				Mailbox: data.Mailbox,
+				Entries: make(map[string]*[]byte),
+			}
+		}
+		for k, v := range data.EntryValues {
+			cmd.pendingData.Metadata.Entries[k] = v
+		}
+	default:
+		if handler := c.options.unilateralDataHandler().Metadata; handler != nil && len(data.EntryList) > 0 {
+			handler(data.Mailbox, data.EntryList)
+		}
 	}
 
 	return nil
@@ -154,16 +184,25 @@ func readMetadataResp(dec *imapwire.Decoder) (*metadataResp, error) {
 			return dec.Err()
 		}
 
-		// TODO: decode as []byte
 		var (
 			value *[]byte
 			s     string
 		)
-		if dec.String(&s) || dec.Literal(&s) {
+		if lit, _, ok := dec.LiteralReader(); ok {
+			b, err := io.ReadAll(lit)
+			if err != nil {
+				return fmt.Errorf("reading metadata value for %q: %w", name, err)
+			}
+			value = &b
+		} else if dec.Quoted(&s) {
+			b := []byte(s)
+			value = &b
+		} else if dec.Atom(&s) {
+			// Handle unquoted atoms (should be rare, but valid per IMAP syntax)
 			b := []byte(s)
 			value = &b
 		} else if !dec.ExpectNIL() {
-			return dec.Err()
+			return fmt.Errorf("invalid metadata value for %q: %w", name, dec.Err())
 		}
 
 		if data.EntryValues == nil {

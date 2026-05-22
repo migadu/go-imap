@@ -61,7 +61,8 @@ func isExtendedListOptions(opts *imap.ListOptions) bool {
 	return opts.SelectSubscribed || opts.SelectRemote ||
 		opts.SelectRecursiveMatch || opts.SelectSpecialUse ||
 		opts.ReturnSubscribed || opts.ReturnChildren ||
-		opts.ReturnSpecialUse || opts.ReturnStatus != nil
+		opts.ReturnSpecialUse || opts.ReturnStatus != nil ||
+		opts.ReturnMetadata != nil
 }
 
 // writeList writes a single LIST response line.
@@ -275,6 +276,25 @@ func readReturnOption(dec *imapwire.Decoder, options *imap.ListOptions) error {
 		return dec.ExpectList(func() error {
 			return readStatusItem(dec, options.ReturnStatus)
 		})
+	case "METADATA":
+		options.ReturnMetadata = []string{}
+		if !dec.SP() {
+			return nil
+		}
+		return dec.ExpectList(func() error {
+			var entry string
+			if !dec.ExpectAString(&entry) {
+				return dec.Err()
+			}
+			if err := imap.ValidateMetadataEntry(entry); err != nil {
+				return &imap.Error{
+					Type: imap.StatusResponseTypeBad,
+					Text: err.Error(),
+				}
+			}
+			options.ReturnMetadata = append(options.ReturnMetadata, entry)
+			return nil
+		})
 	default:
 		return newClientBugError("Unknown LIST RETURN options")
 	}
@@ -300,6 +320,20 @@ func (w *ListWriter) WriteList(data *imap.ListData) error {
 	if w.options.ReturnStatus != nil && data.Status != nil {
 		if err := w.conn.writeStatus(data.Status, w.options.ReturnStatus); err != nil {
 			return err
+		}
+	}
+	if w.options.ReturnMetadata != nil {
+		if sessionMeta, ok := w.conn.session.(SessionMetadata); ok {
+			metaData, err := sessionMeta.GetMetadata(data.Mailbox, w.options.ReturnMetadata, nil)
+			if err == nil && metaData != nil {
+				// Write metadata response even if entries is empty (per RFC 5524)
+				// Empty map means metadata was queried but no entries matched
+				if metaData.Entries != nil {
+					if err := w.conn.writeMetadataResp(metaData.Mailbox, metaData.Entries); err != nil {
+						return err
+					}
+				}
+			}
 		}
 	}
 	return nil

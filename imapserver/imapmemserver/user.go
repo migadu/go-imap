@@ -102,6 +102,10 @@ func (u *User) List(w *imapserver.ListWriter, ref string, patterns []string, opt
 		return l[i].Mailbox < l[j].Mailbox
 	})
 
+	// Release lock before I/O operations to avoid blocking
+	u.mutex.Unlock()
+	defer u.mutex.Lock() // Re-lock so the outer defer u.mutex.Unlock() is safe
+
 	for _, data := range l {
 		if err := w.WriteList(&data); err != nil {
 			return err

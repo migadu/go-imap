@@ -708,16 +708,23 @@ func (c *Client) readResponseTagged(tag, typ string) (startTLS *startTLSCommand,
 				return nil, fmt.Errorf("in capability-data: %w", err)
 			}
 			c.setCaps(caps)
-		case "LONGENTRIES", "MAXSIZE": // METADATA response codes with size parameter
-			var size uint32
-			if !c.dec.ExpectSP() || !c.dec.ExpectNumber(&size) {
+		case "METADATA": // METADATA response codes with size parameter
+			var subCode string
+			if !c.dec.ExpectSP() || !c.dec.ExpectAtom(&subCode) {
 				return nil, fmt.Errorf("in resp-code-metadata: %v", c.dec.Err())
 			}
-			if cmd, ok := cmd.(*GetMetadataCommand); ok {
-				if cmd.data.ResponseCodeData == nil {
-					cmd.data.ResponseCodeData = &imap.MetadataResponseCodeData{}
+			switch strings.ToUpper(subCode) {
+			case "LONGENTRIES", "MAXSIZE":
+				var size uint32
+				if !c.dec.ExpectSP() || !c.dec.ExpectNumber(&size) {
+					return nil, fmt.Errorf("in resp-code-metadata size: %v", c.dec.Err())
 				}
-				cmd.data.ResponseCodeData.Size = size
+				if cmd, ok := cmd.(*GetMetadataCommand); ok {
+					if cmd.data.ResponseCodeData == nil {
+						cmd.data.ResponseCodeData = &imap.MetadataResponseCodeData{}
+					}
+					cmd.data.ResponseCodeData.Size = size
+				}
 			}
 		case "APPENDUID":
 			var (

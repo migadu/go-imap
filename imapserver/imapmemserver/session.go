@@ -199,23 +199,35 @@ func (sess *UserSession) GetMetadata(mailboxName string, entries []string, optio
 	}
 
 	result := make(map[string]*[]byte)
+	var longEntries uint32
 
-	for _, requestedEntry := range entries {
+	if len(entries) == 0 {
 		for entryName, value := range source {
-			if matchesWithDepth(entryName, requestedEntry, options) {
-				if options != nil && options.MaxSize != nil && value != nil {
-					if uint32(len(*value)) > *options.MaxSize {
-						continue
+			result[entryName] = value
+		}
+	} else {
+		for _, requestedEntry := range entries {
+			for entryName, value := range source {
+				if matchesWithDepth(entryName, requestedEntry, options) {
+					if options != nil && options.MaxSize != nil && value != nil {
+						size := uint32(len(*value))
+						if size > *options.MaxSize {
+							if size > longEntries {
+								longEntries = size
+							}
+							continue
+						}
 					}
+					result[entryName] = value
 				}
-				result[entryName] = value
 			}
 		}
 	}
 
 	return &imap.GetMetadataData{
-		Mailbox: mailboxName,
-		Entries: result,
+		Mailbox:     mailboxName,
+		Entries:     result,
+		LongEntries: longEntries,
 	}, nil
 }
 

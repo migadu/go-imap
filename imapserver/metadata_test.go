@@ -7,6 +7,8 @@ import (
 
 	"github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/internal/imapwire"
+	"io"
+	"net"
 )
 
 func TestValidateMetadataEntry(t *testing.T) {
@@ -359,17 +361,21 @@ func TestHandleGetMetadata_Integration(t *testing.T) {
 			// Create mock session
 			session := &mockMetadataSession{}
 
-			// Create server connection with mock session
+			server := New(&Options{})
+			c1, _ := net.Pipe()
 			conn := &Conn{
+				conn:    c1,
 				session: session,
 				state:   imap.ConnStateAuthenticated, // Skip auth for testing
+				server:  server,
+				bw:      bufio.NewWriter(io.Discard),
 			}
 
 			// Parse the input using a decoder
 			dec := imapwire.NewDecoder(bufio.NewReader(strings.NewReader(tt.input)), 0)
 
 			// Call handleGetMetadata directly
-			err := conn.handleGetMetadata(dec)
+			err := conn.handleGetMetadata("T1", dec)
 
 			// Check error expectations
 			if tt.wantErr {

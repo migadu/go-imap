@@ -570,9 +570,13 @@ func TestMetadata_ResponseCodes(t *testing.T) {
 			t.Error("Did not expect /private/large (should be filtered by MAXSIZE)")
 		}
 
-		// Note: Current implementation does not return LONGENTRIES response code
-		// This is a known limitation - the server silently filters large entries
-		// A future enhancement would be to track and report LONGENTRIES
+		// Assert LONGENTRIES response code was returned
+		if data.ResponseCodeData == nil {
+			t.Fatal("Expected ResponseCodeData to be populated with LONGENTRIES")
+		}
+		if data.ResponseCodeData.Size != 100 {
+			t.Errorf("Expected LONGENTRIES size 100, got %d", data.ResponseCodeData.Size)
+		}
 	})
 }
 

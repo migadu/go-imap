@@ -347,7 +347,8 @@ func (c *Conn) readCommand(dec *imapwire.Decoder) error {
 	case "SORT", "UID SORT":
 		err = c.handleSort(tag, dec, numKind)
 	case "GETMETADATA":
-		err = c.handleGetMetadata(dec)
+		err = c.handleGetMetadata(tag, dec)
+		sendOK = false
 	case "SETMETADATA":
 		err = c.handleSetMetadata(dec)
 	case "MULTISEARCH", "UID MULTISEARCH":

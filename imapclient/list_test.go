@@ -303,3 +303,61 @@ func TestListExtendedVsPlain(t *testing.T) {
 			len(plainMailboxes), len(extendedMailboxes))
 	}
 }
+
+func TestListReturnMetadata(t *testing.T) {
+	client, server := newClientServerPair(t, imap.ConnStateAuthenticated)
+	defer client.Close()
+	defer server.Close()
+
+	if !client.Caps().Has(imap.CapMetadata) {
+		t.Skip("server doesn't support METADATA")
+	}
+
+	// Set some metadata
+	val1 := []byte("test value 1")
+	val2 := []byte("test value 2")
+	err := client.SetMetadata("INBOX", map[string]*[]byte{
+		"/private/comment": &val1,
+		"/shared/comment":  &val2,
+	}).Wait()
+	if err != nil {
+		t.Fatalf("SetMetadata() = %v", err)
+	}
+
+	// Request list with RETURN (METADATA)
+	options := imap.ListOptions{
+		ReturnMetadata: []string{"/private/comment"},
+	}
+	mailboxes, err := client.List("", "INBOX", &options).Collect()
+	if err != nil {
+		t.Fatalf("List() = %v", err)
+	}
+
+	if len(mailboxes) != 1 {
+		t.Fatalf("List() returned %v mailboxes, want 1", len(mailboxes))
+	}
+	mbox := mailboxes[0]
+
+	if mbox.Metadata == nil {
+		t.Fatal("List() returned mailbox without metadata")
+	}
+	if len(mbox.Metadata.Entries) != 1 {
+		t.Errorf("got %v metadata entries, want 1", len(mbox.Metadata.Entries))
+	}
+	if string(*mbox.Metadata.Entries["/private/comment"]) != "test value 1" {
+		t.Errorf("got metadata value %q, want %q", *mbox.Metadata.Entries["/private/comment"], "test value 1")
+	}
+
+	// Request list with RETURN (METADATA) (no args -> all metadata)
+	optionsAll := imap.ListOptions{
+		ReturnMetadata: []string{},
+	}
+	mailboxesAll, err := client.List("", "INBOX", &optionsAll).Collect()
+	if err != nil {
+		t.Fatalf("List() = %v", err)
+	}
+	mboxAll := mailboxesAll[0]
+	if mboxAll.Metadata == nil || len(mboxAll.Metadata.Entries) != 2 {
+		t.Fatalf("List() did not return all metadata")
+	}
+}
