@@ -82,22 +82,14 @@ func (c *Client) UIDSearch(criteria *imap.SearchCriteria, options *imap.SearchOp
 	return c.search(imapwire.NumKindUID, criteria, options)
 }
 
-func (c *Client) multiSearch(numKind imapwire.NumKind, mailboxes []string, criteria *imap.SearchCriteria, options *imap.SearchOptions) *SearchCommand {
+func (c *Client) multiSearch(numKind imapwire.NumKind, mailboxes []string, criteria *imap.SearchCriteria, options *imap.SearchOptions) *MultiSearchCommand {
 	var charset string
 	if !c.Caps().Has(imap.CapIMAP4rev2) && !c.enabled.Has(imap.CapUTF8Accept) && !searchCriteriaIsASCII(criteria) {
 		charset = "UTF-8"
 	}
 
-	var all imap.NumSet
-	switch numKind {
-	case imapwire.NumKindSeq:
-		all = imap.SeqSet(nil)
-	case imapwire.NumKindUID:
-		all = imap.UIDSet(nil)
-	}
-
-	cmd := &SearchCommand{}
-	cmd.data.All = all
+	cmd := &MultiSearchCommand{}
+	// Since we aggregate multiple responses, we don't prepopulate cmd.data.All here.
 	enc := c.beginCommand(uidCmdName("MULTISEARCH", numKind), cmd)
 	if returnOpts := returnSearchOptions(options); len(returnOpts) > 0 {
 		enc.SP().Atom("RETURN").SP().List(len(returnOpts), func(i int) {
@@ -117,12 +109,12 @@ func (c *Client) multiSearch(numKind imapwire.NumKind, mailboxes []string, crite
 }
 
 // MultiSearch sends a MULTISEARCH command.
-func (c *Client) MultiSearch(mailboxes []string, criteria *imap.SearchCriteria, options *imap.SearchOptions) *SearchCommand {
+func (c *Client) MultiSearch(mailboxes []string, criteria *imap.SearchCriteria, options *imap.SearchOptions) *MultiSearchCommand {
 	return c.multiSearch(imapwire.NumKindSeq, mailboxes, criteria, options)
 }
 
 // UIDMultiSearch sends a UID MULTISEARCH command.
-func (c *Client) UIDMultiSearch(mailboxes []string, criteria *imap.SearchCriteria, options *imap.SearchOptions) *SearchCommand {
+func (c *Client) UIDMultiSearch(mailboxes []string, criteria *imap.SearchCriteria, options *imap.SearchOptions) *MultiSearchCommand {
 	return c.multiSearch(imapwire.NumKindUID, mailboxes, criteria, options)
 }
 
@@ -173,19 +165,27 @@ func (c *Client) handleESearch() error {
 		return err
 	}
 	cmd := c.findPendingCmdFunc(func(anyCmd command) bool {
-		cmd, ok := anyCmd.(*SearchCommand)
-		if !ok {
-			return false
-		}
-		if tag != "" {
-			return cmd.tag == tag
-		} else {
+		switch cmd := anyCmd.(type) {
+		case *SearchCommand:
+			if tag != "" {
+				return cmd.tag == tag
+			}
+			return true
+		case *MultiSearchCommand:
+			if tag != "" {
+				return cmd.tag == tag
+			}
 			return true
 		}
+		return false
 	})
 	if cmd != nil {
-		cmd := cmd.(*SearchCommand)
-		cmd.data = *data
+		switch cmd := cmd.(type) {
+		case *SearchCommand:
+			cmd.data = *data
+		case *MultiSearchCommand:
+			cmd.data = append(cmd.data, data)
+		}
 	}
 	return nil
 }
@@ -198,6 +198,16 @@ type SearchCommand struct {
 
 func (cmd *SearchCommand) Wait() (*imap.SearchData, error) {
 	return &cmd.data, cmd.wait()
+}
+
+// MultiSearchCommand is a MULTISEARCH command.
+type MultiSearchCommand struct {
+	commandBase
+	data []*imap.SearchData
+}
+
+func (cmd *MultiSearchCommand) Wait() ([]*imap.SearchData, error) {
+	return cmd.data, cmd.wait()
 }
 
 func writeSearchKey(enc *imapwire.Encoder, criteria *imap.SearchCriteria, condstore bool) {
