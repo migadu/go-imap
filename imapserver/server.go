@@ -2,6 +2,7 @@
 package imapserver
 
 import (
+	"context"
 	"crypto/tls"
 	"errors"
 	"fmt"
@@ -49,6 +50,12 @@ type Options struct {
 	// InsecureAuth allows clients to authenticate without TLS. In this mode,
 	// the server is susceptible to man-in-the-middle attacks.
 	InsecureAuth bool
+	// IsTLS is called to determine if a connection should be considered
+	// TLS-secured for authentication purposes. This is useful when TLS is
+	// terminated by a reverse proxy and the server receives a plain TCP
+	// connection. If nil, the default check using type assertion is used.
+	// Note: This does NOT affect STARTTLS behavior.
+	IsTLS func(net.Conn) bool
 	// Raw ingress and egress data will be written to this writer, if any.
 	// Note, this may include sensitive information such as credentials used
 	// during authentication.
@@ -80,6 +87,7 @@ type Server struct {
 	options Options
 
 	listenerWaitGroup sync.WaitGroup
+	connsWaitGroup    sync.WaitGroup
 
 	mutex     sync.Mutex
 	listeners map[net.Listener]struct{}
@@ -152,7 +160,11 @@ func (s *Server) Serve(ln net.Listener) error {
 		}
 
 		delay = 0
-		go newConn(conn, s).serve()
+		s.connsWaitGroup.Add(1)
+		go func() {
+			defer s.connsWaitGroup.Done()
+			newConn(conn, s).serve()
+		}()
 	}
 }
 
@@ -213,6 +225,60 @@ func (s *Server) Close() error {
 
 	s.listenerWaitGroup.Wait()
 
+	s.forceCloseConns()
+
+	return err
+}
+
+// Shutdown gracefully shuts down the server without interrupting any
+// active connections. Shutdown works by first closing all open listeners,
+// then waiting for all connections to close or the context to expire,
+// whichever comes first.
+//
+// When Shutdown is called, Serve immediately returns. Make sure the
+// program doesn't exit and waits instead for Shutdown to return.
+//
+// If the provided context expires before the shutdown completes, Shutdown
+// force-closes any remaining connections and returns the context's error.
+// Otherwise it returns nil.
+//
+// Once Shutdown has been called on a server, it may not be reused.
+func (s *Server) Shutdown(ctx context.Context) error {
+	// 1. Stop accepting new connections
+	s.mutex.Lock()
+	if s.closed {
+		s.mutex.Unlock()
+		return errClosed
+	}
+	s.closed = true
+	var listenerErr error
+	for l := range s.listeners {
+		if err := l.Close(); err != nil && listenerErr == nil {
+			listenerErr = err
+		}
+	}
+	s.mutex.Unlock()
+
+	// 2. Wait for all listeners and connections to finish processing
+	done := make(chan struct{})
+	go func() {
+		s.listenerWaitGroup.Wait()
+		s.connsWaitGroup.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-ctx.Done():
+		// Context expired - force-close all remaining connections
+		s.forceCloseConns()
+		return ctx.Err()
+	case <-done:
+		// All connections closed gracefully
+		return listenerErr
+	}
+}
+
+func (s *Server) forceCloseConns() {
 	s.mutex.Lock()
 	for c := range s.conns {
 		c.mutex.Lock()
@@ -220,6 +286,4 @@ func (s *Server) Close() error {
 		c.mutex.Unlock()
 	}
 	s.mutex.Unlock()
-
-	return err
 }

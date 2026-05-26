@@ -1,10 +1,7 @@
 package imapserver
 
 import (
-	"bytes"
 	"crypto/tls"
-	"io"
-	"net"
 
 	"github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/internal/imapwire"
@@ -33,6 +30,15 @@ func (c *Conn) handleStartTLS(tag string, dec *imapwire.Decoder) error {
 		}
 	}
 
+	// Refuse STARTTLS if client has buffered data before the command.
+	// This is the canonical defense against smuggling attacks.
+	if c.br.Buffered() > 0 {
+		return &imap.Error{
+			Type: imap.StatusResponseTypeBad,
+			Text: "STARTTLS refused: client buffered data before TLS",
+		}
+	}
+
 	// Do not allow to write cleartext data past this point: keep c.encMutex
 	// locked until the end
 	enc := newResponseEncoder(c)
@@ -46,21 +52,7 @@ func (c *Conn) handleStartTLS(tag string, dec *imapwire.Decoder) error {
 		return err
 	}
 
-	// Drain buffered data from our bufio.Reader
-	var buf bytes.Buffer
-	if _, err := io.CopyN(&buf, c.br, int64(c.br.Buffered())); err != nil {
-		panic(err) // unreachable
-	}
-
-	var cleartextConn net.Conn
-	if buf.Len() > 0 {
-		r := io.MultiReader(&buf, c.conn)
-		cleartextConn = startTLSConn{c.conn, r}
-	} else {
-		cleartextConn = c.conn
-	}
-
-	tlsConn := tls.Server(cleartextConn, c.server.options.TLSConfig)
+	tlsConn := tls.Server(c.conn, c.server.options.TLSConfig)
 
 	c.mutex.Lock()
 	c.conn = tlsConn
@@ -71,13 +63,4 @@ func (c *Conn) handleStartTLS(tag string, dec *imapwire.Decoder) error {
 	c.bw.Reset(rw)
 
 	return nil
-}
-
-type startTLSConn struct {
-	net.Conn
-	r io.Reader
-}
-
-func (conn startTLSConn) Read(b []byte) (int, error) {
-	return conn.r.Read(b)
 }

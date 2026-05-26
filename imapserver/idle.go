@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"runtime/debug"
+	"time"
 
 	"github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/internal/imapwire"
@@ -62,5 +63,12 @@ func (c *Conn) handleIdle(dec *imapwire.Decoder) error {
 		return newClientBugError("Syntax error: expected DONE to end IDLE command")
 	}
 
-	return <-done
+	// Wait for backend to return, with timeout to prevent goroutine leak
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(30 * time.Second):
+		c.server.logger().Printf("IDLE backend did not return within 30s after stop; goroutine leaked")
+		return fmt.Errorf("imapserver: IDLE backend did not respond to stop")
+	}
 }

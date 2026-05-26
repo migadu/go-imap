@@ -2,10 +2,8 @@ package imapclient
 
 import (
 	"bufio"
-	"bytes"
 	"crypto/tls"
-	"io"
-	"net"
+	"fmt"
 )
 
 // startTLS sends a STARTTLS command.
@@ -40,21 +38,14 @@ func (c *Client) startTLS(config *tls.Config) error {
 func (c *Client) upgradeStartTLS(startTLS *startTLSCommand) {
 	defer close(startTLS.upgradeDone)
 
-	// Drain buffered data from our bufio.Reader
-	var buf bytes.Buffer
-	if _, err := io.CopyN(&buf, c.br, int64(c.br.Buffered())); err != nil {
-		panic(err) // unreachable
+	// Refuse STARTTLS if server sent buffered data before the OK response.
+	// This is the canonical defense against smuggling attacks.
+	if c.br.Buffered() > 0 {
+		startTLS.err = fmt.Errorf("STARTTLS refused: server sent buffered data before TLS")
+		return
 	}
 
-	var cleartextConn net.Conn
-	if buf.Len() > 0 {
-		r := io.MultiReader(&buf, c.conn)
-		cleartextConn = startTLSConn{c.conn, r}
-	} else {
-		cleartextConn = c.conn
-	}
-
-	tlsConn := tls.Client(cleartextConn, startTLS.tlsConfig)
+	tlsConn := tls.Client(c.conn, startTLS.tlsConfig)
 	rw := c.options.wrapReadWriter(tlsConn)
 
 	c.br.Reset(rw)
@@ -71,13 +62,4 @@ type startTLSCommand struct {
 
 	upgradeDone chan<- struct{}
 	tlsConn     *tls.Conn
-}
-
-type startTLSConn struct {
-	net.Conn
-	r io.Reader
-}
-
-func (conn startTLSConn) Read(b []byte) (int, error) {
-	return conn.r.Read(b)
 }

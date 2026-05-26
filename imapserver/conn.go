@@ -234,7 +234,16 @@ func (c *Conn) serve() {
 	}
 }
 
-func (c *Conn) readCommand(dec *imapwire.Decoder) error {
+func (c *Conn) readCommand(dec *imapwire.Decoder) (err error) {
+	defer func() {
+		if decErr := dec.Err(); decErr != nil && strings.Contains(decErr.Error(), "max size exceeded") {
+			_ = c.writeStatusResp("", &imap.StatusResponse{
+				Type: imap.StatusResponseTypeBye,
+				Text: "Command too long",
+			})
+			err = fmt.Errorf("command exceeded MaxSize")
+		}
+	}()
 	for {
 		if dec.EOF() {
 			return nil
@@ -267,7 +276,6 @@ func (c *Conn) readCommand(dec *imapwire.Decoder) error {
 
 	// TODO: handle multiple commands concurrently
 	sendOK := true
-	var err error
 	switch name {
 	case "NOOP", "CHECK":
 		err = c.handleNoop(dec)
@@ -498,6 +506,13 @@ func (c *Conn) canAuth() bool {
 	if c.state != imap.ConnStateNotAuthenticated {
 		return false
 	}
+
+	// Allow custom TLS detection (e.g., for reverse proxy setups)
+	if c.server.options.IsTLS != nil {
+		return c.server.options.IsTLS(c.conn) || c.server.options.InsecureAuth
+	}
+
+	// Default: detect TLS via type assertion
 	_, isTLS := c.conn.(*tls.Conn)
 	return isTLS || c.server.options.InsecureAuth
 }

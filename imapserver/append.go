@@ -69,6 +69,18 @@ func (c *Conn) handleAppend(tag string, dec *imapwire.Decoder) error {
 		appendLimit = int64(appendLimitSession.AppendLimit())
 	}
 
+	// Check authentication state BEFORE accepting the literal.
+	// For synchronizing literals, this prevents sending "+ Ready for literal data"
+	// to an unauthenticated client. For non-sync literals, the bytes are already
+	// on the wire and we must still drain them.
+	if err := c.checkState(imap.ConnStateAuthenticated); err != nil {
+		if nonSync {
+			io.Copy(io.Discard, lit)
+			dec.CRLF()
+		}
+		return err
+	}
+
 	if lit.Size() > appendLimit {
 		// For LITERAL+ (non-synchronizing), the client has already sent the literal data.
 		// We must drain it from the stream before returning the error, otherwise it will
@@ -91,18 +103,13 @@ func (c *Conn) handleAppend(tag string, dec *imapwire.Decoder) error {
 			Text: fmt.Sprintf("Literals are limited to %v bytes for this command", appendLimit),
 		}
 	}
+
 	if err := c.acceptLiteral(lit.Size(), nonSync); err != nil {
 		return err
 	}
 
 	c.setReadTimeout(literalReadTimeout)
 	defer c.setReadTimeout(cmdReadTimeout)
-
-	if err := c.checkState(imap.ConnStateAuthenticated); err != nil {
-		io.Copy(io.Discard, lit)
-		dec.CRLF()
-		return err
-	}
 
 	data, appendErr := c.session.Append(mailbox, lit, &options)
 	if _, discardErr := io.Copy(io.Discard, lit); discardErr != nil {

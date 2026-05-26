@@ -210,12 +210,16 @@ func (enc *Encoder) Number(v uint32) *Encoder {
 }
 
 func (enc *Encoder) Number64(v int64) *Encoder {
-	// TODO: disallow negative values
+	if v < 0 {
+		panic(fmt.Sprintf("imapwire: Number64 cannot encode negative value %d", v))
+	}
 	return enc.writeString(strconv.FormatInt(v, 10))
 }
 
 func (enc *Encoder) ModSeq(v uint64) *Encoder {
-	// TODO: disallow zero values
+	// Note: ModSeq=0 is valid in QRESYNC to request all modifications
+	// (RFC 7162 §3.2.5.2). In other contexts like CONDSTORE responses,
+	// zero is invalid but that's the caller's responsibility to validate.
 	return enc.writeString(strconv.FormatUint(v, 10))
 }
 

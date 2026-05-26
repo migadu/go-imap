@@ -1229,11 +1229,12 @@ type UnilateralDataMailbox struct {
 
 // UnilateralDataHandler handles unilateral data.
 //
-// The handler will block the client while running. If the caller intends to
-// perform slow operations, a buffered channel and a separate goroutine should
-// be used.
+// The Fetch handler is invoked in a separate goroutine and will not block
+// the client. Other handlers (Expunge, Mailbox, Vanished) are invoked
+// synchronously and will block the client while running.
 //
-// The handler will be invoked in an arbitrary goroutine.
+// If the caller intends to perform slow operations in any handler, a buffered
+// channel and a separate goroutine should be used.
 //
 // These handlers are important when using the IDLE or NOTIFY commands, as the
 // server will send unsolicited STATUS, FETCH, and EXPUNGE responses for
