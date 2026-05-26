@@ -142,6 +142,12 @@ func (c *Client) handleESort() error {
 				return fmt.Errorf("in ALL seq-set: %w", err)
 			}
 
+			const maxAllResultSize = 10_000_000
+			if set.Cardinality() > maxAllResultSize {
+				return fmt.Errorf("esort: server returned ALL set with %d entries (cap %d)",
+					set.Cardinality(), maxAllResultSize)
+			}
+
 			nums, ok := set.Nums()
 			if !ok {
 				return fmt.Errorf("esort: ALL contained a dynamic set, which is not allowed")

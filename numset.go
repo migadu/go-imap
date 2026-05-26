@@ -55,6 +55,12 @@ func (s *SeqSet) Contains(num uint32) bool {
 	return s.numSet().Contains(num)
 }
 
+// Cardinality returns the number of values in the set, or math.MaxUint64 if
+// the set is dynamic (contains "*").
+func (s SeqSet) Cardinality() uint64 {
+	return s.numSet().Cardinality()
+}
+
 // Nums returns a slice of all sequence numbers contained in the set.
 func (s *SeqSet) Nums() ([]uint32, bool) {
 	return s.numSet().Nums()
@@ -112,6 +118,15 @@ func (s UIDSet) Dynamic() bool {
 // Contains returns true if the non-zero UID uid is contained in the set.
 func (s UIDSet) Contains(uid UID) bool {
 	return s.numSet().Contains(uint32(uid))
+}
+
+// Cardinality returns the number of values in the set, or math.MaxUint64 if
+// the set is dynamic (contains "*" or "$").
+func (s UIDSet) Cardinality() uint64 {
+	if IsSearchRes(s) {
+		return ^uint64(0)
+	}
+	return s.numSet().Cardinality()
 }
 
 // Nums returns a slice of all UIDs contained in the set.

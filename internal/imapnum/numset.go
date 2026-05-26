@@ -134,6 +134,20 @@ func (s Set) Contains(q uint32) bool {
 	return false
 }
 
+// Cardinality returns the number of values in the set, or math.MaxUint64 if
+// the set is dynamic (contains "*"). Useful for refusing to expand absurdly
+// large sets via Nums().
+func (s Set) Cardinality() uint64 {
+	var n uint64
+	for _, r := range s {
+		if r.Start == 0 || r.Stop == 0 {
+			return ^uint64(0)
+		}
+		n += uint64(r.Stop - r.Start + 1)
+	}
+	return n
+}
+
 // Nums returns a slice of all numbers contained in the set.
 func (s Set) Nums() (nums []uint32, ok bool) {
 	for _, v := range s {

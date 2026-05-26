@@ -2,12 +2,29 @@ package imapclient
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 
 	"github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/internal/imapwire"
 )
+
+var errMetadataLiteralTooLarge = errors.New("imapclient: metadata literal exceeds MaxLiteralSize")
+
+// boundedBufMetadata is a Writer that grows a byte slice up to a maximum size.
+type boundedBufMetadata struct {
+	buf *[]byte
+	max int64
+}
+
+func (b *boundedBufMetadata) Write(p []byte) (n int, err error) {
+	if int64(len(*b.buf))+int64(len(p)) > b.max {
+		return 0, errMetadataLiteralTooLarge
+	}
+	*b.buf = append(*b.buf, p...)
+	return len(p), nil
+}
 
 func getMetadataOptionNames(options *imap.GetMetadataOptions) []string {
 	if options == nil {
@@ -30,13 +47,13 @@ func (c *Client) GetMetadata(mailbox string, entries []string, options *imap.Get
 	// Validate entry names before sending to server
 	for _, entry := range entries {
 		if err := imap.ValidateMetadataEntry(entry); err != nil {
-			cmd := &GetMetadataCommand{mailbox: mailbox}
+			cmd := &GetMetadataCommand{mailbox: mailbox, opts: &c.options}
 			cmd.err = fmt.Errorf("invalid entry name %q: %w", entry, err)
 			return cmd
 		}
 	}
 
-	cmd := &GetMetadataCommand{mailbox: mailbox}
+	cmd := &GetMetadataCommand{mailbox: mailbox, opts: &c.options}
 	enc := c.beginCommand("GETMETADATA", cmd)
 	// RFC 5464: options come before mailbox
 	if opts := getMetadataOptionNames(options); len(opts) > 0 {
@@ -105,7 +122,7 @@ func (c *Client) SetMetadata(mailbox string, entries map[string]*[]byte) *Comman
 }
 
 func (c *Client) handleMetadata() error {
-	data, err := readMetadataResp(c.dec)
+	data, err := readMetadataResp(c.dec, &c.options)
 	if err != nil {
 		return fmt.Errorf("in metadata-resp: %w", err)
 	}
@@ -159,6 +176,7 @@ type GetMetadataCommand struct {
 	commandBase
 	mailbox string
 	data    imap.GetMetadataData
+	opts    *Options
 }
 
 func (cmd *GetMetadataCommand) Wait() (*imap.GetMetadataData, error) {
@@ -171,7 +189,7 @@ type metadataResp struct {
 	EntryValues map[string]*[]byte
 }
 
-func readMetadataResp(dec *imapwire.Decoder) (*metadataResp, error) {
+func readMetadataResp(dec *imapwire.Decoder, opts *Options) (*metadataResp, error) {
 	var data metadataResp
 
 	if !dec.ExpectMailbox(&data.Mailbox) || !dec.ExpectSP() {
@@ -189,7 +207,14 @@ func readMetadataResp(dec *imapwire.Decoder) (*metadataResp, error) {
 			s     string
 		)
 		if lit, _, ok := dec.LiteralReader(); ok {
-			b, err := io.ReadAll(lit)
+			var b []byte
+			max := opts.maxLiteralSize()
+			if lit.Size() > max {
+				io.Copy(io.Discard, lit)
+				return fmt.Errorf("reading metadata value for %q: %w", name, errMetadataLiteralTooLarge)
+			}
+			bounded := &boundedBufMetadata{buf: &b, max: max}
+			_, err := io.Copy(bounded, lit)
 			if err != nil {
 				return fmt.Errorf("reading metadata value for %q: %w", name, err)
 			}

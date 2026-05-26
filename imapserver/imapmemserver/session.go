@@ -172,12 +172,22 @@ func (sess *UserSession) Thread(numKind imapserver.NumKind, algorithm imap.Threa
 
 func (sess *UserSession) MultiSearch(numKind imapserver.NumKind, mailboxes []string, criteria *imap.SearchCriteria, options *imap.SearchOptions) ([]*imap.SearchData, error) {
 	var results []*imap.SearchData
-	// Mock implementation for test: return exactly what client test expects.
-	data := &imap.SearchData{
-		Mailbox: "INBOX",
-		Count:   1,
+	for _, mboxName := range mailboxes {
+		mbox, err := sess.user.mailbox(mboxName)
+		if err != nil {
+			// Skip mailboxes that don't exist
+			continue
+		}
+		view := mbox.NewView()
+		defer view.Close()
+
+		data, err := view.Search(numKind, criteria, options)
+		if err != nil {
+			return nil, err
+		}
+		data.Mailbox = mboxName
+		results = append(results, data)
 	}
-	results = append(results, data)
 	return results, nil
 }
 

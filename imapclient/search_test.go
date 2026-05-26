@@ -69,6 +69,17 @@ func TestMultiSearch(t *testing.T) {
 		t.Skip("server doesn't support MULTISEARCH")
 	}
 
+	// Create archive mailbox and add the same message
+	if err := client.Create("archive", nil).Wait(); err != nil {
+		t.Fatalf("Create().Wait() = %v", err)
+	}
+	appendCmd := client.Append("archive", int64(len(simpleRawMessage)), nil)
+	appendCmd.Write([]byte(simpleRawMessage))
+	appendCmd.Close()
+	if _, err := appendCmd.Wait(); err != nil {
+		t.Fatalf("Append().Wait() = %v", err)
+	}
+
 	criteria := imap.SearchCriteria{
 		Header: []imap.SearchCriteriaHeaderField{{
 			Key:   "Message-Id",
@@ -78,14 +89,23 @@ func TestMultiSearch(t *testing.T) {
 	options := imap.SearchOptions{
 		ReturnCount: true,
 	}
-	data, err := client.MultiSearch([]string{"INBOX", "archive"}, &criteria, &options).Wait()
+	dataList, err := client.MultiSearch([]string{"INBOX", "archive"}, &criteria, &options).Wait()
 	if err != nil {
 		t.Fatalf("MultiSearch().Wait() = %v", err)
 	}
-	if want := uint32(1); data.Count != want {
-		t.Errorf("Count = %v, want %v", data.Count, want)
+	if len(dataList) != 2 {
+		t.Fatalf("len(dataList) = %v, want 2", len(dataList))
 	}
-	if want := "INBOX"; data.Mailbox != want {
-		t.Errorf("Mailbox = %v, want %v", data.Mailbox, want)
+	if want := uint32(1); dataList[0].Count != want {
+		t.Errorf("dataList[0].Count = %v, want %v", dataList[0].Count, want)
+	}
+	if want := "INBOX"; dataList[0].Mailbox != want {
+		t.Errorf("dataList[0].Mailbox = %v, want %v", dataList[0].Mailbox, want)
+	}
+	if want := uint32(1); dataList[1].Count != want {
+		t.Errorf("dataList[1].Count = %v, want %v", dataList[1].Count, want)
+	}
+	if want := "archive"; dataList[1].Mailbox != want {
+		t.Errorf("dataList[1].Mailbox = %v, want %v", dataList[1].Mailbox, want)
 	}
 }

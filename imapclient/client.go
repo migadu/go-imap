@@ -39,7 +39,7 @@ import (
 )
 
 const (
-	idleReadTimeout    = time.Duration(0)
+	idleReadTimeout    = 30 * time.Minute // RFC 2177: re-IDLE every 29min
 	respReadTimeout    = 30 * time.Second
 	literalReadTimeout = 5 * time.Minute
 
@@ -78,6 +78,10 @@ type Options struct {
 	// Dialer to use when establishing connections with the Dial* functions.
 	// If nil, a default dialer with a 30 second timeout is used.
 	Dialer *net.Dialer
+	// MaxLiteralSize caps the size of a single literal the client will
+	// buffer in memory (e.g., for FetchMessageBuffer.Collect). Larger
+	// literals must be consumed via the streaming API. Default 64 MiB.
+	MaxLiteralSize int64
 }
 
 func (options *Options) wrapReadWriter(rw io.ReadWriter) io.ReadWriter {
@@ -91,6 +95,13 @@ func (options *Options) wrapReadWriter(rw io.ReadWriter) io.ReadWriter {
 		Reader: io.TeeReader(rw, options.DebugWriter),
 		Writer: io.MultiWriter(rw, options.DebugWriter),
 	}
+}
+
+func (options *Options) maxLiteralSize() int64 {
+	if options.MaxLiteralSize > 0 {
+		return options.MaxLiteralSize
+	}
+	return 64 * 1024 * 1024 // 64 MiB default
 }
 
 func (options *Options) decodeText(s string) (string, error) {

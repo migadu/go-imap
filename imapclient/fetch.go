@@ -1,6 +1,7 @@
 package imapclient
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	netmail "net/mail"
@@ -12,6 +13,22 @@ import (
 	"github.com/emersion/go-imap/v2/internal/imapwire"
 	"github.com/emersion/go-message/mail"
 )
+
+var errLiteralTooLarge = errors.New("imapclient: literal exceeds MaxLiteralSize")
+
+// boundedBuf is a Writer that grows a byte slice up to a maximum size.
+type boundedBuf struct {
+	buf *[]byte
+	max int64
+}
+
+func (b *boundedBuf) Write(p []byte) (n int, err error) {
+	if int64(len(*b.buf))+int64(len(p)) > b.max {
+		return 0, errLiteralTooLarge
+	}
+	*b.buf = append(*b.buf, p...)
+	return len(p), nil
+}
 
 // Fetch sends a FETCH command.
 //
@@ -29,6 +46,7 @@ func (c *Client) Fetch(numSet imap.NumSet, options *imap.FetchOptions) *FetchCom
 	cmd := &FetchCommand{
 		numSet: numSet,
 		msgs:   make(chan *FetchMessageData, 128),
+		opts:   &c.options,
 	}
 	enc := c.beginCommand(uidCmdName("FETCH", numKind), cmd)
 	enc.SP().NumSet(numSet).SP()
@@ -168,6 +186,7 @@ type FetchCommand struct {
 
 	msgs chan *FetchMessageData
 	prev *FetchMessageData
+	opts *Options
 }
 
 func (cmd *FetchCommand) recvSeqNum(seqNum uint32) bool {
@@ -309,6 +328,7 @@ type FetchMessageData struct {
 
 	items chan FetchItemData
 	prev  FetchItemData
+	opts  *Options
 }
 
 // Next advances to the next data item for this message.
@@ -341,7 +361,7 @@ func (data *FetchMessageData) discard() {
 func (data *FetchMessageData) Collect() (*FetchMessageBuffer, error) {
 	defer data.discard()
 
-	buf := &FetchMessageBuffer{SeqNum: data.SeqNum}
+	buf := &FetchMessageBuffer{SeqNum: data.SeqNum, opts: data.opts}
 	for {
 		item := data.Next()
 		if item == nil {
@@ -520,6 +540,8 @@ type FetchMessageBuffer struct {
 	BinarySection     []FetchBinarySectionBuffer
 	BinarySectionSize []FetchItemDataBinarySectionSize
 	ModSeq            uint64 // requires CONDSTORE
+
+	opts *Options
 }
 
 func (buf *FetchMessageBuffer) populateItemData(item FetchItemData) error {
@@ -527,8 +549,12 @@ func (buf *FetchMessageBuffer) populateItemData(item FetchItemData) error {
 	case FetchItemDataBodySection:
 		var b []byte
 		if item.Literal != nil {
-			var err error
-			b, err = io.ReadAll(item.Literal)
+			max := buf.opts.maxLiteralSize()
+			if item.Literal.Size() > max {
+				return errLiteralTooLarge
+			}
+			bounded := &boundedBuf{buf: &b, max: max}
+			_, err := io.Copy(bounded, item.Literal)
 			if err != nil {
 				return err
 			}
@@ -540,8 +566,12 @@ func (buf *FetchMessageBuffer) populateItemData(item FetchItemData) error {
 	case FetchItemDataBinarySection:
 		var b []byte
 		if item.Literal != nil {
-			var err error
-			b, err = io.ReadAll(item.Literal)
+			max := buf.opts.maxLiteralSize()
+			if item.Literal.Size() > max {
+				return errLiteralTooLarge
+			}
+			bounded := &boundedBuf{buf: &b, max: max}
+			_, err := io.Copy(bounded, item.Literal)
 			if err != nil {
 				return err
 			}
@@ -614,7 +644,7 @@ func (c *Client) handleFetch(seqNum uint32) error {
 	items := make(chan FetchItemData, 32)
 	defer close(items)
 
-	msg := &FetchMessageData{SeqNum: seqNum, items: items}
+	msg := &FetchMessageData{SeqNum: seqNum, items: items, opts: &c.options}
 
 	// We're in a tricky situation: to know whether this FETCH response needs
 	// to be handled by a pending command, we may need to look at the UID in

@@ -584,11 +584,18 @@ func (dec *Decoder) Literal(ptr *string) bool {
 	if !ok {
 		return false
 	}
+	// Hard upper bound. The IMAP grammar permits arbitrary literal sizes, but no
+	// realistic in-band data needs more than this. Callers can opt in to a
+	// looser limit by setting CheckBufferedLiteralFunc.
+	const absoluteMaxBufferedLiteral = 4 * 1024 * 1024
 	if dec.CheckBufferedLiteralFunc != nil {
 		if err := dec.CheckBufferedLiteralFunc(lit.Size(), nonSync); err != nil {
 			lit.cancel()
 			return false
 		}
+	} else if lit.Size() > absoluteMaxBufferedLiteral {
+		lit.cancel()
+		return dec.returnErr(fmt.Errorf("imapwire: literal of %d bytes exceeds default buffered cap", lit.Size()))
 	}
 	var sb strings.Builder
 	_, err := io.Copy(&sb, lit)
@@ -604,6 +611,15 @@ func (dec *Decoder) LiteralReader() (lit *LiteralReader, nonSync, ok bool) {
 	}
 	var size int64
 	if !dec.ExpectNumber64(&size) {
+		return nil, false, false
+	}
+	// Refuse obviously hostile sizes. The IMAP grammar permits arbitrary
+	// 64-bit literal sizes, but no real client or server can deliver more
+	// than 1 GiB in a single literal without orchestration outside the
+	// protocol.
+	const absoluteMaxLiteralSize = 1 << 30
+	if size < 0 || size > absoluteMaxLiteralSize {
+		dec.returnErr(fmt.Errorf("imapwire: literal size %d out of bounds", size))
 		return nil, false, false
 	}
 	if dec.side == ConnSideServer {

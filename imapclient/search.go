@@ -396,6 +396,17 @@ func readESearchResponse(dec *imapwire.Decoder) (tag string, data *imap.SearchDa
 			if data.All.Dynamic() {
 				return "", nil, fmt.Errorf("imapclient: server returned a dynamic ALL number set in SEARCH response")
 			}
+			const maxAllResultSize = 10_000_000
+			var cardinality uint64
+			switch set := data.All.(type) {
+			case imap.SeqSet:
+				cardinality = set.Cardinality()
+			case imap.UIDSet:
+				cardinality = set.Cardinality()
+			}
+			if cardinality > maxAllResultSize {
+				return "", nil, fmt.Errorf("imapclient: server returned ALL set with %d entries (cap %d)", cardinality, maxAllResultSize)
+			}
 		case "COUNT":
 			var num uint32
 			if !dec.ExpectNumber(&num) {
