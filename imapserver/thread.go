@@ -24,7 +24,7 @@ func (c *Conn) handleThread(dec *imapwire.Decoder, numKind NumKind) error {
 	}
 
 	algorithm := imap.ThreadAlgorithm(strings.ToUpper(algStr))
-	if algorithm != imap.ThreadReferences && algorithm != imap.ThreadOrderedSubject {
+	if algorithm != imap.ThreadReferences && algorithm != imap.ThreadOrderedSubject && algorithm != imap.ThreadRefs {
 		return &imap.Error{
 			Type: imap.StatusResponseTypeBad,
 			Text: fmt.Sprintf("Unsupported THREAD algorithm: %s", algorithm),
