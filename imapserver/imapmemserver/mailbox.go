@@ -394,7 +394,7 @@ func (mbox *MailboxView) Fetch(w *imapserver.FetchWriter, numSet imap.NumSet, op
 
 		if markSeen {
 			msg.flags[canonicalFlag(imap.FlagSeen)] = struct{}{}
-			mbox.Mailbox.tracker.QueueMessageFlags(seqNum, msg.uid, msg.flagList(), nil)
+			mbox.Mailbox.tracker.QueueMessageFlags(seqNum, msg.uid, msg.flagList(), 0, nil)
 		}
 
 		respWriter := w.CreateMessage(mbox.tracker.EncodeSeqNum(seqNum))
@@ -674,7 +674,7 @@ func (mbox *MailboxView) Store(w *imapserver.FetchWriter, numSet imap.NumSet, fl
 		}
 
 		if changed := msg.store(mbox.Mailbox, flags); changed {
-			mbox.Mailbox.tracker.QueueMessageFlags(seqNum, msg.uid, msg.flagList(), mbox.tracker)
+			mbox.Mailbox.tracker.QueueMessageFlags(seqNum, msg.uid, msg.flagList(), msg.modSeq, mbox.tracker)
 
 			if !flags.Silent {
 				modified = append(modified, modifiedMessageData{

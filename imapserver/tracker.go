@@ -95,12 +95,18 @@ func (t *MailboxTracker) QueueMailboxFlags(flags []imap.Flag) {
 
 // QueueMessageFlags queues a new FETCH FLAGS update.
 //
+// modSeq is the modification sequence (RFC 7162) of the flag change. When non-zero
+// and the receiving session is CONDSTORE-aware, it is emitted as a MODSEQ data item
+// in the unsolicited FETCH response so the client can advance its per-message modseq
+// instead of falling back to a full re-sync. Pass 0 when no modseq is available.
+//
 // If source is not nil, the update won't be dispatched to it.
-func (t *MailboxTracker) QueueMessageFlags(seqNum uint32, uid imap.UID, flags []imap.Flag, source *SessionTracker) {
+func (t *MailboxTracker) QueueMessageFlags(seqNum uint32, uid imap.UID, flags []imap.Flag, modSeq uint64, source *SessionTracker) {
 	t.queueUpdate(&trackerUpdate{fetch: &trackerUpdateFetch{
 		seqNum: seqNum,
 		uid:    uid,
 		flags:  flags,
+		modSeq: modSeq,
 	}}, source)
 }
 
@@ -116,6 +122,7 @@ type trackerUpdateFetch struct {
 	seqNum uint32
 	uid    imap.UID
 	flags  []imap.Flag
+	modSeq uint64
 }
 
 // SessionTracker tracks the state of a mailbox for an IMAP client.
@@ -186,7 +193,7 @@ func (t *SessionTracker) Poll(w *UpdateWriter, allowExpunge bool) error {
 		case update.mailboxFlags != nil:
 			err = w.WriteMailboxFlags(update.mailboxFlags)
 		case update.fetch != nil:
-			err = w.WriteMessageFlags(update.fetch.seqNum, update.fetch.uid, update.fetch.flags)
+			err = w.WriteMessageFlags(update.fetch.seqNum, update.fetch.uid, update.fetch.flags, update.fetch.modSeq)
 		default:
 			panic(fmt.Errorf("imapserver: unknown tracker update %#v", update))
 		}

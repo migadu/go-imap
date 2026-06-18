@@ -725,12 +725,20 @@ func (w *UpdateWriter) WriteMailboxFlags(flags []imap.Flag) error {
 }
 
 // WriteMessageFlags writes a FETCH response with FLAGS.
-func (w *UpdateWriter) WriteMessageFlags(seqNum uint32, uid imap.UID, flags []imap.Flag) error {
+//
+// modSeq is the modification sequence (RFC 7162) of the flag change. When non-zero
+// and the session is CONDSTORE-aware, it is included as a MODSEQ data item so the
+// client can advance its per-message modseq from the unsolicited update rather than
+// falling back to a full re-sync (RFC 7162 §3.2). A zero modSeq is omitted.
+func (w *UpdateWriter) WriteMessageFlags(seqNum uint32, uid imap.UID, flags []imap.Flag, modSeq uint64) error {
 	fetchWriter := &FetchWriter{conn: w.conn}
 	respWriter := fetchWriter.CreateMessage(seqNum)
 	if uid != 0 {
 		respWriter.WriteUID(uid)
 	}
 	respWriter.WriteFlags(flags)
+	if modSeq != 0 && w.conn.supportsCondStore() {
+		respWriter.WriteModSeq(modSeq)
+	}
 	return respWriter.Close()
 }
