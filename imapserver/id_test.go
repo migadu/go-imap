@@ -86,13 +86,13 @@ func TestReadID(t *testing.T) {
 			name:        "malformed - non-string in list",
 			input:       ` ("name" "test" JUNK)` + "\r\n",
 			wantErr:     true,
-			errContains: "in id key-val list",
+			errContains: "expected string key",
 		},
 		{
 			name:        "malformed - atom instead of string",
 			input:       ` (name test)` + "\r\n",
 			wantErr:     true,
-			errContains: "in id key-val list",
+			errContains: "expected string key",
 		},
 		{
 			name:        "odd number with pipelined command simulation",

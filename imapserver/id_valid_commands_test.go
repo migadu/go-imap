@@ -128,7 +128,7 @@ func TestInvalidIDCommands(t *testing.T) {
 		{
 			name:          "Atom instead of string for key",
 			input:         ` (name "value")` + "\r\n",
-			errorContains: "in id",
+			errorContains: "expected string key",
 		},
 		{
 			name:          "Extra data after list",

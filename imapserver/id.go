@@ -11,7 +11,11 @@ import (
 func (c *Conn) handleID(tag string, dec *imapwire.Decoder) error {
 	idData, err := readID(dec)
 	if err != nil {
-		return fmt.Errorf("in id: %v", err)
+		// Wrap with %w so the underlying *imap.Error / *imapwire.DecoderExpectError
+		// type is preserved. Otherwise the dispatcher in conn.go cannot detect it
+		// via errors.As and reports a misleading [SERVERBUG] for what is really a
+		// client-side syntax error.
+		return fmt.Errorf("in id: %w", err)
 	}
 
 	if !dec.ExpectCRLF() {
@@ -97,8 +101,12 @@ func (c *Conn) handleID(tag string, dec *imapwire.Decoder) error {
 }
 
 func readID(dec *imapwire.Decoder) (*imap.IDData, error) {
-	if !dec.ExpectSP() {
-		return nil, dec.Err()
+	// RFC 2971 requires "ID" SP id_params_list, but some clients (e.g.
+	// Open-Xchange) send a bare "ID" with no argument at all. Be liberal in
+	// what we accept and treat a missing argument as NIL, replying with the
+	// server's own ID instead of rejecting the command.
+	if !dec.SP() {
+		return nil, nil
 	}
 
 	// Check for NIL without using ExpectNIL which leaves decoder in error state
@@ -118,7 +126,17 @@ func readID(dec *imapwire.Decoder) (*imap.IDData, error) {
 			// Reading a key - must be a string (not NIL)
 			var key string
 			if !dec.String(&key) {
-				return fmt.Errorf("in id key-val list: %v", dec.Err())
+				// Preserve a real decoder error (e.g. malformed literal) so the
+				// dispatcher reports a syntax error; otherwise the key was an
+				// atom/NIL where a string is required — a client bug.
+				if decErr := dec.Err(); decErr != nil {
+					return fmt.Errorf("in id key-val list: %w", decErr)
+				}
+				return &imap.Error{
+					Type: imap.StatusResponseTypeBad,
+					Code: imap.ResponseCodeClientBug,
+					Text: fmt.Sprintf("ID: expected string key (received %d parameters: %v)", len(params), params),
+				}
 			}
 			params = append(params, key)
 			currKey = key
@@ -130,7 +148,7 @@ func readID(dec *imapwire.Decoder) (*imap.IDData, error) {
 		if !dec.ExpectNString(&value) {
 			// First check if there's a decoder error (e.g., invalid token or leftover error from ExpectNIL)
 			if decErr := dec.Err(); decErr != nil {
-				return fmt.Errorf("in id key-val list: %v", decErr)
+				return fmt.Errorf("in id key-val list: %w", decErr)
 			}
 			// If we have an orphaned key, provide a clear error
 			if currKey != "" {

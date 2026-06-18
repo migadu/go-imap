@@ -34,6 +34,18 @@ func TestIDCommandRFCCompliance(t *testing.T) {
 			description: "Client sends NIL (wants no info sent, but will accept server response)",
 		},
 		{
+			name:        "Lenient: bare ID with no argument",
+			input:       "\r\n",
+			expectNil:   true,
+			description: "Open-Xchange sends bare \"ID\" instead of \"ID NIL\"; treat as NIL (RFC 2971 violation tolerated)",
+		},
+		{
+			name:        "Lenient: bare ID with trailing space",
+			input:       " \r\n",
+			expectNil:   true,
+			description: "Bare \"ID \" with trailing space and no argument; treat as NIL",
+		},
+		{
 			name:        "RFC Example 2: Empty list",
 			input:       " ()\r\n",
 			description: "Zero field-value pairs (valid per # operator)",
