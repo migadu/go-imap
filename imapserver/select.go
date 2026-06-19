@@ -1,6 +1,7 @@
 package imapserver
 
 import (
+	"errors"
 	"fmt"
 
 	"strings"
@@ -175,9 +176,15 @@ func (c *Conn) handleSelect(tag string, dec *imapwire.Decoder, readOnly bool) er
 	)
 	if readOnly {
 		cmdName = "EXAMINE"
-		code = "READ-ONLY"
 	} else {
 		cmdName = "SELECT"
+	}
+	// RFC 4314 §5.2: SELECT also returns READ-ONLY when the session reports the user
+	// lacks the rights to modify the mailbox (data.ReadOnly). EXAMINE is always
+	// READ-ONLY.
+	if readOnly || data.ReadOnly {
+		code = "READ-ONLY"
+	} else {
 		code = "READ-WRITE"
 	}
 	return writeStatusResp(enc.Encoder, tag, &imap.StatusResponse{
@@ -199,7 +206,13 @@ func (c *Conn) handleUnselect(dec *imapwire.Decoder, expunge bool) error {
 	if expunge {
 		w := &ExpungeWriter{conn: c}
 		if err := c.session.Expunge(w, nil); err != nil {
-			return err
+			// RFC 4314 §4: for CLOSE, if the server cannot expunge because the user
+			// lacks the "e" right, it MUST ignore the expunge request, close the
+			// mailbox, and return the tagged OK response. Other errors still fail.
+			var imapErr *imap.Error
+			if !errors.As(err, &imapErr) || imapErr.Code != imap.ResponseCodeNoPerm {
+				return err
+			}
 		}
 	}
 

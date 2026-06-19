@@ -119,9 +119,12 @@ func (c *Conn) availableCaps() []imap.Cap {
 			caps = append(caps, imap.Cap("MULTISEARCH"))
 		}
 
-		// Add ACL capability if the session supports it
+		// Add ACL capability if the session supports it (RFC 4314). The
+		// extension also requires advertising the "RIGHTS=" capability listing
+		// the rights introduced by RFC 4314 (k, x, t, e); see Section 2.1.
 		if _, ok := c.session.(SessionACL); ok {
-			caps = append(caps, imap.Cap("ACL"))
+			caps = append(caps, imap.CapACL)
+			caps = append(caps, imap.Cap("RIGHTS="+imap.RightSetExtended.String()))
 		}
 
 		if appendLimitSession, ok := c.session.(SessionAppendLimit); ok {

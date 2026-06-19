@@ -769,6 +769,14 @@ func (c *Client) readResponseTagged(tag, typ string) (startTLS *startTLSCommand,
 				cmd.data.SourceUIDs = srcUIDs
 				cmd.data.DestUIDs = dstUIDs
 			}
+		case "READ-ONLY": // RFC 3501 / RFC 4314 §5.2
+			if cmd, ok := cmd.(*SelectCommand); ok {
+				cmd.data.ReadOnly = true
+			}
+		case "READ-WRITE":
+			if cmd, ok := cmd.(*SelectCommand); ok {
+				cmd.data.ReadOnly = false
+			}
 		default: // [SP 1*<any TEXT-CHAR except "]">]
 			if c.dec.SP() {
 				c.dec.DiscardUntilByte(']')

@@ -35,7 +35,10 @@ var testCases = []struct {
 		mailbox:               "MyFolder/Child",
 		setRightsModification: imap.RightModificationReplace,
 		setRights:             imap.RightSet("aelrwtd"),
-		expectedRights:        imap.RightSet("aelrwtd"),
+		// RFC 4314 §2.1.1 ("latter group"): the obsolete "d" right expands to
+		// x+t+e, so granting "d" also grants delete-mailbox ("x"). GETACL/MYRIGHTS
+		// then re-add the compat "d", yielding a,e,l,r,w,t,x,d.
+		expectedRights: imap.RightSet("aelrwtxd"),
 	},
 	{
 		name:                  "add_rights",

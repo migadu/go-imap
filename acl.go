@@ -35,6 +35,13 @@ var RightSetAll = RightSet("lrswipkxtea")
 // RightSetAllCompat contains all rights including obsolete RFC 2086 rights.
 var RightSetAllCompat = RightSet("lrswipkxteacd")
 
+// RightSetExtended contains the standard rights introduced by RFC 4314 that are
+// not part of RFC 2086 (k, x, t, e). These are advertised in the "RIGHTS="
+// capability: RFC 4314 Section 2.1 requires "t", "e", "x", and "k" to be
+// present, and Section 2.2 requires the RFC 2086 rights (l, r, s, w, i, p, a and
+// the obsolete c, d) to be excluded.
+var RightSetExtended = RightSet("kxte")
+
 // RightsIdentifier is an ACL identifier.
 type RightsIdentifier string
 

@@ -38,6 +38,12 @@ type SelectData struct {
 	Flags []Flag
 	// Flags that the client can change permanently
 	PermanentFlags []Flag
+	// ReadOnly reflects the READ-ONLY vs READ-WRITE response code on the tagged OK
+	// response. On the server side, setting it true makes SELECT return READ-ONLY
+	// (EXAMINE is always READ-ONLY regardless); per RFC 4314 §5.2 a server returns
+	// READ-ONLY when the current user lacks the rights required to modify the
+	// mailbox. On the client side it is populated from the server's response code.
+	ReadOnly bool
 	// Number of messages in this mailbox (aka. "EXISTS")
 	NumMessages uint32
 	// Sequence number of the first unseen message. Obsolete, IMAP4rev1 only.
