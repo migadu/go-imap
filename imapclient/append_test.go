@@ -115,3 +115,268 @@ func TestAppend_MissingCRLF(t *testing.T) {
 		t.Errorf("expected BAD for malformed APPEND, got: %s", strings.TrimSpace(line))
 	}
 }
+
+func TestAppend_UnauthenticatedSyncLiteral(t *testing.T) {
+	conn, server := newMemClientServerPair(t)
+	defer server.Close()
+	defer conn.Close()
+
+	br := bufio.NewReader(conn)
+
+	// Read greeting
+	line, err := br.ReadString('\n')
+	if err != nil {
+		t.Fatalf("reading greeting: %v", err)
+	}
+	t.Logf("S: %s", strings.TrimSpace(line))
+
+	// Send APPEND before LOGIN with a synchronising literal
+	fmt.Fprintf(conn, "A1 APPEND INBOX {10}\r\n")
+
+	// The server should NOT send a continuation request "+" because the client is not authenticated.
+	// Instead, it should directly send a status response (NO or BAD) for A1.
+	conn.SetDeadline(time.Now().Add(1 * time.Second))
+	line, err = br.ReadString('\n')
+	if err != nil {
+		t.Fatalf("reading response to unauthenticated APPEND: %v", err)
+	}
+	t.Logf("S: %s", strings.TrimSpace(line))
+	if !strings.HasPrefix(line, "A1 ") {
+		t.Fatalf("expected status response for A1, got: %s", strings.TrimSpace(line))
+	}
+	if strings.Contains(line, "OK") {
+		t.Fatalf("unauthenticated APPEND should not succeed, got: %s", strings.TrimSpace(line))
+	}
+
+	// Now send A2 NOOP and verify it succeeds.
+	fmt.Fprintf(conn, "A2 NOOP\r\n")
+	line, err = br.ReadString('\n')
+	if err != nil {
+		t.Fatalf("reading A2 NOOP response: %v", err)
+	}
+	t.Logf("S: %s", strings.TrimSpace(line))
+	if !strings.Contains(line, "A2 OK") {
+		t.Errorf("expected A2 OK, got: %s", strings.TrimSpace(line))
+	}
+}
+
+func TestAppend_UnauthenticatedNonSyncLiteral(t *testing.T) {
+	conn, server := newMemClientServerPair(t)
+	defer server.Close()
+	defer conn.Close()
+
+	br := bufio.NewReader(conn)
+
+	// Read greeting
+	line, err := br.ReadString('\n')
+	if err != nil {
+		t.Fatalf("reading greeting: %v", err)
+	}
+	t.Logf("S: %s", strings.TrimSpace(line))
+
+	// Send APPEND before LOGIN with a non-synchronising literal. The literal
+	// bytes are already on the wire, so the server must drain them before
+	// rejecting the command, otherwise they leak into the command parser and
+	// corrupt the next command.
+	const literal = "0123456789"
+	fmt.Fprintf(conn, "A1 APPEND INBOX {%d+}\r\n%s\r\n", len(literal), literal)
+
+	// The server should reject A1 (not valid before authentication) without
+	// sending a continuation request.
+	conn.SetDeadline(time.Now().Add(1 * time.Second))
+	line, err = br.ReadString('\n')
+	if err != nil {
+		t.Fatalf("reading response to unauthenticated APPEND: %v", err)
+	}
+	t.Logf("S: %s", strings.TrimSpace(line))
+	if !strings.HasPrefix(line, "A1 ") {
+		t.Fatalf("expected status response for A1, got: %s", strings.TrimSpace(line))
+	}
+	if strings.Contains(line, "OK") {
+		t.Fatalf("unauthenticated APPEND should not succeed, got: %s", strings.TrimSpace(line))
+	}
+
+	// Send A2 NOOP and verify it parses cleanly, proving the literal was drained.
+	fmt.Fprintf(conn, "A2 NOOP\r\n")
+	line, err = br.ReadString('\n')
+	if err != nil {
+		t.Fatalf("reading A2 NOOP response: %v", err)
+	}
+	t.Logf("S: %s", strings.TrimSpace(line))
+	if !strings.Contains(line, "A2 OK") {
+		t.Errorf("expected A2 OK, got: %s (this implies the literal was not drained)", strings.TrimSpace(line))
+	}
+}
+
+func TestAppend_BareLiteral8(t *testing.T) {
+	conn, server := newMemClientServerPair(t)
+	defer server.Close()
+	defer conn.Close()
+
+	br := bufio.NewReader(conn)
+
+	// Read greeting
+	line, err := br.ReadString('\n')
+	if err != nil {
+		t.Fatalf("reading greeting: %v", err)
+	}
+	t.Logf("S: %s", strings.TrimSpace(line))
+
+	// Login
+	fmt.Fprintf(conn, "A1 LOGIN %s %s\r\n", testUsername, testPassword)
+	for {
+		line, err = br.ReadString('\n')
+		if err != nil {
+			t.Fatalf("reading login response: %v", err)
+		}
+		t.Logf("S: %s", strings.TrimSpace(line))
+		if strings.HasPrefix(line, "A1 ") {
+			break
+		}
+	}
+
+	// Send APPEND with bare literal8 (prefixed with ~)
+	const literal = "hello binary"
+	fmt.Fprintf(conn, "A2 APPEND INBOX ~{%d}\r\n", len(literal))
+
+	// Read continuation "+" request
+	line, err = br.ReadString('\n')
+	if err != nil {
+		t.Fatalf("reading continuation: %v", err)
+	}
+	t.Logf("S: %s", strings.TrimSpace(line))
+	if !strings.HasPrefix(line, "+") {
+		t.Fatalf("expected continuation (+), got: %s", strings.TrimSpace(line))
+	}
+
+	// Write literal data, then CRLF
+	fmt.Fprintf(conn, "%s\r\n", literal)
+
+	// Read response
+	line, err = br.ReadString('\n')
+	if err != nil {
+		t.Fatalf("reading APPEND response: %v", err)
+	}
+	t.Logf("S: %s", strings.TrimSpace(line))
+	if !strings.Contains(line, "A2 OK") {
+		t.Errorf("expected A2 OK, got: %s", strings.TrimSpace(line))
+	}
+}
+
+// TestAppend_UTF8 verifies the RFC 6855 "UTF8 (~{n}...)" APPEND data extension.
+// The keyword is case-insensitive, so both "UTF8" and "utf8" must be accepted;
+// the lowercase case is a regression guard for a bug where the closing ')' was
+// only consumed when the keyword matched "UTF8" exactly.
+func TestAppend_UTF8(t *testing.T) {
+	for _, keyword := range []string{"UTF8", "utf8"} {
+		t.Run(keyword, func(t *testing.T) {
+			conn, server := newMemClientServerPair(t)
+			defer server.Close()
+			defer conn.Close()
+
+			br := bufio.NewReader(conn)
+
+			// Read greeting
+			line, err := br.ReadString('\n')
+			if err != nil {
+				t.Fatalf("reading greeting: %v", err)
+			}
+			t.Logf("S: %s", strings.TrimSpace(line))
+
+			// Login
+			fmt.Fprintf(conn, "A1 LOGIN %s %s\r\n", testUsername, testPassword)
+			for {
+				line, err = br.ReadString('\n')
+				if err != nil {
+					t.Fatalf("reading login response: %v", err)
+				}
+				t.Logf("S: %s", strings.TrimSpace(line))
+				if strings.HasPrefix(line, "A1 ") {
+					break
+				}
+			}
+
+			// Send APPEND with the UTF8 data extension: UTF8 (~{n}...)
+			const literal = "hello utf8"
+			fmt.Fprintf(conn, "A2 APPEND INBOX %s (~{%d}\r\n", keyword, len(literal))
+
+			// Read continuation "+" request
+			line, err = br.ReadString('\n')
+			if err != nil {
+				t.Fatalf("reading continuation: %v", err)
+			}
+			t.Logf("S: %s", strings.TrimSpace(line))
+			if !strings.HasPrefix(line, "+") {
+				t.Fatalf("expected continuation (+), got: %s", strings.TrimSpace(line))
+			}
+
+			// Write literal data, the closing ')', then CRLF
+			fmt.Fprintf(conn, "%s)\r\n", literal)
+
+			// Read response
+			line, err = br.ReadString('\n')
+			if err != nil {
+				t.Fatalf("reading APPEND response: %v", err)
+			}
+			t.Logf("S: %s", strings.TrimSpace(line))
+			if !strings.Contains(line, "A2 OK") {
+				t.Errorf("expected A2 OK, got: %s", strings.TrimSpace(line))
+			}
+		})
+	}
+}
+
+func TestAppend_NonSyncLiteralRejectDraining(t *testing.T) {
+	conn, server := newMemClientServerPair(t)
+	defer server.Close()
+	defer conn.Close()
+
+	br := bufio.NewReader(conn)
+
+	// Read greeting
+	line, err := br.ReadString('\n')
+	if err != nil {
+		t.Fatalf("reading greeting: %v", err)
+	}
+	t.Logf("S: %s", strings.TrimSpace(line))
+
+	// Login
+	fmt.Fprintf(conn, "A1 LOGIN %s %s\r\n", testUsername, testPassword)
+	for {
+		line, err = br.ReadString('\n')
+		if err != nil {
+			t.Fatalf("reading login response: %v", err)
+		}
+		t.Logf("S: %s", strings.TrimSpace(line))
+		if strings.HasPrefix(line, "A1 ") {
+			break
+		}
+	}
+
+	// Send APPEND with oversized non-synchronising literal (4097 bytes) when LITERAL+ is not supported
+	payload := strings.Repeat("A", 4097)
+	fmt.Fprintf(conn, "A2 APPEND INBOX {%d+}\r\n%s\r\n", len(payload), payload)
+
+	// Send subsequent command on the same stream
+	fmt.Fprintf(conn, "A3 NOOP\r\n")
+
+	// Read A2 response
+	line, err = br.ReadString('\n')
+	if err != nil {
+		t.Fatalf("reading A2 response: %v", err)
+	}
+	t.Logf("S: %s", strings.TrimSpace(line))
+	if !strings.Contains(line, "A2 BAD") {
+		t.Errorf("expected A2 BAD, got: %s", strings.TrimSpace(line))
+	}
+
+	// Read A3 response
+	line, err = br.ReadString('\n')
+	if err != nil {
+		t.Fatalf("reading A3 response: %v", err)
+	}
+	t.Logf("S: %s", strings.TrimSpace(line))
+	if !strings.Contains(line, "A3 OK") {
+		t.Errorf("expected A3 OK, got: %s (this implies the server command stream got corrupted)", strings.TrimSpace(line))
+	}
+}

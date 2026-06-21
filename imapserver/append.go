@@ -46,9 +46,16 @@ func (c *Conn) handleAppend(tag string, dec *imapwire.Decoder) error {
 	}
 	options.Time = t
 
+	// A leading '~' is the literal8 prefix of a bare binary append
+	// (APPEND mailbox ~{n}, RFC 3516 / IMAP4rev2): consume it and skip
+	// data-extension parsing. Otherwise an atom here is a data extension
+	// such as UTF8 (RFC 6855).
 	var dataExt string
-	if !dec.Special('~') && dec.Atom(&dataExt) { // ignore literal8 prefix if any for BINARY
-		switch strings.ToUpper(dataExt) {
+	if !dec.Special('~') && dec.Atom(&dataExt) {
+		// Keywords are case-insensitive; normalize once so later comparisons
+		// (e.g. the closing ')' check) don't depend on the wire casing.
+		dataExt = strings.ToUpper(dataExt)
+		switch dataExt {
 		case "UTF8":
 			// '~' is the literal8 prefix
 			if !dec.ExpectSP() || !dec.ExpectSpecial('(') || !dec.ExpectSpecial('~') {
@@ -74,10 +81,7 @@ func (c *Conn) handleAppend(tag string, dec *imapwire.Decoder) error {
 	// to an unauthenticated client. For non-sync literals, the bytes are already
 	// on the wire and we must still drain them.
 	if err := c.checkState(imap.ConnStateAuthenticated); err != nil {
-		if nonSync {
-			io.Copy(io.Discard, lit)
-			dec.CRLF()
-		}
+		c.drainLiteral(lit, dec, nonSync)
 		return err
 	}
 
@@ -86,16 +90,7 @@ func (c *Conn) handleAppend(tag string, dec *imapwire.Decoder) error {
 		// We must drain it from the stream before returning the error, otherwise it will
 		// leak into the command parser and cause subsequent commands to fail with errors like:
 		// "Subject: BAD Unknown command" or "expected SP, got \"\r\""
-		if nonSync {
-			// Drain the literal data to prevent it from corrupting the command stream
-			if _, err := io.Copy(io.Discard, lit); err != nil {
-				return fmt.Errorf("failed to drain oversized literal: %w", err)
-			}
-			// Consume the CRLF after the literal
-			if !dec.CRLF() {
-				return dec.Err()
-			}
-		}
+		c.drainLiteral(lit, dec, nonSync)
 
 		return &imap.Error{
 			Type: imap.StatusResponseTypeNo,
@@ -105,6 +100,7 @@ func (c *Conn) handleAppend(tag string, dec *imapwire.Decoder) error {
 	}
 
 	if err := c.acceptLiteral(lit.Size(), nonSync); err != nil {
+		c.drainLiteral(lit, dec, nonSync)
 		return err
 	}
 
@@ -115,7 +111,7 @@ func (c *Conn) handleAppend(tag string, dec *imapwire.Decoder) error {
 	if _, discardErr := io.Copy(io.Discard, lit); discardErr != nil {
 		return discardErr
 	}
-	if dataExt != "" && !dec.ExpectSpecial(')') {
+	if dataExt == "UTF8" && !dec.ExpectSpecial(')') {
 		return dec.Err()
 	}
 	if !dec.ExpectCRLF() {
@@ -142,4 +138,22 @@ func (c *Conn) writeAppendOK(tag string, data *imap.AppendData) error {
 	}
 	enc.Text("APPEND completed")
 	return enc.CRLF()
+}
+
+// drainLiteral consumes a rejected non-synchronizing literal's octets and the
+// trailing CRLF so they don't leak into the command parser and corrupt the next
+// command. It is best-effort: a read error here means the connection is already
+// broken, and the caller's protocol error (or the failed response write) is more
+// useful than a drain error, so errors are ignored. For synchronizing literals
+// it is a no-op — their octets are never sent when the command is rejected
+// before the continuation request. The literal read timeout is used because a
+// drained payload can be large (e.g. a LITERAL+ message over appendLimit).
+func (c *Conn) drainLiteral(lit *imapwire.LiteralReader, dec *imapwire.Decoder, nonSync bool) {
+	if !nonSync {
+		return
+	}
+	c.setReadTimeout(literalReadTimeout)
+	defer c.setReadTimeout(cmdReadTimeout)
+	_, _ = io.Copy(io.Discard, lit)
+	_ = dec.CRLF()
 }
