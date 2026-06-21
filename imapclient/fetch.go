@@ -43,6 +43,26 @@ func (c *Client) Fetch(numSet imap.NumSet, options *imap.FetchOptions) *FetchCom
 
 	numKind := imapwire.NumSetKind(numSet)
 
+	// RFC 7162 §3.2.6: the VANISHED FETCH modifier is only valid on a UID FETCH
+	// and only together with CHANGEDSINCE. Reject the misuse here, before
+	// touching the wire, instead of emitting a command the server is required
+	// to answer with BAD.
+	if options.Vanished && (numKind != imapwire.NumKindUID || options.ChangedSince == 0) {
+		done := make(chan error)
+		close(done)
+		msgs := make(chan *FetchMessageData)
+		close(msgs)
+		return &FetchCommand{
+			commandBase: commandBase{
+				done: done,
+				err:  fmt.Errorf("imapclient: the VANISHED FETCH modifier requires a UID FETCH with CHANGEDSINCE (RFC 7162 §3.2.6)"),
+			},
+			numSet: numSet,
+			msgs:   msgs,
+			opts:   &c.options,
+		}
+	}
+
 	cmd := &FetchCommand{
 		numSet: numSet,
 		msgs:   make(chan *FetchMessageData, 128),
@@ -53,16 +73,13 @@ func (c *Client) Fetch(numSet imap.NumSet, options *imap.FetchOptions) *FetchCom
 	writeFetchItems(enc.Encoder, numKind, options)
 	// RFC 4466 §2.2 / RFC 7162 §6: both CHANGEDSINCE and VANISHED are
 	// fetch-modifier items and must appear inside the parenthesised
-	// fetch-modifiers group: (CHANGEDSINCE n [VANISHED]).
-	if options.ChangedSince != 0 || (options.Vanished && numKind == imapwire.NumKindUID) {
-		enc.SP().Special('(')
-		if options.ChangedSince != 0 {
-			enc.Atom("CHANGEDSINCE").SP().ModSeq(options.ChangedSince)
-			if options.Vanished && numKind == imapwire.NumKindUID {
-				enc.SP().Atom("VANISHED")
-			}
-		} else if options.Vanished && numKind == imapwire.NumKindUID {
-			enc.Atom("VANISHED")
+	// fetch-modifiers group: (CHANGEDSINCE n [VANISHED]). VANISHED is only
+	// reachable here once the validation above has passed, i.e. a UID FETCH
+	// carrying CHANGEDSINCE.
+	if options.ChangedSince != 0 {
+		enc.SP().Special('(').Atom("CHANGEDSINCE").SP().ModSeq(options.ChangedSince)
+		if options.Vanished {
+			enc.SP().Atom("VANISHED")
 		}
 		enc.Special(')')
 	}
