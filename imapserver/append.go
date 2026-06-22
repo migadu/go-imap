@@ -109,7 +109,23 @@ func (c *Conn) handleAppend(tag string, dec *imapwire.Decoder) error {
 
 	data, appendErr := c.session.Append(mailbox, lit, &options)
 	if _, discardErr := io.Copy(io.Discard, lit); discardErr != nil {
-		return discardErr
+		// Draining the unread remainder of the literal failed. lit reads only
+		// from the client socket, so this is provably a client-side disconnect
+		// — the client/proxy closed or reset the connection mid-upload (a
+		// truncated literal, which surfaces as io.ErrUnexpectedEOF), not a
+		// server bug. Returning the raw error here routes it through the
+		// handler-error path, which logs it as "[SERVERBUG] handling APPEND
+		// command: unexpected EOF". Instead return the session's own classified
+		// error when it set one, or a plain NO, so it is treated as a normal
+		// IMAP response. The reply won't reach a dead socket, but the resulting
+		// write failure is recognized as a clean disconnect by the read loop.
+		if appendErr != nil {
+			return appendErr
+		}
+		return &imap.Error{
+			Type: imap.StatusResponseTypeNo,
+			Text: "APPEND failed: connection closed before the message was fully received",
+		}
 	}
 	if dataExt == "UTF8" && !dec.ExpectSpecial(')') {
 		return dec.Err()
