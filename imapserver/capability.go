@@ -2,6 +2,7 @@ package imapserver
 
 import (
 	"fmt"
+	"slices"
 
 	"github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/internal/imapwire"
@@ -134,6 +135,19 @@ func (c *Conn) availableCaps() []imap.Cap {
 			addAvailableCaps(&caps, available, []imap.Cap{imap.CapAppendLimit})
 		}
 	}
+
+	// Extra, non-standard tokens advertised verbatim by the session. Emitted in
+	// every connection state (including the unauthenticated greeting) and not
+	// gated by the known-capability allowlist above, so vendor/experimental
+	// tokens reach the client. De-duplicated against the standard set.
+	if extraSession, ok := c.session.(SessionAdditionalCaps); ok {
+		for _, extra := range extraSession.AdditionalCapabilities() {
+			if extra != "" && !slices.Contains(caps, extra) {
+				caps = append(caps, extra)
+			}
+		}
+	}
+
 	return caps
 }
 

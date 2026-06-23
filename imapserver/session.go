@@ -137,6 +137,23 @@ type SessionCapabilities interface {
 	GetCapabilities() imap.CapSet
 }
 
+// SessionAdditionalCaps is an IMAP session which advertises extra, non-standard
+// capability tokens verbatim, in addition to the capabilities the server derives
+// from the session's feature set.
+//
+// Unlike GetCapabilities (which is filtered through the server's known-capability
+// allowlist in availableCaps), the tokens returned here are emitted as-is and in
+// every connection state — including the unauthenticated greeting. This is the
+// mechanism for advertising vendor/experimental tokens that the library does not
+// otherwise recognize (e.g. a server-type fingerprint a client keys behavior on).
+type SessionAdditionalCaps interface {
+	Session
+
+	// AdditionalCapabilities returns extra capability tokens to advertise
+	// verbatim. They are appended (de-duplicated) to the standard set.
+	AdditionalCapabilities() []imap.Cap
+}
+
 // SessionMetadata is an IMAP session which supports the METADATA extension (RFC 5464).
 type SessionMetadata interface {
 	Session
