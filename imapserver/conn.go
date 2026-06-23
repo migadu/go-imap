@@ -210,14 +210,7 @@ func (c *Conn) serve() {
 		dec.MaxSize = maxCommandSize
 		dec.CheckBufferedLiteralFunc = c.checkBufferedLiteral
 
-		c.mutex.Lock()
-		// IMAP4rev2 is automatically enabled when advertised in capabilities
-		// UTF8=ACCEPT must be explicitly enabled
-		imap4rev2Available := c.server.options.caps().Has(imap.CapIMAP4rev2)
-		utf8AcceptEnabled := c.enabled.Has(imap.CapUTF8Accept)
-		quotedUTF8 := imap4rev2Available || utf8AcceptEnabled
-		c.mutex.Unlock()
-		dec.QuotedUTF8 = quotedUTF8
+		dec.QuotedUTF8 = c.useQuotedUTF8()
 
 		if c.state == imap.ConnStateLogout || dec.EOF() {
 			break
@@ -579,22 +572,35 @@ func (c *Conn) poll(cmd string) error {
 	return c.session.Poll(w, allowExpunge)
 }
 
+// useQuotedUTF8 reports whether IMAP strings and mailbox names should be
+// encoded and decoded as UTF-8 (RFC 9051 Net-Unicode) rather than the
+// Modified UTF-7 of IMAP4rev1.
+//
+// UTF-8 is a backward-incompatible change from Modified UTF-7 for non-ASCII
+// names, so per RFC 9051 Section 5.1 and the ENABLE handshake (RFC 5161) it
+// only takes effect once the client has explicitly negotiated it via
+// ENABLE IMAP4rev2 or ENABLE UTF8=ACCEPT. Gating on the advertised (rather
+// than enabled) capability would send incompatible mailbox names to a legacy
+// IMAP4rev1 client that never enabled IMAP4rev2.
+//
+// A server that does not advertise IMAP4rev1 has no legacy clients to protect,
+// so UTF-8 applies unconditionally (mirrors the gating in WriteNumRecent).
+func (c *Conn) useQuotedUTF8() bool {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	return c.enabled.Has(imap.CapIMAP4rev2) ||
+		c.enabled.Has(imap.CapUTF8Accept) ||
+		!c.server.options.caps().Has(imap.CapIMAP4rev1)
+}
+
 type responseEncoder struct {
 	*imapwire.Encoder
 	conn *Conn
 }
 
 func newResponseEncoder(conn *Conn) *responseEncoder {
-	conn.mutex.Lock()
-	// IMAP4rev2 is automatically enabled when advertised in capabilities
-	// UTF8=ACCEPT must be explicitly enabled
-	imap4rev2Available := conn.server.options.caps().Has(imap.CapIMAP4rev2)
-	utf8AcceptEnabled := conn.enabled.Has(imap.CapUTF8Accept)
-	quotedUTF8 := imap4rev2Available || utf8AcceptEnabled
-	conn.mutex.Unlock()
-
 	wireEnc := imapwire.NewEncoder(conn.bw, imapwire.ConnSideServer)
-	wireEnc.QuotedUTF8 = quotedUTF8
+	wireEnc.QuotedUTF8 = conn.useQuotedUTF8()
 
 	conn.encMutex.Lock() // released by responseEncoder.end
 	conn.setWriteTimeout(respWriteTimeout)
