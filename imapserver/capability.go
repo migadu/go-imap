@@ -38,12 +38,26 @@ func (c *Conn) availableCaps() []imap.Cap {
 	}
 
 	var caps []imap.Cap
-	addAvailableCaps(&caps, available, []imap.Cap{
-		imap.CapIMAP4rev2,
-		imap.CapIMAP4rev1,
-	})
+	// IMAP4rev2 implies NAMESPACE and MOVE, so it requires the session to
+	// implement SessionIMAP4rev2. Advertise it only when it is both configured
+	// and supported: a dual-stack server whose session lacks rev2 support
+	// degrades to IMAP4rev1 rather than advertising a version it cannot honor.
+	// This matches how every other backend-dependent capability is gated below
+	// (METADATA, ACL, ...) and avoids failing connections over a recoverable
+	// configuration mistake. Operators that require rev2 should assert it at
+	// compile time: var _ imapserver.SessionIMAP4rev2 = (*mySession)(nil).
+	if _, ok := c.session.(SessionIMAP4rev2); ok && available.Has(imap.CapIMAP4rev2) {
+		caps = append(caps, imap.CapIMAP4rev2)
+	}
+	if available.Has(imap.CapIMAP4rev1) {
+		caps = append(caps, imap.CapIMAP4rev1)
+	}
 	if len(caps) == 0 {
-		panic("imapserver: must support at least IMAP4rev1 or IMAP4rev2")
+		// Only reachable when the server advertises IMAP4rev2 alone (no
+		// IMAP4rev1) but the session does not implement SessionIMAP4rev2,
+		// leaving no usable base protocol. New() guarantees at least one of the
+		// two versions is configured.
+		panic("imapserver: server advertises IMAP4rev2 only but the session does not implement SessionIMAP4rev2")
 	}
 
 	if available.Has(imap.CapIMAP4rev1) {
@@ -80,17 +94,24 @@ func (c *Conn) availableCaps() []imap.Cap {
 			// and are not applicable to IMAP4rev2
 			addAvailableCaps(&caps, available, []imap.Cap{
 				imap.CapIdle,
-				imap.CapNamespace,
 				imap.CapUIDPlus,
 				imap.CapESearch,
 				imap.CapSearchRes,
 				imap.CapListExtended,
 				imap.CapListStatus,
-				imap.CapMove,
 				imap.CapStatusSize,
 				imap.CapBinary,
 				imap.CapChildren,
 			})
+
+			// NAMESPACE and MOVE require optional session interfaces; advertise
+			// them only when the session implements them (see IMAP4rev2 above).
+			if _, ok := c.session.(SessionNamespace); ok && available.Has(imap.CapNamespace) {
+				caps = append(caps, imap.CapNamespace)
+			}
+			if _, ok := c.session.(SessionMove); ok && available.Has(imap.CapMove) {
+				caps = append(caps, imap.CapMove)
+			}
 		}
 
 		// Capabilities which require backend support and apply to both
@@ -99,7 +120,6 @@ func (c *Conn) availableCaps() []imap.Cap {
 			imap.CapSpecialUse,
 			imap.CapCreateSpecialUse,
 			imap.CapLiteralPlus,
-			imap.CapUnauthenticate,
 			imap.CapCondStore,
 			imap.CapQResync,
 			imap.CapSort,
@@ -109,6 +129,12 @@ func (c *Conn) availableCaps() []imap.Cap {
 			imap.Cap("THREAD=REFERENCES"),
 			imap.Cap("THREAD=ORDEREDSUBJECT"),
 		})
+
+		// UNAUTHENTICATE requires an optional session interface; advertise it
+		// only when the session implements it.
+		if _, ok := c.session.(SessionUnauthenticate); ok && available.Has(imap.CapUnauthenticate) {
+			caps = append(caps, imap.CapUnauthenticate)
+		}
 
 		// METADATA capability
 		if _, ok := c.session.(SessionMetadata); ok && available.Has(imap.CapMetadata) {

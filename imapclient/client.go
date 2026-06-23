@@ -301,6 +301,18 @@ func (c *Client) setWriteTimeout(dur time.Duration) {
 	}
 }
 
+func (c *Client) useQuotedUTF8() bool {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	return c.useQuotedUTF8Locked()
+}
+
+func (c *Client) useQuotedUTF8Locked() bool {
+	return c.enabled.Has(imap.CapIMAP4rev2) ||
+		c.enabled.Has(imap.CapUTF8Accept) ||
+		(c.caps != nil && !c.caps.Has(imap.CapIMAP4rev1))
+}
+
 // State returns the current connection state of the client.
 func (c *Client) State() imap.ConnState {
 	c.mutex.Lock()
@@ -356,7 +368,7 @@ func (c *Client) setCaps(caps imap.CapSet) {
 
 	c.mutex.Lock()
 	c.caps = caps
-	quotedUTF8 := c.caps.Has(imap.CapIMAP4rev2) || c.enabled.Has(imap.CapUTF8Accept)
+	quotedUTF8 := c.useQuotedUTF8Locked()
 	c.dec.QuotedUTF8 = quotedUTF8
 	c.mutex.Unlock()
 }
@@ -424,7 +436,7 @@ func (c *Client) beginCommand(name string, cmd command) *commandEncoder {
 	}
 
 	c.pendingCmds = append(c.pendingCmds, cmd)
-	quotedUTF8 := c.caps.Has(imap.CapIMAP4rev2) || c.enabled.Has(imap.CapUTF8Accept)
+	quotedUTF8 := c.useQuotedUTF8Locked()
 	literalMinus := c.caps.Has(imap.CapLiteralMinus)
 	literalPlus := c.caps.Has(imap.CapLiteralPlus)
 

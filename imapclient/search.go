@@ -43,7 +43,7 @@ func (c *Client) search(numKind imapwire.NumKind, criteria *imap.SearchCriteria,
 	// decode encoded headers and Content-Transfer-Encoding before matching the
 	// criteria.
 	var charset string
-	if !c.Caps().Has(imap.CapIMAP4rev2) && !c.enabled.Has(imap.CapUTF8Accept) && !searchCriteriaIsASCII(criteria) {
+	if !c.useQuotedUTF8() && !searchCriteriaIsASCII(criteria) {
 		charset = "UTF-8"
 	}
 
@@ -84,7 +84,7 @@ func (c *Client) UIDSearch(criteria *imap.SearchCriteria, options *imap.SearchOp
 
 func (c *Client) multiSearch(numKind imapwire.NumKind, mailboxes []string, criteria *imap.SearchCriteria, options *imap.SearchOptions) *MultiSearchCommand {
 	var charset string
-	if !c.Caps().Has(imap.CapIMAP4rev2) && !c.enabled.Has(imap.CapUTF8Accept) && !searchCriteriaIsASCII(criteria) {
+	if !c.useQuotedUTF8() && !searchCriteriaIsASCII(criteria) {
 		charset = "UTF-8"
 	}
 

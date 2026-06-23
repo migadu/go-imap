@@ -44,7 +44,7 @@ func (c *Client) handleEnabled() error {
 		c.enabled[name] = struct{}{}
 	}
 
-	quotedUTF8 := c.caps.Has(imap.CapIMAP4rev2) || c.enabled.Has(imap.CapUTF8Accept)
+	quotedUTF8 := c.useQuotedUTF8Locked()
 	c.dec.QuotedUTF8 = quotedUTF8
 	c.mutex.Unlock()
 

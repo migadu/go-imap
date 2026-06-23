@@ -169,20 +169,14 @@ func (c *Conn) serve() {
 		}
 	}()
 
-	caps := c.server.options.caps()
-	if _, ok := c.session.(SessionIMAP4rev2); !ok && caps.Has(imap.CapIMAP4rev2) {
-		panic("imapserver: server advertises IMAP4rev2 but session doesn't support it")
-	}
-	if _, ok := c.session.(SessionNamespace); !ok && caps.Has(imap.CapNamespace) {
-		panic("imapserver: server advertises NAMESPACE but session doesn't support it")
-	}
-	if _, ok := c.session.(SessionMove); !ok && caps.Has(imap.CapMove) {
-		panic("imapserver: server advertises MOVE but session doesn't support it")
-	}
-	if _, ok := c.session.(SessionUnauthenticate); !ok && caps.Has(imap.CapUnauthenticate) {
-		panic("imapserver: server advertises UNAUTHENTICATE but session doesn't support it")
-	}
-
+	// Capabilities that depend on optional session interfaces (IMAP4rev2,
+	// NAMESPACE, MOVE, UNAUTHENTICATE, ...) are advertised by availableCaps only
+	// when the session implements them, and each command handler returns a clean
+	// error if invoked without support. The server therefore degrades gracefully
+	// when configured with a capability its session does not implement, rather
+	// than failing every connection. Operators that require a capability should
+	// assert it at compile time, e.g.:
+	//   var _ imapserver.SessionIMAP4rev2 = (*mySession)(nil)
 	c.state = imap.ConnStateNotAuthenticated
 	statusType := imap.StatusResponseTypeOK
 	if greetingData != nil && greetingData.PreAuth {

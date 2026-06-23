@@ -27,7 +27,12 @@ func (c *Conn) handleEnable(dec *imapwire.Decoder) error {
 	for _, req := range requested {
 		switch req {
 		case imap.CapIMAP4rev2, imap.CapUTF8Accept:
-			enabled = append(enabled, req)
+			// Only enable if advertised, so the enabled set never outruns the
+			// advertised capabilities (e.g. a client must not be able to enable
+			// IMAP4rev2 on a session that does not implement SessionIMAP4rev2).
+			if c.availableCapsSet().Has(req) {
+				enabled = append(enabled, req)
+			}
 		case imap.CapCondStore:
 			// Only enable if server and session support CONDSTORE
 			if c.supportsCondStore() {
