@@ -72,11 +72,15 @@ func (t *MailboxTracker) queueUpdate(update *trackerUpdate, source *SessionTrack
 }
 
 // QueueExpunge queues a new EXPUNGE update.
-func (t *MailboxTracker) QueueExpunge(seqNum uint32) {
+//
+// uid is the UID of the expunged message. It is used to emit a VANISHED response
+// (RFC 7162 §3.2.10) instead of EXPUNGE for QRESYNC-enabled sessions; pass 0 when
+// no UID is available (such sessions then fall back to EXPUNGE).
+func (t *MailboxTracker) QueueExpunge(seqNum uint32, uid imap.UID) {
 	if seqNum == 0 {
 		panic("imapserver: invalid expunge message sequence number")
 	}
-	t.queueUpdate(&trackerUpdate{expunge: seqNum}, nil)
+	t.queueUpdate(&trackerUpdate{expunge: seqNum, expungeUID: uid}, nil)
 }
 
 // QueueNumMessages queues a new EXISTS update.
@@ -112,6 +116,7 @@ func (t *MailboxTracker) QueueMessageFlags(seqNum uint32, uid imap.UID, flags []
 
 type trackerUpdate struct {
 	expunge         uint32
+	expungeUID      imap.UID // UID of the expunged message; enables VANISHED (RFC 7162) for QRESYNC sessions
 	numMessages     uint32
 	prevNumMessages uint32 // numMessages before this update; used by EncodeSeqNum
 	mailboxFlags    []imap.Flag
@@ -183,16 +188,49 @@ func (t *SessionTracker) Poll(w *UpdateWriter, allowExpunge bool) error {
 	}
 	t.mutex.Unlock()
 
+	// RFC 7162 §3.2.10: once QRESYNC is enabled, expunges are reported as
+	// VANISHED (by UID) rather than EXPUNGE (by sequence number). Coalesce
+	// consecutive expunges into a single VANISHED set, flushing it before any
+	// other kind of update so response ordering is preserved.
+	qresync := w.conn != nil && w.conn.enabled.Has(imap.CapQResync)
+	var vanished imap.UIDSet
+	flushVanished := func() error {
+		if len(vanished) == 0 {
+			return nil
+		}
+		uids := vanished
+		vanished = nil
+		return w.WriteVanished(uids)
+	}
+
 	for _, update := range updates {
 		var err error
 		switch {
 		case update.expunge != 0:
+			// A QRESYNC session with a known UID gets VANISHED; otherwise fall
+			// back to the classic EXPUNGE (by sequence number).
+			if qresync && update.expungeUID != 0 {
+				vanished.AddNum(update.expungeUID)
+				continue
+			}
+			if err = flushVanished(); err != nil {
+				return err
+			}
 			err = w.WriteExpunge(update.expunge)
 		case update.numMessages != 0:
+			if err = flushVanished(); err != nil {
+				return err
+			}
 			err = w.WriteNumMessages(update.numMessages)
 		case update.mailboxFlags != nil:
+			if err = flushVanished(); err != nil {
+				return err
+			}
 			err = w.WriteMailboxFlags(update.mailboxFlags)
 		case update.fetch != nil:
+			if err = flushVanished(); err != nil {
+				return err
+			}
 			err = w.WriteMessageFlags(update.fetch.seqNum, update.fetch.uid, update.fetch.flags, update.fetch.modSeq)
 		default:
 			panic(fmt.Errorf("imapserver: unknown tracker update %#v", update))
@@ -201,7 +239,7 @@ func (t *SessionTracker) Poll(w *UpdateWriter, allowExpunge bool) error {
 			return err
 		}
 	}
-	return nil
+	return flushVanished()
 }
 
 // Idle continuously writes mailbox updates.

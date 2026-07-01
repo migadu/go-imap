@@ -707,6 +707,16 @@ func (w *UpdateWriter) WriteExpunge(seqNum uint32) error {
 	return w.conn.writeExpunge(seqNum)
 }
 
+// WriteVanished writes a VANISHED response (RFC 7162 §3.2.10) reporting that the
+// messages with the given UIDs have been expunged. It is used instead of
+// WriteExpunge for QRESYNC-enabled sessions.
+func (w *UpdateWriter) WriteVanished(uids imap.UIDSet) error {
+	if !w.allowExpunge {
+		return fmt.Errorf("imapserver: EXPUNGE/VANISHED updates are not allowed in this context")
+	}
+	return w.conn.writeVanished(uids, false)
+}
+
 // WriteNumMessages writes an EXISTS response.
 func (w *UpdateWriter) WriteNumMessages(n uint32) error {
 	return w.conn.writeExists(n)

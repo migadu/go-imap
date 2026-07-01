@@ -164,7 +164,7 @@ func TestSessionTracker(t *testing.T) {
 			for _, update := range tc.pending {
 				switch {
 				case update.expunge != 0:
-					mboxTracker.QueueExpunge(update.expunge)
+					mboxTracker.QueueExpunge(update.expunge, 0)
 				case update.numMessages != 0:
 					mboxTracker.QueueNumMessages(update.numMessages)
 				}

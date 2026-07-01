@@ -1064,16 +1064,21 @@ func (c *Client) readResponseData(typ string) error {
 
 func (c *Client) handleVanished() error {
 	var data imap.VanishedData
-	isParen := c.dec.Special('(')
-	if isParen {
+	if c.dec.Special('(') {
 		var tag string
 		if !c.dec.ExpectAtom(&tag) || !c.dec.ExpectSpecial(')') {
 			return c.dec.Err()
 		}
 		data.Earlier = strings.ToUpper(tag) == "EARLIER"
+		// A SP separates the "(EARLIER)" group from the UID set. The SP after
+		// the VANISHED atom itself was already consumed by the response
+		// dispatcher, so only expect this one when the paren group is present.
+		if !c.dec.ExpectSP() {
+			return c.dec.Err()
+		}
 	}
 
-	if !c.dec.ExpectSP() || !c.dec.ExpectUIDSet(&data.UIDs) {
+	if !c.dec.ExpectUIDSet(&data.UIDs) {
 		return c.dec.Err()
 	}
 

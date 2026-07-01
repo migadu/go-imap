@@ -1,9 +1,11 @@
 package imapclient_test
 
 import (
+	"sync"
 	"testing"
 
 	"github.com/emersion/go-imap/v2"
+	"github.com/emersion/go-imap/v2/imapclient"
 )
 
 func TestEnable_QResync(t *testing.T) {
@@ -369,7 +371,23 @@ func TestCapability_QResync_Implications(t *testing.T) {
 // them in VANISHED responses during QRESYNC SELECT operations. By inspecting
 // the client's unilateral data handler, we can verify the Earlier flag is set.
 func TestSelect_QResync_VanishedEarlier(t *testing.T) {
-	client, server := newClientServerPair(t, imap.ConnStateAuthenticated)
+	// Capture live VANISHED responses (RFC 7162 §3.2.10) via the unilateral
+	// handler: with QRESYNC enabled, an EXPUNGE is reported as VANISHED, not as
+	// EXPUNGE sequence numbers.
+	var (
+		vanishedMu   sync.Mutex
+		vanishedUIDs imap.UIDSet
+	)
+	options := &imapclient.Options{
+		UnilateralDataHandler: &imapclient.UnilateralDataHandler{
+			Vanished: func(data *imap.VanishedData) {
+				vanishedMu.Lock()
+				vanishedUIDs = append(vanishedUIDs, data.UIDs...)
+				vanishedMu.Unlock()
+			},
+		},
+	}
+	client, server := newClientServerPairWithOptions(t, imap.ConnStateAuthenticated, options)
 	defer client.Close()
 	defer server.Close()
 
@@ -396,13 +414,17 @@ func TestSelect_QResync_VanishedEarlier(t *testing.T) {
 		t.Fatalf("Store(\\Deleted) = %v", err)
 	}
 
-	// Expunge to remove the message
-	seqNums, err := client.Expunge().Collect()
-	if err != nil {
+	// Expunge to remove the message. With QRESYNC enabled the server reports the
+	// removal as a live VANISHED response (delivered via the unilateral handler),
+	// not as EXPUNGE sequence numbers.
+	if err := client.Expunge().Close(); err != nil {
 		t.Fatalf("Expunge() = %v", err)
 	}
-	if len(seqNums) != 1 {
-		t.Fatalf("Expected 1 expunged message, got %d", len(seqNums))
+	vanishedMu.Lock()
+	liveVanished := vanishedUIDs
+	vanishedMu.Unlock()
+	if !liveVanished.Contains(1) {
+		t.Fatalf("Expected live VANISHED to report UID 1, got: %v", liveVanished)
 	}
 
 	// UNSELECT to leave selected state

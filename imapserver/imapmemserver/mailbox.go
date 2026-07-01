@@ -297,7 +297,7 @@ func (mbox *Mailbox) expungeLocked(expunged map[*message]struct{}) (seqNums []ui
 		if _, ok := expunged[msg]; ok {
 			seqNum := uint32(i) + 1
 			seqNums = append(seqNums, seqNum)
-			mbox.tracker.QueueExpunge(seqNum)
+			mbox.tracker.QueueExpunge(seqNum, msg.uid)
 			mbox.expunged = append(mbox.expunged, expungedMessage{uid: msg.uid, modSeq: expungeModSeq})
 		} else {
 			mbox.l[n] = msg
