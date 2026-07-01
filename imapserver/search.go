@@ -382,6 +382,8 @@ func readSearchKeyWithAtom(c *Conn, criteria *imap.SearchCriteria, dec *imapwire
 
 		// Only apply MODSEQ criteria if CONDSTORE is supported, otherwise ignore
 		if c.supportsCondStore() {
+			// SEARCH MODSEQ is a CONDSTORE-enabling command (RFC 7162 §3.1).
+			c.markCondStoreEnabled()
 			criteria.ModSeq = &imap.SearchCriteriaModSeq{
 				ModSeq:       modSeq,
 				MetadataName: name,

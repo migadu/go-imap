@@ -100,6 +100,8 @@ func (c *Conn) handleFetch(dec *imapwire.Decoder, numKind NumKind) error {
 					}
 					if c.supportsCondStore() {
 						options.ModSeq = true
+						// CHANGEDSINCE is a CONDSTORE-enabling modifier (RFC 7162 §3.1).
+						c.markCondStoreEnabled()
 					}
 				case "VANISHED":
 					if numKind != NumKindUID {
@@ -147,6 +149,8 @@ func (c *Conn) handleFetch(dec *imapwire.Decoder, numKind NumKind) error {
 					}
 					if c.supportsCondStore() {
 						options.ModSeq = true
+						// CHANGEDSINCE is a CONDSTORE-enabling modifier (RFC 7162 §3.1).
+						c.markCondStoreEnabled()
 					}
 				case "VANISHED":
 					if numKind != NumKindUID {
@@ -205,6 +209,9 @@ func handleFetchAtt(c *Conn, dec *imapwire.Decoder, attName string, options *ima
 		// Only enable ModSeq if CONDSTORE is supported, otherwise ignore
 		if c.supportsCondStore() {
 			options.ModSeq = true
+			// Requesting the MODSEQ data item is a CONDSTORE-enabling command
+			// (RFC 7162 §3.1).
+			c.markCondStoreEnabled()
 		}
 	case "RFC822": // equivalent to BODY[]
 		bs := &imap.FetchItemBodySection{}

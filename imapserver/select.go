@@ -30,6 +30,9 @@ func (c *Conn) handleSelect(tag string, dec *imapwire.Decoder, readOnly bool) er
 				// Per RFC 7162, ignore the parameter if not supported.
 				if c.supportsCondStore() {
 					options.CondStore = true
+					// SELECT/EXAMINE (CONDSTORE) is a CONDSTORE-enabling command
+					// (RFC 7162 §3.1): the client is now CONDSTORE-aware.
+					c.markCondStoreEnabled()
 				}
 			case "QRESYNC":
 				// Per RFC 7162, QRESYNC requires ENABLE QRESYNC
