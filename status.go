@@ -22,7 +22,7 @@ type StatusData struct {
 	Mailbox string
 
 	NumMessages *uint32
-	NumRecent   *uint32 // Obsolete, IMAP4rev1 only. Server-only, not supported in imapclient.
+	NumRecent   *uint32 // Obsolete, IMAP4rev1 only.
 	UIDNext     UID
 	UIDValidity uint32
 	NumUnseen   *uint32

@@ -126,6 +126,13 @@ func readStatusAttVal(dec *imapwire.Decoder, data *imap.StatusData) error {
 		var num uint32
 		ok = dec.ExpectNumber(&num)
 		data.NumMessages = &num
+	case "RECENT":
+		// RECENT cannot be requested via StatusOptions (obsolete in IMAP4rev2),
+		// but parse it defensively if a server sends it (e.g. an unsolicited
+		// STATUS) rather than discarding it via the default branch.
+		var num uint32
+		ok = dec.ExpectNumber(&num)
+		data.NumRecent = &num
 	case "UIDNEXT":
 		var uidNext imap.UID
 		ok = dec.ExpectUID(&uidNext)

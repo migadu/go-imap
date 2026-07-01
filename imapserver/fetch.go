@@ -554,7 +554,13 @@ func (w *FetchResponseWriter) WriteBinarySection(section *imap.FetchItemBinarySe
 
 	enc.Atom("BINARY").Special('[')
 	writeSectionPart(enc, section.Part)
-	enc.Special(']').SP()
+	enc.Special(']')
+	// RFC 3516 §4.2.2: a partial BINARY response MUST echo the <origin octet>,
+	// e.g. BINARY[]<0> ~{n}. Mirror the BODY[...] path above.
+	if partial := section.Partial; partial != nil {
+		enc.Special('<').Number(uint32(partial.Offset)).Special('>')
+	}
+	enc.SP()
 	enc.Special('~') // indicates literal8
 	return w.enc.Literal(size)
 }

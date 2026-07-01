@@ -99,7 +99,7 @@ func (c *Conn) handleSearch(tag string, dec *imapwire.Decoder, numKind NumKind) 
 	if supportsESEARCH && extended {
 		return c.writeESearch(tag, data, &options, numKind)
 	} else {
-		return c.writeSearch(data.All)
+		return c.writeSearch(data.All, data.ModSeq)
 	}
 }
 
@@ -149,7 +149,7 @@ func isNumSetEmpty(numSet imap.NumSet) bool {
 	}
 }
 
-func (c *Conn) writeSearch(numSet imap.NumSet) error {
+func (c *Conn) writeSearch(numSet imap.NumSet, modSeq uint64) error {
 	enc := newResponseEncoder(c)
 	defer enc.end()
 
@@ -174,6 +174,13 @@ func (c *Conn) writeSearch(numSet imap.NumSet) error {
 		if !ok {
 			return fmt.Errorf("imapserver: failed to enumerate message numbers in SEARCH response (dynamic set?)")
 		}
+	}
+
+	// RFC 7162 §3.4: append the highest mod-sequence of the matched messages to
+	// the untagged SEARCH response, e.g. "* SEARCH 2 5 6 (MODSEQ 917162500)".
+	// Gated identically to the ESEARCH path (writeESearch).
+	if modSeq > 0 && c.supportsCondStore() {
+		enc.SP().Special('(').Atom("MODSEQ").SP().ModSeq(modSeq).Special(')')
 	}
 
 	return enc.CRLF()

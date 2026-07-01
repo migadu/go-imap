@@ -797,7 +797,18 @@ func (c *Client) handleFetch(seqNum uint32) error {
 					if !dec.ExpectSpecial(']') {
 						return dec.Err()
 					}
-					section = &imap.FetchItemBinarySection{Part: part}
+					binSection := &imap.FetchItemBinarySection{Part: part}
+					// RFC 3516 §4.2.2: a partial BINARY response echoes the
+					// <origin octet>. Parse it (when present) so callers can
+					// observe the offset the server reported.
+					offset, err := readPartialOffset(dec)
+					if err != nil {
+						return fmt.Errorf("in section-binary: %w", err)
+					}
+					if offset != nil {
+						binSection.Partial = &imap.SectionPartial{Offset: int64(*offset)}
+					}
+					section = binSection
 				}
 
 				if !dec.ExpectSP() {
