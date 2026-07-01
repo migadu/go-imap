@@ -789,6 +789,17 @@ func (c *Client) readResponseTagged(tag, typ string) (startTLS *startTLSCommand,
 			if cmd, ok := cmd.(*SelectCommand); ok {
 				cmd.data.ReadOnly = false
 			}
+		case "MODIFIED": // RFC 7162 §3.1.3: conditional STORE UNCHANGEDSINCE failures
+			if !c.dec.ExpectSP() {
+				return nil, c.dec.Err()
+			}
+			modified, err := readRespCodeModified(c.dec, cmd)
+			if err != nil {
+				return nil, fmt.Errorf("in resp-code-modified: %w", err)
+			}
+			if cmd, ok := cmd.(*FetchCommand); ok {
+				cmd.modified = modified
+			}
 		default: // [SP 1*<any TEXT-CHAR except "]">]
 			if c.dec.SP() {
 				c.dec.DiscardUntilByte(']')

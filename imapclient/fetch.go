@@ -201,6 +201,12 @@ type FetchCommand struct {
 	recvSeqSet imap.SeqSet
 	recvUIDSet imap.UIDSet
 
+	// modified holds the messages reported by a MODIFIED response code
+	// (RFC 7162 §3.1.3) on the tagged completion of a conditional STORE. It is
+	// set by the response reader before the command completes; see
+	// FetchCommand.Modified.
+	modified imap.NumSet
+
 	msgs chan *FetchMessageData
 	prev *FetchMessageData
 	opts *Options

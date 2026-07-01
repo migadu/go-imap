@@ -42,3 +42,40 @@ func (c *Client) Store(numSet imap.NumSet, store *imap.StoreFlags, options *imap
 	enc.end()
 	return cmd
 }
+
+// readRespCodeModified parses the number set carried by a MODIFIED response
+// code (RFC 7162 §3.1.3). The set is interpreted in the number space of the
+// STORE command that produced it: UIDs for UID STORE, sequence numbers for
+// STORE. The pending command carries that number space via its numSet.
+func readRespCodeModified(dec *imapwire.Decoder, cmd command) (imap.NumSet, error) {
+	// MODIFIED is only emitted for STORE / UID STORE, which are backed by a
+	// FetchCommand. Default to sequence numbers for any other (unexpected)
+	// command so the decoder still consumes the set and stays in sync.
+	kind := imapwire.NumKindSeq
+	if fetchCmd, ok := cmd.(*FetchCommand); ok {
+		kind = imapwire.NumSetKind(fetchCmd.numSet)
+	}
+	var modified imap.NumSet
+	if !dec.ExpectNumSet(kind, &modified) {
+		return nil, dec.Err()
+	}
+	return modified, nil
+}
+
+// Modified returns the messages that a conditional STORE did not update because
+// they failed the UNCHANGEDSINCE precondition (RFC 7162 §3.1.3).
+//
+// The server reports these messages in a MODIFIED response code on the tagged
+// completion line. The returned set uses the command's number space: sequence
+// numbers when Store was called with a SeqSet, UIDs when called with a UIDSet.
+//
+// Modified is only populated for a conditional STORE issued with
+// StoreOptions.UnchangedSince, and only once the command has completed (e.g.
+// after Close or Collect returns). It is nil for a regular FETCH, an
+// unconditional STORE, or a conditional STORE in which every message satisfied
+// the precondition. In the expunged-message case the server reports MODIFIED on
+// a NO completion: Modified is still populated, and Close/Collect return the
+// corresponding *imap.Error.
+func (cmd *FetchCommand) Modified() imap.NumSet {
+	return cmd.modified
+}
