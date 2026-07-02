@@ -43,7 +43,14 @@ func (c *Conn) handleLSub(dec *imapwire.Decoder) error {
 		return err
 	}
 
-	options := &imap.ListOptions{SelectSubscribed: true}
+	// LSUB (RFC 3501 §6.3.9) is dispatched as LIST (SUBSCRIBED RECURSIVEMATCH):
+	// with the "%" wildcard it must report a non-subscribed mailbox that has
+	// subscribed children, flagged \Noselect. That is exactly the RECURSIVEMATCH
+	// CHILDINFO case; writeLSub folds CHILDINFO back into the legacy \Noselect
+	// wire form. Requesting RECURSIVEMATCH lets a single session.List
+	// implementation serve both LSUB and LIST-EXTENDED without knowing which
+	// command it is answering.
+	options := &imap.ListOptions{SelectSubscribed: true, SelectRecursiveMatch: true}
 	w := &ListWriter{
 		conn: c,
 		lsub: true,
@@ -141,9 +148,11 @@ func (c *Conn) writeLSub(data *imap.ListData) error {
 	enc := newResponseEncoder(c)
 	defer enc.end()
 
+	attrs := lsubAttrs(data)
+
 	enc.Atom("*").SP().Atom("LSUB").SP()
-	enc.List(len(data.Attrs), func(i int) {
-		enc.MailboxAttr(data.Attrs[i])
+	enc.List(len(attrs), func(i int) {
+		enc.MailboxAttr(attrs[i])
 	})
 	enc.SP()
 	if data.Delim == 0 {
@@ -153,6 +162,41 @@ func (c *Conn) writeLSub(data *imap.ListData) error {
 	}
 	enc.SP().Mailbox(data.Mailbox)
 	return enc.CRLF()
+}
+
+// lsubAttrs maps a LIST (SUBSCRIBED RECURSIVEMATCH) result to the mailbox-list
+// flags of an LSUB response (RFC 3501 §6.3.9). LSUB predates LIST-EXTENDED and
+// has no CHILDINFO or \Subscribed/\NonExistent flags:
+//
+//   - A mailbox present only because it has subscribed children — i.e. it
+//     carries CHILDINFO but is not itself subscribed — is reported \Noselect.
+//     This is the "% wildcard returns the parent" case: "foo/bar" subscribed,
+//     "foo" not, LSUB "" "%" MUST return foo flagged \Noselect.
+//   - The LIST-EXTENDED-only \Subscribed and \NonExistent attributes are
+//     dropped; LSUB conveys subscription by listing the name at all.
+func lsubAttrs(data *imap.ListData) []imap.MailboxAttr {
+	subscribed := false
+	for _, a := range data.Attrs {
+		if a == imap.MailboxAttrSubscribed {
+			subscribed = true
+			break
+		}
+	}
+
+	if !subscribed && data.ChildInfo != nil {
+		return []imap.MailboxAttr{imap.MailboxAttrNoSelect}
+	}
+
+	var attrs []imap.MailboxAttr
+	for _, a := range data.Attrs {
+		switch a {
+		case imap.MailboxAttrSubscribed, imap.MailboxAttrNonExistent:
+			// LIST-EXTENDED-only; no LSUB representation.
+		default:
+			attrs = append(attrs, a)
+		}
+	}
+	return attrs
 }
 
 func readListCmd(dec *imapwire.Decoder) (ref string, patterns []string, options *imap.ListOptions, err error) {
