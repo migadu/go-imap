@@ -30,7 +30,13 @@ func (c *Conn) handleStatus(dec *imapwire.Decoder) error {
 		return dec.Err()
 	}
 
-	if options.NumRecent && !c.server.options.caps().Has(imap.CapIMAP4rev1) {
+	// RECENT was removed in IMAP4rev2 (RFC 9051). Reject STATUS (RECENT) when the
+	// session has ENABLEd IMAP4rev2, or when the server does not advertise
+	// IMAP4rev1 at all. This mirrors SELECT, which suppresses the obsolete RECENT
+	// response under the same condition (select.go): gating on the session-enabled
+	// revision rather than only the server-advertised one, so a rev2 client on a
+	// dual-advertised server can't still pull the obsolete item.
+	if options.NumRecent && (c.enabled.Has(imap.CapIMAP4rev2) || !c.server.options.caps().Has(imap.CapIMAP4rev1)) {
 		return &imap.Error{
 			Type: imap.StatusResponseTypeBad,
 			Text: "Unknown STATUS data item",

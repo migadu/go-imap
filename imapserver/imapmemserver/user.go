@@ -165,18 +165,19 @@ func (u *User) Delete(name string) error {
 	return nil
 }
 
-func (u *User) Rename(oldName, newName string, options *imap.RenameOptions) error {
+func (u *User) Rename(w *imapserver.RenameWriter, oldName, newName string, options *imap.RenameOptions) error {
 	u.mutex.Lock()
-	defer u.mutex.Unlock()
 
 	newName = strings.TrimRight(newName, string(mailboxDelim))
 
 	mbox, err := u.mailboxLocked(oldName)
 	if err != nil {
+		u.mutex.Unlock()
 		return err
 	}
 
 	if u.mailboxes[newName] != nil {
+		u.mutex.Unlock()
 		return &imap.Error{
 			Type: imap.StatusResponseTypeNo,
 			Code: imap.ResponseCodeAlreadyExists,
@@ -187,7 +188,14 @@ func (u *User) Rename(oldName, newName string, options *imap.RenameOptions) erro
 	mbox.rename(newName)
 	u.mailboxes[newName] = mbox
 	delete(u.mailboxes, oldName)
-	return nil
+	u.mutex.Unlock()
+
+	// RFC 9051 §6.3.6: announce the new name with the OLDNAME data item.
+	return w.WriteOldName(&imap.ListData{
+		Mailbox: newName,
+		Delim:   mailboxDelim,
+		OldName: oldName,
+	})
 }
 
 func (u *User) Subscribe(name string) error {

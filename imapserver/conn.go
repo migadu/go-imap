@@ -438,7 +438,27 @@ func (c *Conn) handleRename(dec *imapwire.Decoder) error {
 		return err
 	}
 	var options imap.RenameOptions
-	return c.session.Rename(oldName, newName, &options)
+	return c.session.Rename(&RenameWriter{conn: c}, oldName, newName, &options)
+}
+
+// RenameWriter writes the unsolicited responses that MAY accompany a successful
+// RENAME. Per RFC 9051 §6.3.6, a server SHOULD send an untagged LIST response
+// carrying the OLDNAME extended data item so that IMAP4rev2 clients learn the
+// mailbox's new name.
+type RenameWriter struct {
+	conn *Conn
+}
+
+// WriteOldName sends `* LIST (attrs) delim newName ("OLDNAME" (oldName))`, where
+// data.OldName holds the previous name. It is a no-op unless the client has
+// enabled IMAP4rev2: OLDNAME is an IMAP4rev2 / LIST-EXTENDED return-data item and
+// an unsolicited extended LIST would confuse an IMAP4rev1-only client (this
+// mirrors how RECENT is suppressed for rev2 clients).
+func (w *RenameWriter) WriteOldName(data *imap.ListData) error {
+	if !w.conn.enabled.Has(imap.CapIMAP4rev2) {
+		return nil
+	}
+	return w.conn.writeListData(data, nil, true)
 }
 
 func (c *Conn) handleSubscribe(dec *imapwire.Decoder) error {

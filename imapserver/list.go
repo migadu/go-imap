@@ -71,6 +71,14 @@ func isExtendedListOptions(opts *imap.ListOptions) bool {
 // extended-data items are included in the response.  Pass nil when writing
 // LIST data outside of a LIST command context (e.g. inside a SELECT response).
 func (c *Conn) writeList(data *imap.ListData, opts *imap.ListOptions) error {
+	return c.writeListData(data, opts, isExtendedListOptions(opts))
+}
+
+// writeListData writes a single LIST response line. allowOldName forces the
+// OLDNAME extended-data item to be included independently of opts — used for the
+// unsolicited LIST that accompanies a successful RENAME (RFC 9051 §6.3.6), where
+// there is no LIST command whose options could be consulted.
+func (c *Conn) writeListData(data *imap.ListData, opts *imap.ListOptions, allowOldName bool) error {
 	enc := newResponseEncoder(c)
 	defer enc.end()
 
@@ -100,9 +108,10 @@ func (c *Conn) writeList(data *imap.ListData, opts *imap.ListOptions) error {
 	if data.ChildInfo != nil && opts != nil && opts.SelectRecursiveMatch {
 		ext = append(ext, "CHILDINFO")
 	}
-	// OLDNAME: only in LIST-EXTENDED responses.
-	// Sending it in response to a plain LIST command violates RFC 5258 §3.
-	if data.OldName != "" && isExtendedListOptions(opts) {
+	// OLDNAME: only in LIST-EXTENDED responses or the unsolicited RENAME
+	// notification (allowOldName). Sending it in response to a plain LIST command
+	// violates RFC 5258 §3.
+	if data.OldName != "" && allowOldName {
 		ext = append(ext, "OLDNAME")
 	}
 
