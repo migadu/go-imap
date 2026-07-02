@@ -49,17 +49,20 @@ type MetadataResponseCodeData struct {
 
 // ValidateMetadataEntry validates a metadata entry name according to RFC 5464.
 // Entry names must:
-// - Start with /private/ or /shared/
-// - Not contain * or %
-// - Not contain consecutive slashes
-// - Not end with a slash (unless it's just the prefix)
+//   - Start with /private/ or /shared/ (RFC 5464 §3.1: entry names are
+//     case-insensitive, so the prefix is matched case-insensitively)
+//   - Not contain * or %
+//   - Not contain consecutive slashes
+//   - Not end with a slash (unless it's just the prefix)
 func ValidateMetadataEntry(entry string) error {
 	if entry == "" {
 		return fmt.Errorf("empty entry name")
 	}
 
-	// Must start with /private/ or /shared/
-	if !hasPrefix(entry, "/private/") && !hasPrefix(entry, "/shared/") {
+	// Must start with /private/ or /shared/. Entry names are case-insensitive
+	// (RFC 5464 §3.1), so "/PRIVATE/..." and "/Shared/..." are equally valid;
+	// canonicalisation to a single case is the backend's responsibility.
+	if !hasPrefixFold(entry, "/private/") && !hasPrefixFold(entry, "/shared/") {
 		return fmt.Errorf("entry name must start with /private/ or /shared/")
 	}
 
@@ -82,8 +85,26 @@ func ValidateMetadataEntry(entry string) error {
 }
 
 // Helper functions to avoid importing strings package
-func hasPrefix(s, prefix string) bool {
-	return len(s) >= len(prefix) && s[:len(prefix)] == prefix
+
+// hasPrefixFold reports whether s begins with prefix, comparing ASCII letters
+// case-insensitively (RFC 5464 §3.1 makes METADATA entry names case-insensitive).
+func hasPrefixFold(s, prefix string) bool {
+	if len(s) < len(prefix) {
+		return false
+	}
+	for i := 0; i < len(prefix); i++ {
+		if toLowerASCII(s[i]) != toLowerASCII(prefix[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func toLowerASCII(b byte) byte {
+	if b >= 'A' && b <= 'Z' {
+		return b + ('a' - 'A')
+	}
+	return b
 }
 
 func hasSuffix(s, suffix string) bool {
