@@ -347,8 +347,10 @@ func (c *Conn) readCommand(dec *imapwire.Decoder) (err error) {
 		sendOK = false
 	case "SETMETADATA":
 		err = c.handleSetMetadata(dec)
-	case "MULTISEARCH", "UID MULTISEARCH":
-		err = c.handleMultiSearch(tag, dec, numKind)
+	case "ESEARCH":
+		// RFC 7377: ESEARCH always returns UIDs (message numbers are meaningless
+		// for unselected mailboxes), so there is no "UID ESEARCH" form.
+		err = c.handleESearch(tag, dec)
 	case "THREAD", "UID THREAD":
 		err = c.handleThread(dec, numKind)
 	default:

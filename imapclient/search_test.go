@@ -89,7 +89,8 @@ func TestMultiSearch(t *testing.T) {
 	options := imap.SearchOptions{
 		ReturnCount: true,
 	}
-	dataList, err := client.MultiSearch([]string{"INBOX", "archive"}, &criteria, &options).Wait()
+	source := &imap.SearchSource{Mailboxes: []string{"INBOX", "archive"}}
+	dataList, err := client.MultiSearch(source, &criteria, &options).Wait()
 	if err != nil {
 		t.Fatalf("MultiSearch().Wait() = %v", err)
 	}
@@ -107,5 +108,11 @@ func TestMultiSearch(t *testing.T) {
 	}
 	if want := "archive"; dataList[1].Mailbox != want {
 		t.Errorf("dataList[1].Mailbox = %v, want %v", dataList[1].Mailbox, want)
+	}
+	// RFC 7377 §2.1: every multi-mailbox ESEARCH result must carry UIDVALIDITY.
+	for i, data := range dataList {
+		if data.UIDValidity == 0 {
+			t.Errorf("dataList[%d].UIDValidity = 0, want non-zero (%q)", i, data.Mailbox)
+		}
 	}
 }

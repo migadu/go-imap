@@ -144,9 +144,44 @@ type SearchData struct {
 
 	// requires MULTISEARCH
 	Mailbox string
+	// requires MULTISEARCH; emitted alongside Mailbox in the ESEARCH response
+	// correlator (RFC 7377 §2.1) so returned UIDs are unambiguous across mailboxes
+	UIDValidity uint32
 
 	// requires CONDSTORE
 	ModSeq uint64
+}
+
+// SearchSource describes the set of mailboxes an ESEARCH command operates on,
+// parsed from the "IN (source-options)" clause (RFC 7377 §2.1, filter-mailboxes
+// from RFC 5465 §6). Multiple scopes are combined as a union. A zero value (no
+// "IN" clause) means the currently selected mailbox.
+//
+// The IMAP server layer cannot enumerate the user's mailboxes or subscriptions,
+// so it hands the parsed SearchSource to the backend, which resolves the scopes.
+type SearchSource struct {
+	Selected   bool     // the currently selected mailbox
+	Inboxes    bool     // INBOX (and, optionally, other new-mail targets)
+	Personal   bool     // every mailbox in the user's personal namespace
+	Subscribed bool     // every subscribed mailbox
+	Subtree    []string // each named mailbox and all its descendants
+	SubtreeOne []string // each named mailbox and its immediate children
+	Mailboxes  []string // the explicitly named mailbox(es)
+}
+
+// IsZero reports whether no source-options were specified, i.e. the command had
+// no "IN" clause and must run on the selected mailbox.
+func (s *SearchSource) IsZero() bool {
+	return s == nil || (!s.Selected && !s.Inboxes && !s.Personal && !s.Subscribed &&
+		len(s.Subtree) == 0 && len(s.SubtreeOne) == 0 && len(s.Mailboxes) == 0)
+}
+
+// SelectedOnly reports whether the only scope requested is the selected mailbox,
+// so the command can take the single-mailbox path (extended SEARCH result format,
+// no MAILBOX/UIDVALIDITY correlator).
+func (s *SearchSource) SelectedOnly() bool {
+	return s != nil && s.Selected && !s.Inboxes && !s.Personal && !s.Subscribed &&
+		len(s.Subtree) == 0 && len(s.SubtreeOne) == 0 && len(s.Mailboxes) == 0
 }
 
 // AllSeqNums returns All as a slice of sequence numbers.

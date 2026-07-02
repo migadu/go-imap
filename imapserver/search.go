@@ -108,15 +108,30 @@ func (c *Conn) writeESearch(tag string, data *imap.SearchData, options *imap.Sea
 	defer enc.end()
 
 	enc.Atom("*").SP().Atom("ESEARCH")
-	if tag != "" {
-		enc.SP().Special('(').Atom("TAG").SP().String(tag).Special(')')
-	}
-	if numKind == NumKindUID {
-		enc.SP().Atom("UID")
+
+	// search-correlator: RFC 7377 §2.1 places MAILBOX and UIDVALIDITY *inside* the
+	// same parentheses as TAG (one ESEARCH response per matched mailbox), so the
+	// returned UIDs are unambiguous across mailboxes. UIDVALIDITY is REQUIRED
+	// whenever MAILBOX is present.
+	if tag != "" || data.Mailbox != "" {
+		enc.SP().Special('(')
+		wrote := false
+		if tag != "" {
+			enc.Atom("TAG").SP().String(tag)
+			wrote = true
+		}
+		if data.Mailbox != "" {
+			if wrote {
+				enc.SP()
+			}
+			enc.Atom("MAILBOX").SP().Mailbox(data.Mailbox)
+			enc.SP().Atom("UIDVALIDITY").SP().Number(data.UIDValidity)
+		}
+		enc.Special(')')
 	}
 
-	if data.Mailbox != "" {
-		enc.SP().Atom("MAILBOX").SP().Mailbox(data.Mailbox)
+	if numKind == NumKindUID {
+		enc.SP().Atom("UID")
 	}
 
 	if options.ReturnAll && data.All != nil && !isNumSetEmpty(data.All) {

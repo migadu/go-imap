@@ -82,23 +82,29 @@ func (c *Client) UIDSearch(criteria *imap.SearchCriteria, options *imap.SearchOp
 	return c.search(imapwire.NumKindUID, criteria, options)
 }
 
-func (c *Client) multiSearch(numKind imapwire.NumKind, mailboxes []string, criteria *imap.SearchCriteria, options *imap.SearchOptions) *MultiSearchCommand {
+// MultiSearch sends an RFC 7377 ESEARCH command, searching the mailboxes
+// described by source (advertised as the MULTISEARCH capability). A nil or zero
+// source searches the currently selected mailbox. ESEARCH always reports UIDs;
+// each *imap.SearchData in the result carries its Mailbox and UIDValidity.
+func (c *Client) MultiSearch(source *imap.SearchSource, criteria *imap.SearchCriteria, options *imap.SearchOptions) *MultiSearchCommand {
 	var charset string
 	if !c.useQuotedUTF8() && !searchCriteriaIsASCII(criteria) {
 		charset = "UTF-8"
 	}
 
 	cmd := &MultiSearchCommand{}
-	// Since we aggregate multiple responses, we don't prepopulate cmd.data.All here.
-	enc := c.beginCommand(uidCmdName("MULTISEARCH", numKind), cmd)
+	// Since we aggregate one ESEARCH response per mailbox, we don't prepopulate
+	// cmd.data here.
+	enc := c.beginCommand("ESEARCH", cmd)
+	if source != nil && !source.IsZero() {
+		enc.SP().Atom("IN").SP()
+		writeSearchSource(enc.Encoder, source)
+	}
 	if returnOpts := returnSearchOptions(options); len(returnOpts) > 0 {
 		enc.SP().Atom("RETURN").SP().List(len(returnOpts), func(i int) {
 			enc.Atom(returnOpts[i])
 		})
 	}
-	enc.SP().List(len(mailboxes), func(i int) {
-		enc.Mailbox(mailboxes[i])
-	})
 	enc.SP()
 	if charset != "" {
 		enc.Atom("CHARSET").SP().Atom(charset).SP()
@@ -108,14 +114,55 @@ func (c *Client) multiSearch(numKind imapwire.NumKind, mailboxes []string, crite
 	return cmd
 }
 
-// MultiSearch sends a MULTISEARCH command.
-func (c *Client) MultiSearch(mailboxes []string, criteria *imap.SearchCriteria, options *imap.SearchOptions) *MultiSearchCommand {
-	return c.multiSearch(imapwire.NumKindSeq, mailboxes, criteria, options)
-}
-
-// UIDMultiSearch sends a UID MULTISEARCH command.
-func (c *Client) UIDMultiSearch(mailboxes []string, criteria *imap.SearchCriteria, options *imap.SearchOptions) *MultiSearchCommand {
-	return c.multiSearch(imapwire.NumKindUID, mailboxes, criteria, options)
+// writeSearchSource encodes an ESEARCH "IN (source-mbox)" clause (RFC 7377 §2.1).
+func writeSearchSource(enc *imapwire.Encoder, source *imap.SearchSource) {
+	enc.Special('(')
+	first := true
+	sep := func() {
+		if !first {
+			enc.SP()
+		}
+		first = false
+	}
+	if source.Selected {
+		sep()
+		enc.Atom("selected")
+	}
+	if source.Inboxes {
+		sep()
+		enc.Atom("inboxes")
+	}
+	if source.Personal {
+		sep()
+		enc.Atom("personal")
+	}
+	if source.Subscribed {
+		sep()
+		enc.Atom("subscribed")
+	}
+	writeFilter := func(verb string, names []string) {
+		if len(names) == 0 {
+			return
+		}
+		sep()
+		enc.Atom(verb).SP()
+		if len(names) == 1 {
+			enc.Mailbox(names[0])
+			return
+		}
+		enc.Special('(')
+		for i, name := range names {
+			if i > 0 {
+				enc.SP()
+			}
+			enc.Mailbox(name)
+		}
+		enc.Special(')')
+	}
+	writeFilter("subtree", source.Subtree)
+	writeFilter("subtree-one", source.SubtreeOne)
+	writeFilter("mailboxes", source.Mailboxes)
+	enc.Special(')')
 }
 
 func (c *Client) handleSearch() error {
@@ -334,12 +381,35 @@ func flagSearchKey(flag imap.Flag) string {
 func readESearchResponse(dec *imapwire.Decoder) (tag string, data *imap.SearchData, err error) {
 	data = &imap.SearchData{}
 	if dec.Special('(') { // search-correlator
-		var correlator string
-		if !dec.ExpectAtom(&correlator) || !dec.ExpectSP() || !dec.ExpectAString(&tag) || !dec.ExpectSpecial(')') {
-			return "", nil, dec.Err()
+		// RFC 7377 §2.1: the correlator carries TAG plus, for multi-mailbox
+		// results, MAILBOX and UIDVALIDITY — all inside the same parentheses.
+		for {
+			var itemName string
+			if !dec.ExpectAtom(&itemName) || !dec.ExpectSP() {
+				return "", nil, dec.Err()
+			}
+			switch strings.ToUpper(itemName) {
+			case "TAG":
+				if !dec.ExpectAString(&tag) {
+					return "", nil, dec.Err()
+				}
+			case "MAILBOX":
+				if !dec.ExpectMailbox(&data.Mailbox) {
+					return "", nil, dec.Err()
+				}
+			case "UIDVALIDITY":
+				if !dec.ExpectNumber(&data.UIDValidity) {
+					return "", nil, dec.Err()
+				}
+			default:
+				return "", nil, fmt.Errorf("in search-correlator: unknown item %q", itemName)
+			}
+			if !dec.SP() {
+				break
+			}
 		}
-		if correlator != "TAG" {
-			return "", nil, fmt.Errorf("in search-correlator: name must be TAG, but got %q", correlator)
+		if !dec.ExpectSpecial(')') {
+			return "", nil, dec.Err()
 		}
 	}
 

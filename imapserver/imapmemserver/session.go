@@ -1,6 +1,7 @@
 package imapmemserver
 
 import (
+	"sort"
 	"strings"
 
 	"github.com/emersion/go-imap/v2"
@@ -170,25 +171,98 @@ func (sess *UserSession) Thread(numKind imapserver.NumKind, algorithm imap.Threa
 	}, nil
 }
 
-func (sess *UserSession) MultiSearch(numKind imapserver.NumKind, mailboxes []string, criteria *imap.SearchCriteria, options *imap.SearchOptions) ([]*imap.SearchData, error) {
+func (sess *UserSession) MultiSearch(source *imap.SearchSource, criteria *imap.SearchCriteria, options *imap.SearchOptions) ([]*imap.SearchData, error) {
 	var results []*imap.SearchData
-	for _, mboxName := range mailboxes {
+	for _, mboxName := range sess.resolveSearchSource(source) {
 		mbox, err := sess.user.mailbox(mboxName)
 		if err != nil {
-			// Skip mailboxes that don't exist
+			// Skip mailboxes that don't exist (e.g. resolved from a scope verb).
 			continue
 		}
 		view := mbox.NewView()
-		defer view.Close()
 
-		data, err := view.Search(numKind, criteria, options)
+		// RFC 7377: ESEARCH always reports UIDs, never message numbers.
+		data, err := view.Search(imapserver.NumKindUID, criteria, options)
+		view.Close()
 		if err != nil {
 			return nil, err
 		}
 		data.Mailbox = mboxName
+		data.UIDValidity = mbox.uidValidity
 		results = append(results, data)
 	}
 	return results, nil
+}
+
+// resolveSearchSource turns an ESEARCH source spec into an ordered, de-duplicated
+// list of mailbox names to search.
+func (sess *UserSession) resolveSearchSource(source *imap.SearchSource) []string {
+	var names []string
+	seen := make(map[string]struct{})
+	add := func(name string) {
+		if _, ok := seen[name]; ok {
+			return
+		}
+		seen[name] = struct{}{}
+		names = append(names, name)
+	}
+
+	if source.Selected && sess.mailbox != nil {
+		add(sess.mailbox.name)
+	}
+	if source.Inboxes {
+		add("INBOX")
+	}
+
+	// Snapshot the user's mailboxes (name + subscription state) once.
+	sess.user.mutex.Lock()
+	all := make([]string, 0, len(sess.user.mailboxes))
+	subscribed := make(map[string]bool, len(sess.user.mailboxes))
+	for name, mbox := range sess.user.mailboxes {
+		all = append(all, name)
+		mbox.mutex.Lock()
+		subscribed[name] = mbox.subscribed
+		mbox.mutex.Unlock()
+	}
+	sess.user.mutex.Unlock()
+	sort.Strings(all)
+
+	if source.Personal {
+		for _, name := range all {
+			add(name)
+		}
+	}
+	if source.Subscribed {
+		for _, name := range all {
+			if subscribed[name] {
+				add(name)
+			}
+		}
+	}
+	for _, root := range source.Subtree {
+		prefix := root + string(mailboxDelim)
+		for _, name := range all {
+			if name == root || strings.HasPrefix(name, prefix) {
+				add(name)
+			}
+		}
+	}
+	for _, root := range source.SubtreeOne {
+		prefix := root + string(mailboxDelim)
+		for _, name := range all {
+			if name == root {
+				add(name)
+				continue
+			}
+			if rest, ok := strings.CutPrefix(name, prefix); ok && !strings.ContainsRune(rest, mailboxDelim) {
+				add(name)
+			}
+		}
+	}
+	for _, name := range source.Mailboxes {
+		add(name)
+	}
+	return names
 }
 
 func (sess *UserSession) GetMetadata(mailboxName string, entries []string, options *imap.GetMetadataOptions) (*imap.GetMetadataData, error) {
