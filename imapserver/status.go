@@ -36,7 +36,7 @@ func (c *Conn) handleStatus(dec *imapwire.Decoder) error {
 	// response under the same condition (select.go): gating on the session-enabled
 	// revision rather than only the server-advertised one, so a rev2 client on a
 	// dual-advertised server can't still pull the obsolete item.
-	if options.NumRecent && (c.enabled.Has(imap.CapIMAP4rev2) || !c.server.options.caps().Has(imap.CapIMAP4rev1)) {
+	if options.NumRecent && (c.enabledHas(imap.CapIMAP4rev2) || !c.server.options.caps().Has(imap.CapIMAP4rev1)) {
 		return &imap.Error{
 			Type: imap.StatusResponseTypeBad,
 			Text: "Unknown STATUS data item",

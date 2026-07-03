@@ -147,6 +147,10 @@ func (c *Conn) handleUnauthenticate(dec *imapwire.Decoder) error {
 	c.state = imap.ConnStateNotAuthenticated
 	c.mutex.Lock()
 	c.enabled = make(imap.CapSet)
+	// Reset CONDSTORE-enabled state too (RFC 8437): the connection returns to
+	// not-authenticated as if freshly connected, so a re-authenticated client
+	// that never re-enables CONDSTORE must not receive MODSEQ data items.
+	c.condStore = false
 	c.mutex.Unlock()
 	return nil
 }

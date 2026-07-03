@@ -136,6 +136,16 @@ func (c *Conn) EnabledCaps() imap.CapSet {
 	return c.enabled.Copy()
 }
 
+// enabledHas reports whether cap has been ENABLEd on this connection. It takes
+// c.mutex so it is safe to call from UpdateWriter/tracker callbacks that a
+// backend may invoke from its own goroutine, concurrently with ENABLE writing
+// c.enabled on the command goroutine (c.enabled is a plain map).
+func (c *Conn) enabledHas(cap imap.Cap) bool {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	return c.enabled.Has(cap)
+}
+
 // Context returns the connection's context. It is cancelled when the
 // connection is torn down — by client disconnect, by the serve goroutine
 // exiting, or by server shutdown. Backends may use it to bound blocking work,
@@ -486,7 +496,7 @@ type RenameWriter struct {
 // an unsolicited extended LIST would confuse an IMAP4rev1-only client (this
 // mirrors how RECENT is suppressed for rev2 clients).
 func (w *RenameWriter) WriteOldName(data *imap.ListData) error {
-	if !w.conn.enabled.Has(imap.CapIMAP4rev2) {
+	if !w.conn.enabledHas(imap.CapIMAP4rev2) {
 		return nil
 	}
 	return w.conn.writeListData(data, nil, true)
@@ -775,7 +785,7 @@ func (w *UpdateWriter) WriteNumMessages(n uint32) error {
 
 // WriteNumRecent writes an RECENT response (not used in IMAP4rev2, will be ignored).
 func (w *UpdateWriter) WriteNumRecent(n uint32) error {
-	if w.conn.enabled.Has(imap.CapIMAP4rev2) || !w.conn.server.options.caps().Has(imap.CapIMAP4rev1) {
+	if w.conn.enabledHas(imap.CapIMAP4rev2) || !w.conn.server.options.caps().Has(imap.CapIMAP4rev1) {
 		return nil
 	}
 	return w.conn.writeObsoleteRecent(n)

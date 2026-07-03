@@ -36,7 +36,7 @@ func (c *Conn) handleSelect(tag string, dec *imapwire.Decoder, readOnly bool) er
 				}
 			case "QRESYNC":
 				// Per RFC 7162, QRESYNC requires ENABLE QRESYNC
-				if c.enabled.Has(imap.CapQResync) {
+				if c.enabledHas(imap.CapQResync) {
 					if !dec.ExpectSP() {
 						return dec.Err()
 					}
@@ -145,7 +145,7 @@ func (c *Conn) handleSelect(tag string, dec *imapwire.Decoder, readOnly bool) er
 	// "The server MUST send EXISTS and RECENT responses, as documented
 	// in RFC 3501, even when QRESYNC is active."
 	writeExists(enc.Encoder, data.NumMessages)
-	if !c.enabled.Has(imap.CapIMAP4rev2) && c.server.options.caps().Has(imap.CapIMAP4rev1) {
+	if !c.enabledHas(imap.CapIMAP4rev2) && c.server.options.caps().Has(imap.CapIMAP4rev1) {
 		writeObsoleteRecent(enc.Encoder, data.NumRecent)
 		if data.FirstUnseenSeqNum != 0 {
 			writeObsoleteUnseen(enc.Encoder, data.FirstUnseenSeqNum)

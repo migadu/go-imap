@@ -136,7 +136,7 @@ func (c *Conn) handleSort(tag string, dec *imapwire.Decoder, numKind NumKind) er
 	}
 
 	// Write SORT/ESORT response
-	if c.enabled.Has(imap.CapIMAP4rev2) || extended {
+	if c.enabledHas(imap.CapIMAP4rev2) || extended {
 		return c.writeESort(tag, data, &options, numKind)
 	} else {
 		return c.writeSort(data.All, numKind)

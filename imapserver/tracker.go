@@ -38,15 +38,20 @@ func (t *MailboxTracker) NewSession() *SessionTracker {
 	return st
 }
 
-func (t *MailboxTracker) queueUpdate(update *trackerUpdate, source *SessionTracker) {
+func (t *MailboxTracker) queueUpdate(update *trackerUpdate, source *SessionTracker) error {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
 
+	// These are backend invariant violations. Return an error instead of
+	// panicking: MailboxTracker is a shared entry point that backends call from
+	// arbitrary goroutines (not just IDLE, which recovers), so a panic here would
+	// crash whatever goroutine reported the inconsistency — often the whole
+	// process.
 	if update.expunge != 0 && update.expunge > t.numMessages {
-		panic(fmt.Errorf("imapserver: expunge sequence number (%v) out of range (%v messages in mailbox)", update.expunge, t.numMessages))
+		return fmt.Errorf("imapserver: expunge sequence number (%v) out of range (%v messages in mailbox)", update.expunge, t.numMessages)
 	}
 	if update.numMessages != 0 && update.numMessages < t.numMessages {
-		panic(fmt.Errorf("imapserver: cannot decrease mailbox number of messages from %v to %v", t.numMessages, update.numMessages))
+		return fmt.Errorf("imapserver: cannot decrease mailbox number of messages from %v to %v", t.numMessages, update.numMessages)
 	}
 
 	// Capture the current count before applying the update so that
@@ -69,6 +74,7 @@ func (t *MailboxTracker) queueUpdate(update *trackerUpdate, source *SessionTrack
 	case update.numMessages != 0:
 		t.numMessages = update.numMessages
 	}
+	return nil
 }
 
 // QueueExpunge queues a new EXPUNGE update.
@@ -76,25 +82,29 @@ func (t *MailboxTracker) queueUpdate(update *trackerUpdate, source *SessionTrack
 // uid is the UID of the expunged message. It is used to emit a VANISHED response
 // (RFC 7162 §3.2.10) instead of EXPUNGE for QRESYNC-enabled sessions; pass 0 when
 // no UID is available (such sessions then fall back to EXPUNGE).
-func (t *MailboxTracker) QueueExpunge(seqNum uint32, uid imap.UID) {
+//
+// It returns an error (rather than panicking) if seqNum is 0 or out of range, so
+// a backend bug cannot crash the calling goroutine.
+func (t *MailboxTracker) QueueExpunge(seqNum uint32, uid imap.UID) error {
 	if seqNum == 0 {
-		panic("imapserver: invalid expunge message sequence number")
+		return fmt.Errorf("imapserver: invalid expunge message sequence number")
 	}
-	t.queueUpdate(&trackerUpdate{expunge: seqNum, expungeUID: uid}, nil)
+	return t.queueUpdate(&trackerUpdate{expunge: seqNum, expungeUID: uid}, nil)
 }
 
-// QueueNumMessages queues a new EXISTS update.
-func (t *MailboxTracker) QueueNumMessages(n uint32) {
+// QueueNumMessages queues a new EXISTS update. It returns an error if n would
+// decrease the tracked message count.
+func (t *MailboxTracker) QueueNumMessages(n uint32) error {
 	// TODO: merge consecutive NumMessages updates
-	t.queueUpdate(&trackerUpdate{numMessages: n}, nil)
+	return t.queueUpdate(&trackerUpdate{numMessages: n}, nil)
 }
 
 // QueueMailboxFlags queues a new FLAGS update.
-func (t *MailboxTracker) QueueMailboxFlags(flags []imap.Flag) {
+func (t *MailboxTracker) QueueMailboxFlags(flags []imap.Flag) error {
 	if flags == nil {
 		flags = []imap.Flag{}
 	}
-	t.queueUpdate(&trackerUpdate{mailboxFlags: flags}, nil)
+	return t.queueUpdate(&trackerUpdate{mailboxFlags: flags}, nil)
 }
 
 // QueueMessageFlags queues a new FETCH FLAGS update.
@@ -105,8 +115,8 @@ func (t *MailboxTracker) QueueMailboxFlags(flags []imap.Flag) {
 // instead of falling back to a full re-sync. Pass 0 when no modseq is available.
 //
 // If source is not nil, the update won't be dispatched to it.
-func (t *MailboxTracker) QueueMessageFlags(seqNum uint32, uid imap.UID, flags []imap.Flag, modSeq uint64, source *SessionTracker) {
-	t.queueUpdate(&trackerUpdate{fetch: &trackerUpdateFetch{
+func (t *MailboxTracker) QueueMessageFlags(seqNum uint32, uid imap.UID, flags []imap.Flag, modSeq uint64, source *SessionTracker) error {
+	return t.queueUpdate(&trackerUpdate{fetch: &trackerUpdateFetch{
 		seqNum: seqNum,
 		uid:    uid,
 		flags:  flags,
@@ -192,7 +202,7 @@ func (t *SessionTracker) Poll(w *UpdateWriter, allowExpunge bool) error {
 	// VANISHED (by UID) rather than EXPUNGE (by sequence number). Coalesce
 	// consecutive expunges into a single VANISHED set, flushing it before any
 	// other kind of update so response ordering is preserved.
-	qresync := w.conn != nil && w.conn.enabled.Has(imap.CapQResync)
+	qresync := w.conn != nil && w.conn.enabledHas(imap.CapQResync)
 	var vanished imap.UIDSet
 	flushVanished := func() error {
 		if len(vanished) == 0 {
