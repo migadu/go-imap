@@ -85,6 +85,17 @@ func (dec *Decoder) Err() error {
 	return dec.err
 }
 
+// ResetCount resets the running byte counter used by MaxSize.
+//
+// A long-lived decoder (e.g. the client's, which is reused for every response
+// on a connection) must call this at the start of each logical unit so that
+// MaxSize acts as a per-unit budget rather than a cumulative cap that would
+// eventually trip on a healthy connection. Literal bytes are not counted, so
+// this does not affect large streamed payloads.
+func (dec *Decoder) ResetCount() {
+	dec.readBytes = 0
+}
+
 func (dec *Decoder) returnErr(err error) bool {
 	if err == nil {
 		return true
