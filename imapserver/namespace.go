@@ -19,7 +19,7 @@ func (c *Conn) handleNamespace(dec *imapwire.Decoder) error {
 		return newClientBugError("NAMESPACE is not supported")
 	}
 
-	data, err := session.Namespace()
+	data, err := session.Namespace(c.ctx)
 	if err != nil {
 		return err
 	}

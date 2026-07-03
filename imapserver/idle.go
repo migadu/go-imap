@@ -49,7 +49,7 @@ func (c *Conn) handleIdle(dec *imapwire.Decoder) error {
 			}
 		}()
 		w := &UpdateWriter{conn: c, allowExpunge: true}
-		done <- c.session.Idle(w, stop)
+		done <- c.session.Idle(c.ctx, w, stop)
 	}()
 
 	c.setReadTimeout(idleReadTimeout)
@@ -63,11 +63,14 @@ func (c *Conn) handleIdle(dec *imapwire.Decoder) error {
 		return newClientBugError("Syntax error: expected DONE to end IDLE command")
 	}
 
-	// Wait for backend to return, with timeout to prevent goroutine leak
+	// Wait for backend to return, with timeout to prevent goroutine leak.
+	// Stop the timer on the normal path so it doesn't linger until it fires.
+	timer := time.NewTimer(30 * time.Second)
+	defer timer.Stop()
 	select {
 	case err := <-done:
 		return err
-	case <-time.After(30 * time.Second):
+	case <-timer.C:
 		c.server.logger().Printf("IDLE backend did not return within 30s after stop; goroutine leaked")
 		return fmt.Errorf("imapserver: IDLE backend did not respond to stop")
 	}

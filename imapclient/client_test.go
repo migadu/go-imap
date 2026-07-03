@@ -1,6 +1,7 @@
 package imapclient_test
 
 import (
+	"context"
 	"crypto/tls"
 	"io"
 	"net"
@@ -82,7 +83,7 @@ func newMemClientServerPair(t *testing.T) (net.Conn, io.Closer) {
 	memServer := imapmemserver.New()
 
 	user := imapmemserver.NewUser(testUsername, testPassword)
-	user.Create("INBOX", nil)
+	user.Create(context.Background(), "INBOX", nil)
 
 	memServer.AddUser(user)
 

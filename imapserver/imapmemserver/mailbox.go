@@ -3,6 +3,7 @@ package imapmemserver
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"sort"
 	"strings"
 	"sync"
@@ -263,7 +264,7 @@ func (mbox *Mailbox) flagsLocked() []imap.Flag {
 	return l
 }
 
-func (mbox *Mailbox) Expunge(w *imapserver.ExpungeWriter, uids *imap.UIDSet) error {
+func (mbox *Mailbox) Expunge(ctx context.Context, w *imapserver.ExpungeWriter, uids *imap.UIDSet) error {
 	expunged := make(map[*message]struct{})
 	mbox.mutex.Lock()
 	for _, msg := range mbox.l {
@@ -373,7 +374,7 @@ func (mbox *MailboxView) selectData(options *imap.SelectOptions) (*imap.SelectDa
 	return data, nil
 }
 
-func (mbox *MailboxView) Fetch(w *imapserver.FetchWriter, numSet imap.NumSet, options *imap.FetchOptions) error {
+func (mbox *MailboxView) Fetch(ctx context.Context, w *imapserver.FetchWriter, numSet imap.NumSet, options *imap.FetchOptions) error {
 	markSeen := false
 	for _, bs := range options.BodySection {
 		if !bs.Peek {
@@ -403,7 +404,7 @@ func (mbox *MailboxView) Fetch(w *imapserver.FetchWriter, numSet imap.NumSet, op
 	return err
 }
 
-func (mbox *MailboxView) Search(numKind imapserver.NumKind, criteria *imap.SearchCriteria, options *imap.SearchOptions) (*imap.SearchData, error) {
+func (mbox *MailboxView) Search(ctx context.Context, numKind imapserver.NumKind, criteria *imap.SearchCriteria, options *imap.SearchOptions) (*imap.SearchData, error) {
 	mbox.mutex.Lock()
 	defer mbox.mutex.Unlock()
 
@@ -459,7 +460,7 @@ func (mbox *MailboxView) Search(numKind imapserver.NumKind, criteria *imap.Searc
 	return &data, nil
 }
 
-func (mbox *MailboxView) Sort(kind imapserver.NumKind, sortCriteria []imap.SortCriterion, charset string, searchCriteria *imap.SearchCriteria, options *imap.SortOptions) (*imap.SortData, error) {
+func (mbox *MailboxView) Sort(ctx context.Context, kind imapserver.NumKind, sortCriteria []imap.SortCriterion, charset string, searchCriteria *imap.SearchCriteria, options *imap.SortOptions) (*imap.SortData, error) {
 	mbox.mutex.Lock()
 	defer mbox.mutex.Unlock()
 
@@ -666,7 +667,7 @@ func writeStoreFetchResponse(w *imapserver.FetchWriter, tracker *imapserver.Sess
 	return respWriter.Close()
 }
 
-func (mbox *MailboxView) Store(w *imapserver.FetchWriter, numSet imap.NumSet, flags *imap.StoreFlags, options *imap.StoreOptions) error {
+func (mbox *MailboxView) Store(ctx context.Context, w *imapserver.FetchWriter, numSet imap.NumSet, flags *imap.StoreFlags, options *imap.StoreOptions) error {
 	var modified []modifiedMessageData
 	mbox.forEach(numSet, func(seqNum uint32, msg *message) {
 		if options != nil && options.UnchangedSince > 0 && msg.modSeq > options.UnchangedSince {
@@ -698,11 +699,11 @@ func (mbox *MailboxView) Store(w *imapserver.FetchWriter, numSet imap.NumSet, fl
 	return nil
 }
 
-func (mbox *MailboxView) Poll(w *imapserver.UpdateWriter, allowExpunge bool) error {
+func (mbox *MailboxView) Poll(ctx context.Context, w *imapserver.UpdateWriter, allowExpunge bool) error {
 	return mbox.tracker.Poll(w, allowExpunge)
 }
 
-func (mbox *MailboxView) Idle(w *imapserver.UpdateWriter, stop <-chan struct{}) error {
+func (mbox *MailboxView) Idle(ctx context.Context, w *imapserver.UpdateWriter, stop <-chan struct{}) error {
 	return mbox.tracker.Idle(w, stop)
 }
 

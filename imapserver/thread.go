@@ -1,6 +1,7 @@
 package imapserver
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -10,7 +11,7 @@ import (
 
 // SessionThread is implemented by sessions that support RFC 5256 THREAD.
 type SessionThread interface {
-	Thread(numKind NumKind, algorithm imap.ThreadAlgorithm, charset string, criteria *imap.SearchCriteria) ([]imap.ThreadData, error)
+	Thread(ctx context.Context, numKind NumKind, algorithm imap.ThreadAlgorithm, charset string, criteria *imap.SearchCriteria) ([]imap.ThreadData, error)
 }
 
 func (c *Conn) handleThread(dec *imapwire.Decoder, numKind NumKind) error {
@@ -76,7 +77,7 @@ func (c *Conn) handleThread(dec *imapwire.Decoder, numKind NumKind) error {
 		}
 	}
 
-	data, err := sessionThread.Thread(numKind, algorithm, charset, &criteria)
+	data, err := sessionThread.Thread(c.ctx, numKind, algorithm, charset, &criteria)
 	if err != nil {
 		return err
 	}

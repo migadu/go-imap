@@ -107,7 +107,7 @@ func (c *Conn) handleAppend(tag string, dec *imapwire.Decoder) error {
 	c.setReadTimeout(literalReadTimeout)
 	defer c.setReadTimeout(cmdReadTimeout)
 
-	data, appendErr := c.session.Append(mailbox, lit, &options)
+	data, appendErr := c.session.Append(c.ctx, mailbox, lit, &options)
 	if _, discardErr := io.Copy(io.Discard, lit); discardErr != nil {
 		// Draining the unread remainder of the literal failed. lit reads only
 		// from the client socket, so this is provably a client-side disconnect

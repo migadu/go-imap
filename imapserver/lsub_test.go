@@ -3,6 +3,7 @@ package imapserver_test
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"net"
 	"regexp"
 	"strings"
@@ -24,7 +25,7 @@ type lsubSession struct {
 	gotRecursiveMatch bool
 }
 
-func (s *lsubSession) List(w *imapserver.ListWriter, ref string, patterns []string, options *imap.ListOptions) error {
+func (s *lsubSession) List(ctx context.Context, w *imapserver.ListWriter, ref string, patterns []string, options *imap.ListOptions) error {
 	s.gotSubscribed = options.SelectSubscribed
 	s.gotRecursiveMatch = options.SelectRecursiveMatch
 

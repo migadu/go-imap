@@ -47,7 +47,7 @@ func (c *Conn) handleStatus(dec *imapwire.Decoder) error {
 		return err
 	}
 
-	data, err := c.session.Status(mailbox, &options)
+	data, err := c.session.Status(c.ctx, mailbox, &options)
 	if err != nil {
 		return err
 	}

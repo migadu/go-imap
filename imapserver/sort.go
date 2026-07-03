@@ -130,7 +130,7 @@ func (c *Conn) handleSort(tag string, dec *imapwire.Decoder, numKind NumKind) er
 	}
 
 	// Call the session's Sort method
-	data, err := c.session.Sort(numKind, sortCriteria, charset, &searchCriteria, &options)
+	data, err := c.session.Sort(c.ctx, numKind, sortCriteria, charset, &searchCriteria, &options)
 	if err != nil {
 		return err
 	}

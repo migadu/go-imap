@@ -1,6 +1,7 @@
 package imapserver
 
 import (
+	"context"
 	"testing"
 
 	"github.com/emersion/go-imap/v2"
@@ -13,11 +14,11 @@ type rev2CapSession struct {
 	Session
 }
 
-func (rev2CapSession) Namespace() (*imap.NamespaceData, error) { return nil, nil }
-func (rev2CapSession) Move(w *MoveWriter, numSet imap.NumSet, dest string) error {
+func (rev2CapSession) Namespace(ctx context.Context) (*imap.NamespaceData, error) { return nil, nil }
+func (rev2CapSession) Move(ctx context.Context, w *MoveWriter, numSet imap.NumSet, dest string) error {
 	return nil
 }
-func (rev2CapSession) Unauthenticate() error { return nil }
+func (rev2CapSession) Unauthenticate(ctx context.Context) error { return nil }
 
 // baseCapSession implements only the base Session interface, modelling a
 // backend that has not (yet) implemented IMAP4rev2 / NAMESPACE / MOVE /

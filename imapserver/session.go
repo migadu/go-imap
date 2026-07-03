@@ -1,6 +1,7 @@
 package imapserver
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/emersion/go-imap/v2"
@@ -48,33 +49,39 @@ func (kind NumKind) wire() imapwire.NumKind {
 }
 
 // Session is an IMAP session.
+//
+// The context passed to blocking methods is cancelled when the connection is
+// torn down (client disconnect or server shutdown). Backends should propagate
+// it into blocking work (database queries, object-storage reads, …) so that
+// in-flight operations are abandoned when the client goes away. It is the same
+// context returned by Conn.Context.
 type Session interface {
 	Close() error
 
 	// Not authenticated state
-	Login(username, password string) error
+	Login(ctx context.Context, username, password string) error
 
 	// Authenticated state
-	Select(mailbox string, options *imap.SelectOptions) (*imap.SelectData, error)
-	Create(mailbox string, options *imap.CreateOptions) error
-	Delete(mailbox string) error
-	Rename(w *RenameWriter, mailbox, newName string, options *imap.RenameOptions) error
-	Subscribe(mailbox string) error
-	Unsubscribe(mailbox string) error
-	List(w *ListWriter, ref string, patterns []string, options *imap.ListOptions) error
-	Status(mailbox string, options *imap.StatusOptions) (*imap.StatusData, error)
-	Append(mailbox string, r imap.LiteralReader, options *imap.AppendOptions) (*imap.AppendData, error)
-	Poll(w *UpdateWriter, allowExpunge bool) error
-	Idle(w *UpdateWriter, stop <-chan struct{}) error
+	Select(ctx context.Context, mailbox string, options *imap.SelectOptions) (*imap.SelectData, error)
+	Create(ctx context.Context, mailbox string, options *imap.CreateOptions) error
+	Delete(ctx context.Context, mailbox string) error
+	Rename(ctx context.Context, w *RenameWriter, mailbox, newName string, options *imap.RenameOptions) error
+	Subscribe(ctx context.Context, mailbox string) error
+	Unsubscribe(ctx context.Context, mailbox string) error
+	List(ctx context.Context, w *ListWriter, ref string, patterns []string, options *imap.ListOptions) error
+	Status(ctx context.Context, mailbox string, options *imap.StatusOptions) (*imap.StatusData, error)
+	Append(ctx context.Context, mailbox string, r imap.LiteralReader, options *imap.AppendOptions) (*imap.AppendData, error)
+	Poll(ctx context.Context, w *UpdateWriter, allowExpunge bool) error
+	Idle(ctx context.Context, w *UpdateWriter, stop <-chan struct{}) error
 
 	// Selected state
-	Unselect() error
-	Expunge(w *ExpungeWriter, uids *imap.UIDSet) error
-	Search(kind NumKind, criteria *imap.SearchCriteria, options *imap.SearchOptions) (*imap.SearchData, error)
-	Sort(kind NumKind, sortCriteria []imap.SortCriterion, charset string, searchCriteria *imap.SearchCriteria, options *imap.SortOptions) (*imap.SortData, error)
-	Fetch(w *FetchWriter, numSet imap.NumSet, options *imap.FetchOptions) error
-	Store(w *FetchWriter, numSet imap.NumSet, flags *imap.StoreFlags, options *imap.StoreOptions) error
-	Copy(numSet imap.NumSet, dest string) (*imap.CopyData, error)
+	Unselect(ctx context.Context) error
+	Expunge(ctx context.Context, w *ExpungeWriter, uids *imap.UIDSet) error
+	Search(ctx context.Context, kind NumKind, criteria *imap.SearchCriteria, options *imap.SearchOptions) (*imap.SearchData, error)
+	Sort(ctx context.Context, kind NumKind, sortCriteria []imap.SortCriterion, charset string, searchCriteria *imap.SearchCriteria, options *imap.SortOptions) (*imap.SortData, error)
+	Fetch(ctx context.Context, w *FetchWriter, numSet imap.NumSet, options *imap.FetchOptions) error
+	Store(ctx context.Context, w *FetchWriter, numSet imap.NumSet, flags *imap.StoreFlags, options *imap.StoreOptions) error
+	Copy(ctx context.Context, numSet imap.NumSet, dest string) (*imap.CopyData, error)
 }
 
 // SessionNamespace is an IMAP session which supports NAMESPACE.
@@ -82,7 +89,7 @@ type SessionNamespace interface {
 	Session
 
 	// Authenticated state
-	Namespace() (*imap.NamespaceData, error)
+	Namespace(ctx context.Context) (*imap.NamespaceData, error)
 }
 
 // SessionMove is an IMAP session which supports MOVE.
@@ -90,7 +97,7 @@ type SessionMove interface {
 	Session
 
 	// Selected state
-	Move(w *MoveWriter, numSet imap.NumSet, dest string) error
+	Move(ctx context.Context, w *MoveWriter, numSet imap.NumSet, dest string) error
 }
 
 // SessionIMAP4rev2 is an IMAP session which supports IMAP4rev2.
@@ -113,7 +120,7 @@ type SessionUnauthenticate interface {
 	Session
 
 	// Authenticated state
-	Unauthenticate() error
+	Unauthenticate(ctx context.Context) error
 }
 
 // SessionAppendLimit is an IMAP session which has the same APPEND limit for
@@ -161,10 +168,10 @@ type SessionMetadata interface {
 	// GetMetadata retrieves server or mailbox annotations.
 	// If mailbox is empty string "", retrieve server annotations.
 	// entries contains the list of entry names to retrieve.
-	GetMetadata(mailbox string, entries []string, options *imap.GetMetadataOptions) (*imap.GetMetadataData, error)
+	GetMetadata(ctx context.Context, mailbox string, entries []string, options *imap.GetMetadataOptions) (*imap.GetMetadataData, error)
 
 	// SetMetadata sets or removes server or mailbox annotations.
 	// If mailbox is empty string "", set server annotations.
 	// To remove an entry, set its value to nil.
-	SetMetadata(mailbox string, entries map[string]*[]byte) error
+	SetMetadata(ctx context.Context, mailbox string, entries map[string]*[]byte) error
 }

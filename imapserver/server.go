@@ -281,6 +281,9 @@ func (s *Server) Shutdown(ctx context.Context) error {
 func (s *Server) forceCloseConns() {
 	s.mutex.Lock()
 	for c := range s.conns {
+		// Cancel first so a backend blocked on ctx is released even if closing
+		// the socket alone wouldn't unblock it.
+		c.cancel()
 		c.mutex.Lock()
 		c.conn.Close()
 		c.mutex.Unlock()

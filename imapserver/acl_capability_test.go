@@ -1,6 +1,7 @@
 package imapserver
 
 import (
+	"context"
 	"testing"
 
 	"github.com/emersion/go-imap/v2"
@@ -13,15 +14,21 @@ type aclCapSession struct {
 	Session
 }
 
-func (aclCapSession) GetACL(mailbox string) (*imap.GetACLData, error) { return nil, nil }
-func (aclCapSession) SetACL(mailbox string, id imap.RightsIdentifier, mod imap.RightModification, rights imap.RightSet) error {
-	return nil
-}
-func (aclCapSession) DeleteACL(mailbox string, id imap.RightsIdentifier) error { return nil }
-func (aclCapSession) ListRights(mailbox string, id imap.RightsIdentifier) (*imap.ListRightsData, error) {
+func (aclCapSession) GetACL(ctx context.Context, mailbox string) (*imap.GetACLData, error) {
 	return nil, nil
 }
-func (aclCapSession) MyRights(mailbox string) (*imap.MyRightsData, error) { return nil, nil }
+func (aclCapSession) SetACL(ctx context.Context, mailbox string, id imap.RightsIdentifier, mod imap.RightModification, rights imap.RightSet) error {
+	return nil
+}
+func (aclCapSession) DeleteACL(ctx context.Context, mailbox string, id imap.RightsIdentifier) error {
+	return nil
+}
+func (aclCapSession) ListRights(ctx context.Context, mailbox string, id imap.RightsIdentifier) (*imap.ListRightsData, error) {
+	return nil, nil
+}
+func (aclCapSession) MyRights(ctx context.Context, mailbox string) (*imap.MyRightsData, error) {
+	return nil, nil
+}
 
 func hasCap(caps []imap.Cap, want imap.Cap) bool {
 	for _, c := range caps {

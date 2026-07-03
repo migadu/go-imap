@@ -82,7 +82,7 @@ func (c *Conn) handleSearch(tag string, dec *imapwire.Decoder, numKind NumKind) 
 		options.ReturnAll = true
 	}
 
-	data, err := c.session.Search(numKind, &criteria, &options)
+	data, err := c.session.Search(c.ctx, numKind, &criteria, &options)
 	if err != nil {
 		return err
 	}

@@ -1,6 +1,7 @@
 package imapserver
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -21,7 +22,7 @@ type SessionMultiSearch interface {
 	// enumerate the user's mailboxes) and MUST populate SearchData.Mailbox and
 	// SearchData.UIDValidity on every result (RFC 7377 §2.1). Because message
 	// numbers are meaningless for unselected mailboxes, results are always UIDs.
-	MultiSearch(source *imap.SearchSource, criteria *imap.SearchCriteria, options *imap.SearchOptions) ([]*imap.SearchData, error)
+	MultiSearch(ctx context.Context, source *imap.SearchSource, criteria *imap.SearchCriteria, options *imap.SearchOptions) ([]*imap.SearchData, error)
 }
 
 // handleESearch implements the RFC 7377 ESEARCH command:
@@ -140,7 +141,7 @@ func (c *Conn) handleESearch(tag string, dec *imapwire.Decoder) error {
 		}
 	}
 
-	results, err := sessionMultiSearch.MultiSearch(&source, &criteria, &options)
+	results, err := sessionMultiSearch.MultiSearch(c.ctx, &source, &criteria, &options)
 	if err != nil {
 		return err
 	}
