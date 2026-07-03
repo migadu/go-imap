@@ -185,7 +185,7 @@ func (c *Conn) handleFetch(dec *imapwire.Decoder, numKind NumKind) error {
 	}
 
 	w := &FetchWriter{conn: c, options: writerOptions}
-	if err := c.session.Fetch(w, numSet, &options); err != nil {
+	if err := c.session.Fetch(c.ctx, w, numSet, &options); err != nil {
 		return err
 	}
 	return nil

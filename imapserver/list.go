@@ -23,7 +23,7 @@ func (c *Conn) handleList(dec *imapwire.Decoder) error {
 		conn:    c,
 		options: options,
 	}
-	return c.session.List(w, ref, pattern, options)
+	return c.session.List(c.ctx, w, ref, pattern, options)
 }
 
 func (c *Conn) handleLSub(dec *imapwire.Decoder) error {
@@ -55,7 +55,7 @@ func (c *Conn) handleLSub(dec *imapwire.Decoder) error {
 		conn: c,
 		lsub: true,
 	}
-	return c.session.List(w, ref, []string{pattern}, options)
+	return c.session.List(c.ctx, w, ref, []string{pattern}, options)
 }
 
 // isExtendedListOptions returns true if the client used LIST-EXTENDED syntax,
@@ -377,7 +377,7 @@ func (w *ListWriter) WriteList(data *imap.ListData) error {
 	}
 	if w.options.ReturnMetadata != nil {
 		if sessionMeta, ok := w.conn.session.(SessionMetadata); ok {
-			metaData, err := sessionMeta.GetMetadata(data.Mailbox, w.options.ReturnMetadata, nil)
+			metaData, err := sessionMeta.GetMetadata(w.conn.ctx, data.Mailbox, w.options.ReturnMetadata, nil)
 			if err == nil && metaData != nil {
 				// Write metadata response even if entries is empty (per RFC 5524)
 				// Empty map means metadata was queried but no entries matched

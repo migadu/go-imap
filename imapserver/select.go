@@ -103,7 +103,7 @@ func (c *Conn) handleSelect(tag string, dec *imapwire.Decoder, readOnly bool) er
 	}
 
 	if c.state == imap.ConnStateSelected {
-		if err := c.session.Unselect(); err != nil {
+		if err := c.session.Unselect(c.ctx); err != nil {
 			return err
 		}
 		c.state = imap.ConnStateAuthenticated
@@ -117,7 +117,7 @@ func (c *Conn) handleSelect(tag string, dec *imapwire.Decoder, readOnly bool) er
 		}
 	}
 
-	data, err := c.session.Select(mailbox, &options)
+	data, err := c.session.Select(c.ctx, mailbox, &options)
 	if err != nil {
 		return err
 	}
@@ -208,7 +208,7 @@ func (c *Conn) handleUnselect(dec *imapwire.Decoder, expunge bool) error {
 
 	if expunge {
 		w := &ExpungeWriter{conn: c}
-		if err := c.session.Expunge(w, nil); err != nil {
+		if err := c.session.Expunge(c.ctx, w, nil); err != nil {
 			// RFC 4314 §4: for CLOSE, if the server cannot expunge because the user
 			// lacks the "e" right, it MUST ignore the expunge request, close the
 			// mailbox, and return the tagged OK response. Other errors still fail.
@@ -219,7 +219,7 @@ func (c *Conn) handleUnselect(dec *imapwire.Decoder, expunge bool) error {
 		}
 	}
 
-	if err := c.session.Unselect(); err != nil {
+	if err := c.session.Unselect(c.ctx); err != nil {
 		return err
 	}
 

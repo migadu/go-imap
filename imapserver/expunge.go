@@ -25,7 +25,7 @@ func (c *Conn) expunge(uids *imap.UIDSet) error {
 		return err
 	}
 	w := &ExpungeWriter{conn: c}
-	return c.session.Expunge(w, uids)
+	return c.session.Expunge(c.ctx, w, uids)
 }
 
 func (c *Conn) writeExpunge(seqNum uint32) error {

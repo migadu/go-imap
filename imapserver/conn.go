@@ -2,6 +2,7 @@ package imapserver
 
 import (
 	"bufio"
+	"context"
 	"crypto/tls"
 	"errors"
 	"fmt"
@@ -64,6 +65,13 @@ type Conn struct {
 	bw       *bufio.Writer
 	encMutex sync.Mutex
 
+	// ctx is cancelled when the connection is torn down (client disconnect,
+	// serve goroutine exit, or server shutdown via forceCloseConns). It is the
+	// context passed to blocking Session methods so a backend can abandon
+	// in-flight work when the connection goes away. cancel is idempotent.
+	ctx    context.Context
+	cancel context.CancelFunc
+
 	mutex     sync.Mutex
 	conn      net.Conn
 	enabled   imap.CapSet
@@ -78,11 +86,16 @@ func newConn(c net.Conn, server *Server) *Conn {
 	rw := server.options.wrapReadWriter(c)
 	br := bufio.NewReader(rw)
 	bw := bufio.NewWriter(rw)
+	// The context is created here, before the connection is registered with the
+	// server, so forceCloseConns can always cancel it.
+	ctx, cancel := context.WithCancel(context.Background())
 	return &Conn{
 		conn:    c,
 		server:  server,
 		br:      br,
 		bw:      bw,
+		ctx:     ctx,
+		cancel:  cancel,
 		enabled: make(imap.CapSet),
 	}
 }
@@ -123,7 +136,18 @@ func (c *Conn) EnabledCaps() imap.CapSet {
 	return c.enabled.Copy()
 }
 
+// Context returns the connection's context. It is cancelled when the
+// connection is torn down — by client disconnect, by the serve goroutine
+// exiting, or by server shutdown. Backends may use it to bound blocking work,
+// though blocking Session methods already receive it as their first argument.
+func (c *Conn) Context() context.Context {
+	return c.ctx
+}
+
 func (c *Conn) serve() {
+	// Cancel the connection context on any exit so blocking backend work is
+	// released even if the socket close alone doesn't unblock it.
+	defer c.cancel()
 	defer func() {
 		if v := recover(); v != nil {
 			c.server.logger().Printf("panic handling command (remote %v): %v\n%s", c.conn.RemoteAddr(), v, debug.Stack())
@@ -433,7 +457,7 @@ func (c *Conn) handleDelete(dec *imapwire.Decoder) error {
 	if err := c.checkState(imap.ConnStateAuthenticated); err != nil {
 		return err
 	}
-	return c.session.Delete(name)
+	return c.session.Delete(c.ctx, name)
 }
 
 func (c *Conn) handleRename(dec *imapwire.Decoder) error {
@@ -445,7 +469,7 @@ func (c *Conn) handleRename(dec *imapwire.Decoder) error {
 		return err
 	}
 	var options imap.RenameOptions
-	return c.session.Rename(&RenameWriter{conn: c}, oldName, newName, &options)
+	return c.session.Rename(c.ctx, &RenameWriter{conn: c}, oldName, newName, &options)
 }
 
 // RenameWriter writes the unsolicited responses that MAY accompany a successful
@@ -476,7 +500,7 @@ func (c *Conn) handleSubscribe(dec *imapwire.Decoder) error {
 	if err := c.checkState(imap.ConnStateAuthenticated); err != nil {
 		return err
 	}
-	return c.session.Subscribe(name)
+	return c.session.Subscribe(c.ctx, name)
 }
 
 func (c *Conn) handleUnsubscribe(dec *imapwire.Decoder) error {
@@ -487,7 +511,7 @@ func (c *Conn) handleUnsubscribe(dec *imapwire.Decoder) error {
 	if err := c.checkState(imap.ConnStateAuthenticated); err != nil {
 		return err
 	}
-	return c.session.Unsubscribe(name)
+	return c.session.Unsubscribe(c.ctx, name)
 }
 
 func (c *Conn) checkBufferedLiteral(size int64, nonSync bool) error {
@@ -591,7 +615,7 @@ func (c *Conn) poll(cmd string) error {
 	}
 
 	w := &UpdateWriter{conn: c, allowExpunge: allowExpunge}
-	return c.session.Poll(w, allowExpunge)
+	return c.session.Poll(c.ctx, w, allowExpunge)
 }
 
 // useQuotedUTF8 reports whether IMAP strings and mailbox names should be

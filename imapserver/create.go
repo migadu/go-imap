@@ -41,5 +41,5 @@ func (c *Conn) handleCreate(dec *imapwire.Decoder) error {
 	if err := c.checkState(imap.ConnStateAuthenticated); err != nil {
 		return err
 	}
-	return c.session.Create(name, &options)
+	return c.session.Create(c.ctx, name, &options)
 }

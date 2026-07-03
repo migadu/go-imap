@@ -2,6 +2,7 @@ package imapclient_test
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"net"
 	"reflect"
@@ -61,9 +62,9 @@ func TestListExtendedDataItemGating(t *testing.T) {
 		{
 			name: "plain LIST should not send CHILDINFO",
 			setupMailboxes: func(user *imapmemserver.User) {
-				user.Create("Parent", nil)
-				user.Create("Parent/Child", nil)
-				user.Subscribe("Parent/Child")
+				user.Create(context.Background(), "Parent", nil)
+				user.Create(context.Background(), "Parent/Child", nil)
+				user.Subscribe(context.Background(), "Parent/Child")
 			},
 			command:       `tag1 LIST "" "*"`,
 			wantCHILDINFO: false,
@@ -72,8 +73,8 @@ func TestListExtendedDataItemGating(t *testing.T) {
 		{
 			name: "LIST with RETURN (CHILDREN) should not send CHILDINFO",
 			setupMailboxes: func(user *imapmemserver.User) {
-				user.Create("Parent", nil)
-				user.Create("Parent/Child", nil)
+				user.Create(context.Background(), "Parent", nil)
+				user.Create(context.Background(), "Parent/Child", nil)
 			},
 			command:       `tag2 LIST "" "*" RETURN (CHILDREN)`,
 			wantCHILDINFO: false,
@@ -82,10 +83,10 @@ func TestListExtendedDataItemGating(t *testing.T) {
 		{
 			name: "LIST with RECURSIVEMATCH allows CHILDINFO",
 			setupMailboxes: func(user *imapmemserver.User) {
-				user.Create("Parent", nil)
-				user.Create("Parent/Child", nil)
-				user.Subscribe("Parent")
-				user.Subscribe("Parent/Child")
+				user.Create(context.Background(), "Parent", nil)
+				user.Create(context.Background(), "Parent/Child", nil)
+				user.Subscribe(context.Background(), "Parent")
+				user.Subscribe(context.Background(), "Parent/Child")
 			},
 			command:       `tag3 LIST (SUBSCRIBED RECURSIVEMATCH) "" "*"`,
 			wantCHILDINFO: false, // In-memory server doesn't generate CHILDINFO, but it's allowed
@@ -94,7 +95,7 @@ func TestListExtendedDataItemGating(t *testing.T) {
 		{
 			name: "plain LIST should not send OLDNAME",
 			setupMailboxes: func(user *imapmemserver.User) {
-				user.Create("INBOX", nil)
+				user.Create(context.Background(), "INBOX", nil)
 			},
 			command:     `tag4 LIST "" "INBOX"`,
 			wantOLDNAME: false,
@@ -103,8 +104,8 @@ func TestListExtendedDataItemGating(t *testing.T) {
 		{
 			name: "LSUB should not send extended data items",
 			setupMailboxes: func(user *imapmemserver.User) {
-				user.Create("INBOX", nil)
-				user.Subscribe("INBOX")
+				user.Create(context.Background(), "INBOX", nil)
+				user.Subscribe(context.Background(), "INBOX")
 			},
 			command:       `tag5 LSUB "" "*"`,
 			wantCHILDINFO: false,
@@ -199,7 +200,7 @@ func TestSelectNoExtendedDataItems(t *testing.T) {
 	// Create a custom server
 	memServer := imapmemserver.New()
 	user := imapmemserver.NewUser(testUsername, testPassword)
-	user.Create("INBOX", nil)
+	user.Create(context.Background(), "INBOX", nil)
 	memServer.AddUser(user)
 
 	server := imapserver.New(&imapserver.Options{

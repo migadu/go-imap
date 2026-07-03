@@ -3,6 +3,7 @@ package imapserver_test
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"net"
 	"strings"
 	"testing"
@@ -31,7 +32,7 @@ func TestUTF8MailboxNameNegotiation(t *testing.T) {
 	utf7Bytes := []byte(mailboxModUTF7) // pure ASCII
 
 	memUser := imapmemserver.NewUser(username, password)
-	if err := memUser.Create(mailboxName, nil); err != nil {
+	if err := memUser.Create(context.Background(), mailboxName, nil); err != nil {
 		t.Fatalf("Create(%q): %v", mailboxName, err)
 	}
 	memServer := imapmemserver.New()

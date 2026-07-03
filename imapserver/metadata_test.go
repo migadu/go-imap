@@ -2,6 +2,7 @@ package imapserver
 
 import (
 	"bufio"
+	"context"
 	"strings"
 	"testing"
 
@@ -239,7 +240,7 @@ type mockMetadataSession struct {
 	lastOptions       *imap.GetMetadataOptions
 }
 
-func (s *mockMetadataSession) GetMetadata(mailbox string, entries []string, options *imap.GetMetadataOptions) (*imap.GetMetadataData, error) {
+func (s *mockMetadataSession) GetMetadata(ctx context.Context, mailbox string, entries []string, options *imap.GetMetadataOptions) (*imap.GetMetadataData, error) {
 	s.getMetadataCalled = true
 	s.lastMailbox = mailbox
 	s.lastEntries = entries
@@ -252,7 +253,7 @@ func (s *mockMetadataSession) GetMetadata(mailbox string, entries []string, opti
 	}, nil
 }
 
-func (s *mockMetadataSession) SetMetadata(mailbox string, entries map[string]*[]byte) error {
+func (s *mockMetadataSession) SetMetadata(ctx context.Context, mailbox string, entries map[string]*[]byte) error {
 	return nil
 }
 

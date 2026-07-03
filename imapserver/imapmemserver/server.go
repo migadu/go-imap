@@ -2,6 +2,7 @@
 package imapmemserver
 
 import (
+	"context"
 	"sync"
 
 	"github.com/emersion/go-imap/v2/imapserver"
@@ -48,12 +49,12 @@ type serverSession struct {
 
 var _ imapserver.Session = (*serverSession)(nil)
 
-func (sess *serverSession) Login(username, password string) error {
+func (sess *serverSession) Login(ctx context.Context, username, password string) error {
 	u := sess.server.user(username)
 	if u == nil {
 		return imapserver.ErrAuthFailed
 	}
-	if err := u.Login(username, password); err != nil {
+	if err := u.Login(ctx, username, password); err != nil {
 		return err
 	}
 	sess.UserSession = NewUserSession(u)

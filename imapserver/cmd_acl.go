@@ -23,7 +23,7 @@ func (c *Conn) handleGetACL(dec *imapwire.Decoder) error {
 		return newClientBugError("ACL extension is not supported")
 	}
 
-	data, err := session.GetACL(mailbox)
+	data, err := session.GetACL(c.ctx, mailbox)
 	if err != nil {
 		return err
 	}
@@ -64,7 +64,7 @@ func (c *Conn) handleSetACL(dec *imapwire.Decoder) error {
 	}
 
 	identifier := imap.RightsIdentifier(identifierStr)
-	return session.SetACL(mailbox, identifier, modification, expandVirtualRights(rights))
+	return session.SetACL(c.ctx, mailbox, identifier, modification, expandVirtualRights(rights))
 }
 
 func (c *Conn) handleDeleteACL(dec *imapwire.Decoder) error {
@@ -85,7 +85,7 @@ func (c *Conn) handleDeleteACL(dec *imapwire.Decoder) error {
 	}
 
 	identifier := imap.RightsIdentifier(identifierStr)
-	return session.DeleteACL(mailbox, identifier)
+	return session.DeleteACL(c.ctx, mailbox, identifier)
 }
 
 func (c *Conn) handleListRights(dec *imapwire.Decoder) error {
@@ -106,7 +106,7 @@ func (c *Conn) handleListRights(dec *imapwire.Decoder) error {
 	}
 
 	identifier := imap.RightsIdentifier(identifierStr)
-	data, err := session.ListRights(mailbox, identifier)
+	data, err := session.ListRights(c.ctx, mailbox, identifier)
 	if err != nil {
 		return err
 	}
@@ -129,7 +129,7 @@ func (c *Conn) handleMyRights(dec *imapwire.Decoder) error {
 		return newClientBugError("ACL extension is not supported")
 	}
 
-	data, err := session.MyRights(mailbox)
+	data, err := session.MyRights(c.ctx, mailbox)
 	if err != nil {
 		return err
 	}

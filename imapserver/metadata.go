@@ -98,7 +98,7 @@ func (c *Conn) handleGetMetadata(tag string, dec *imapwire.Decoder) error {
 		opts = nil
 	}
 
-	data, err := session.GetMetadata(mailbox, entries, opts)
+	data, err := session.GetMetadata(c.ctx, mailbox, entries, opts)
 	if err != nil {
 		return fmt.Errorf("GETMETADATA for mailbox %q: %w", mailbox, err)
 	}
@@ -171,7 +171,7 @@ func (c *Conn) handleSetMetadata(dec *imapwire.Decoder) error {
 		return newClientBugError("SETMETADATA is not supported")
 	}
 
-	if err := session.SetMetadata(mailbox, entries); err != nil {
+	if err := session.SetMetadata(c.ctx, mailbox, entries); err != nil {
 		return fmt.Errorf("SETMETADATA for mailbox %q: %w", mailbox, err)
 	}
 

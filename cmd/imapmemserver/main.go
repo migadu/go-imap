@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"flag"
 	"io"
@@ -56,51 +57,51 @@ func main() {
 		user := imapmemserver.NewUser(username, password)
 
 		// Create standard mailboxes with special-use attributes as per RFC 6154
-		if err := user.Create("INBOX", nil); err != nil {
+		if err := user.Create(context.Background(), "INBOX", nil); err != nil {
 			log.Printf("Failed to create INBOX: %v", err)
 		}
 
-		if err := user.Create("Drafts", &imap.CreateOptions{
+		if err := user.Create(context.Background(), "Drafts", &imap.CreateOptions{
 			SpecialUse: []imap.MailboxAttr{imap.MailboxAttrDrafts},
 		}); err != nil {
 			log.Printf("Failed to create Drafts mailbox: %v", err)
 		}
 
-		if err := user.Create("Sent", &imap.CreateOptions{
+		if err := user.Create(context.Background(), "Sent", &imap.CreateOptions{
 			SpecialUse: []imap.MailboxAttr{imap.MailboxAttrSent},
 		}); err != nil {
 			log.Printf("Failed to create Sent mailbox: %v", err)
 		}
 
-		if err := user.Create("Archive", &imap.CreateOptions{
+		if err := user.Create(context.Background(), "Archive", &imap.CreateOptions{
 			SpecialUse: []imap.MailboxAttr{imap.MailboxAttrArchive},
 		}); err != nil {
 			log.Printf("Failed to create Archive mailbox: %v", err)
 		}
 
-		if err := user.Create("Junk", &imap.CreateOptions{
+		if err := user.Create(context.Background(), "Junk", &imap.CreateOptions{
 			SpecialUse: []imap.MailboxAttr{imap.MailboxAttrJunk},
 		}); err != nil {
 			log.Printf("Failed to create Junk mailbox: %v", err)
 		}
 
-		if err := user.Create("Trash", &imap.CreateOptions{
+		if err := user.Create(context.Background(), "Trash", &imap.CreateOptions{
 			SpecialUse: []imap.MailboxAttr{imap.MailboxAttrTrash},
 		}); err != nil {
 			log.Printf("Failed to create Trash mailbox: %v", err)
 		}
 
-		if err := user.Create("Flagged", &imap.CreateOptions{
+		if err := user.Create(context.Background(), "Flagged", &imap.CreateOptions{
 			SpecialUse: []imap.MailboxAttr{imap.MailboxAttrFlagged},
 		}); err != nil {
 			log.Printf("Failed to create Flagged mailbox: %v", err)
 		}
 
 		// Subscribe to the most commonly used mailboxes
-		_ = user.Subscribe("INBOX")
-		_ = user.Subscribe("Drafts")
-		_ = user.Subscribe("Sent")
-		_ = user.Subscribe("Trash")
+		_ = user.Subscribe(context.Background(), "INBOX")
+		_ = user.Subscribe(context.Background(), "Drafts")
+		_ = user.Subscribe(context.Background(), "Sent")
+		_ = user.Subscribe(context.Background(), "Trash")
 
 		memServer.AddUser(user)
 	}

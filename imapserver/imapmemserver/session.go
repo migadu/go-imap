@@ -1,6 +1,7 @@
 package imapmemserver
 
 import (
+	"context"
 	"sort"
 	"strings"
 
@@ -39,7 +40,7 @@ func (sess *UserSession) Close() error {
 	return nil
 }
 
-func (sess *UserSession) Select(name string, options *imap.SelectOptions) (*imap.SelectData, error) {
+func (sess *UserSession) Select(ctx context.Context, name string, options *imap.SelectOptions) (*imap.SelectData, error) {
 	mbox, err := sess.user.mailbox(name)
 	if err != nil {
 		return nil, err
@@ -51,13 +52,13 @@ func (sess *UserSession) Select(name string, options *imap.SelectOptions) (*imap
 	return sess.mailbox.selectData(options)
 }
 
-func (sess *UserSession) Unselect() error {
+func (sess *UserSession) Unselect(ctx context.Context) error {
 	sess.mailbox.Close()
 	sess.mailbox = nil
 	return nil
 }
 
-func (sess *UserSession) Copy(numSet imap.NumSet, destName string) (*imap.CopyData, error) {
+func (sess *UserSession) Copy(ctx context.Context, numSet imap.NumSet, destName string) (*imap.CopyData, error) {
 	dest, err := sess.user.mailbox(destName)
 	if err != nil {
 		return nil, &imap.Error{
@@ -86,7 +87,7 @@ func (sess *UserSession) Copy(numSet imap.NumSet, destName string) (*imap.CopyDa
 	}, nil
 }
 
-func (sess *UserSession) Move(w *imapserver.MoveWriter, numSet imap.NumSet, destName string) error {
+func (sess *UserSession) Move(ctx context.Context, w *imapserver.MoveWriter, numSet imap.NumSet, destName string) error {
 	dest, err := sess.user.mailbox(destName)
 	if err != nil {
 		return &imap.Error{
@@ -132,25 +133,25 @@ func (sess *UserSession) Move(w *imapserver.MoveWriter, numSet imap.NumSet, dest
 	return nil
 }
 
-func (sess *UserSession) Poll(w *imapserver.UpdateWriter, allowExpunge bool) error {
+func (sess *UserSession) Poll(ctx context.Context, w *imapserver.UpdateWriter, allowExpunge bool) error {
 	if sess.mailbox == nil {
 		return nil
 	}
-	return sess.mailbox.Poll(w, allowExpunge)
+	return sess.mailbox.Poll(ctx, w, allowExpunge)
 }
 
-func (sess *UserSession) Idle(w *imapserver.UpdateWriter, stop <-chan struct{}) error {
+func (sess *UserSession) Idle(ctx context.Context, w *imapserver.UpdateWriter, stop <-chan struct{}) error {
 	if sess.mailbox == nil {
 		return nil // TODO
 	}
-	return sess.mailbox.Idle(w, stop)
+	return sess.mailbox.Idle(ctx, w, stop)
 }
 
-func (sess *UserSession) Sort(kind imapserver.NumKind, sortCriteria []imap.SortCriterion, charset string, searchCriteria *imap.SearchCriteria, options *imap.SortOptions) (*imap.SortData, error) {
-	return sess.mailbox.Sort(kind, sortCriteria, charset, searchCriteria, options)
+func (sess *UserSession) Sort(ctx context.Context, kind imapserver.NumKind, sortCriteria []imap.SortCriterion, charset string, searchCriteria *imap.SearchCriteria, options *imap.SortOptions) (*imap.SortData, error) {
+	return sess.mailbox.Sort(ctx, kind, sortCriteria, charset, searchCriteria, options)
 }
 
-func (sess *UserSession) Thread(numKind imapserver.NumKind, algorithm imap.ThreadAlgorithm, charset string, criteria *imap.SearchCriteria) ([]imap.ThreadData, error) {
+func (sess *UserSession) Thread(ctx context.Context, numKind imapserver.NumKind, algorithm imap.ThreadAlgorithm, charset string, criteria *imap.SearchCriteria) ([]imap.ThreadData, error) {
 	if sess.mailbox == nil {
 		return nil, &imap.Error{
 			Type: imap.StatusResponseTypeNo,
@@ -171,7 +172,7 @@ func (sess *UserSession) Thread(numKind imapserver.NumKind, algorithm imap.Threa
 	}, nil
 }
 
-func (sess *UserSession) MultiSearch(source *imap.SearchSource, criteria *imap.SearchCriteria, options *imap.SearchOptions) ([]*imap.SearchData, error) {
+func (sess *UserSession) MultiSearch(ctx context.Context, source *imap.SearchSource, criteria *imap.SearchCriteria, options *imap.SearchOptions) ([]*imap.SearchData, error) {
 	var results []*imap.SearchData
 	for _, mboxName := range sess.resolveSearchSource(source) {
 		mbox, err := sess.user.mailbox(mboxName)
@@ -182,7 +183,7 @@ func (sess *UserSession) MultiSearch(source *imap.SearchSource, criteria *imap.S
 		view := mbox.NewView()
 
 		// RFC 7377: ESEARCH always reports UIDs, never message numbers.
-		data, err := view.Search(imapserver.NumKindUID, criteria, options)
+		data, err := view.Search(ctx, imapserver.NumKindUID, criteria, options)
 		view.Close()
 		if err != nil {
 			return nil, err
@@ -265,7 +266,7 @@ func (sess *UserSession) resolveSearchSource(source *imap.SearchSource) []string
 	return names
 }
 
-func (sess *UserSession) GetMetadata(mailboxName string, entries []string, options *imap.GetMetadataOptions) (*imap.GetMetadataData, error) {
+func (sess *UserSession) GetMetadata(ctx context.Context, mailboxName string, entries []string, options *imap.GetMetadataOptions) (*imap.GetMetadataData, error) {
 	sess.user.mutex.Lock()
 	defer sess.user.mutex.Unlock()
 
@@ -315,7 +316,7 @@ func (sess *UserSession) GetMetadata(mailboxName string, entries []string, optio
 	}, nil
 }
 
-func (sess *UserSession) SetMetadata(mailboxName string, entries map[string]*[]byte) error {
+func (sess *UserSession) SetMetadata(ctx context.Context, mailboxName string, entries map[string]*[]byte) error {
 	sess.user.mutex.Lock()
 	defer sess.user.mutex.Unlock()
 
@@ -394,7 +395,7 @@ func matchesWithDepth(entryName, requestedEntry string, options *imap.GetMetadat
 }
 
 // GetACL retrieves the access control list for a mailbox
-func (sess *UserSession) GetACL(name string) (*imap.GetACLData, error) {
+func (sess *UserSession) GetACL(ctx context.Context, name string) (*imap.GetACLData, error) {
 	mbox, err := sess.user.mailbox(name)
 	if err != nil {
 		return nil, err
@@ -428,7 +429,7 @@ func (sess *UserSession) GetACL(name string) (*imap.GetACLData, error) {
 }
 
 // SetACL sets or modifies the access control list for a mailbox
-func (sess *UserSession) SetACL(name string, identifier imap.RightsIdentifier, modification imap.RightModification, rights imap.RightSet) error {
+func (sess *UserSession) SetACL(ctx context.Context, name string, identifier imap.RightsIdentifier, modification imap.RightModification, rights imap.RightSet) error {
 	mbox, err := sess.user.mailbox(name)
 	if err != nil {
 		return err
@@ -477,12 +478,12 @@ func (sess *UserSession) SetACL(name string, identifier imap.RightsIdentifier, m
 }
 
 // DeleteACL removes the access control list entry for an identifier
-func (sess *UserSession) DeleteACL(name string, identifier imap.RightsIdentifier) error {
-	return sess.SetACL(name, identifier, imap.RightModificationReplace, nil)
+func (sess *UserSession) DeleteACL(ctx context.Context, name string, identifier imap.RightsIdentifier) error {
+	return sess.SetACL(ctx, name, identifier, imap.RightModificationReplace, nil)
 }
 
 // ListRights lists the rights that can be granted to an identifier on a mailbox
-func (sess *UserSession) ListRights(name string, identifier imap.RightsIdentifier) (*imap.ListRightsData, error) {
+func (sess *UserSession) ListRights(ctx context.Context, name string, identifier imap.RightsIdentifier) (*imap.ListRightsData, error) {
 	_, err := sess.user.mailbox(name)
 	if err != nil {
 		return nil, err
@@ -498,7 +499,7 @@ func (sess *UserSession) ListRights(name string, identifier imap.RightsIdentifie
 }
 
 // MyRights returns the rights the current user has on a mailbox
-func (sess *UserSession) MyRights(name string) (*imap.MyRightsData, error) {
+func (sess *UserSession) MyRights(ctx context.Context, name string) (*imap.MyRightsData, error) {
 	mbox, err := sess.user.mailbox(name)
 	if err != nil {
 		return nil, err

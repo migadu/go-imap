@@ -72,7 +72,7 @@ func (c *Conn) handleAuthenticate(tag string, dec *imapwire.Decoder) error {
 					Text: "SASL identity not supported",
 				}
 			}
-			return c.session.Login(username, password)
+			return c.session.Login(c.ctx, username, password)
 		})
 	}
 
@@ -141,7 +141,7 @@ func (c *Conn) handleUnauthenticate(dec *imapwire.Decoder) error {
 	if !ok {
 		return newClientBugError("UNAUTHENTICATE is not supported")
 	}
-	if err := session.Unauthenticate(); err != nil {
+	if err := session.Unauthenticate(c.ctx); err != nil {
 		return err
 	}
 	c.state = imap.ConnStateNotAuthenticated

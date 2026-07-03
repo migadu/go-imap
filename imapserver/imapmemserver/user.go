@@ -1,6 +1,7 @@
 package imapmemserver
 
 import (
+	"context"
 	"crypto/subtle"
 	"sort"
 	"strings"
@@ -30,7 +31,7 @@ func NewUser(username, password string) *User {
 	}
 }
 
-func (u *User) Login(username, password string) error {
+func (u *User) Login(ctx context.Context, username, password string) error {
 	if username != u.username {
 		return imapserver.ErrAuthFailed
 	}
@@ -58,7 +59,7 @@ func (u *User) mailbox(name string) (*Mailbox, error) {
 	return u.mailboxLocked(name)
 }
 
-func (u *User) Status(name string, options *imap.StatusOptions) (*imap.StatusData, error) {
+func (u *User) Status(ctx context.Context, name string, options *imap.StatusOptions) (*imap.StatusData, error) {
 	mbox, err := u.mailbox(name)
 	if err != nil {
 		return nil, err
@@ -66,7 +67,7 @@ func (u *User) Status(name string, options *imap.StatusOptions) (*imap.StatusDat
 	return mbox.StatusData(options), nil
 }
 
-func (u *User) List(w *imapserver.ListWriter, ref string, patterns []string, options *imap.ListOptions) error {
+func (u *User) List(ctx context.Context, w *imapserver.ListWriter, ref string, patterns []string, options *imap.ListOptions) error {
 	u.mutex.Lock()
 	defer u.mutex.Unlock()
 
@@ -115,7 +116,7 @@ func (u *User) List(w *imapserver.ListWriter, ref string, patterns []string, opt
 	return nil
 }
 
-func (u *User) Append(mailbox string, r imap.LiteralReader, options *imap.AppendOptions) (*imap.AppendData, error) {
+func (u *User) Append(ctx context.Context, mailbox string, r imap.LiteralReader, options *imap.AppendOptions) (*imap.AppendData, error) {
 	mbox, err := u.mailbox(mailbox)
 	if err != nil {
 		return nil, &imap.Error{
@@ -127,7 +128,7 @@ func (u *User) Append(mailbox string, r imap.LiteralReader, options *imap.Append
 	return mbox.appendLiteral(r, options)
 }
 
-func (u *User) Create(name string, options *imap.CreateOptions) error {
+func (u *User) Create(ctx context.Context, name string, options *imap.CreateOptions) error {
 	u.mutex.Lock()
 	defer u.mutex.Unlock()
 
@@ -153,7 +154,7 @@ func (u *User) Create(name string, options *imap.CreateOptions) error {
 	return nil
 }
 
-func (u *User) Delete(name string) error {
+func (u *User) Delete(ctx context.Context, name string) error {
 	u.mutex.Lock()
 	defer u.mutex.Unlock()
 
@@ -165,7 +166,7 @@ func (u *User) Delete(name string) error {
 	return nil
 }
 
-func (u *User) Rename(w *imapserver.RenameWriter, oldName, newName string, options *imap.RenameOptions) error {
+func (u *User) Rename(ctx context.Context, w *imapserver.RenameWriter, oldName, newName string, options *imap.RenameOptions) error {
 	u.mutex.Lock()
 
 	newName = strings.TrimRight(newName, string(mailboxDelim))
@@ -198,7 +199,7 @@ func (u *User) Rename(w *imapserver.RenameWriter, oldName, newName string, optio
 	})
 }
 
-func (u *User) Subscribe(name string) error {
+func (u *User) Subscribe(ctx context.Context, name string) error {
 	mbox, err := u.mailbox(name)
 	if err != nil {
 		return err
@@ -207,7 +208,7 @@ func (u *User) Subscribe(name string) error {
 	return nil
 }
 
-func (u *User) Unsubscribe(name string) error {
+func (u *User) Unsubscribe(ctx context.Context, name string) error {
 	mbox, err := u.mailbox(name)
 	if err != nil {
 		return err
@@ -216,7 +217,7 @@ func (u *User) Unsubscribe(name string) error {
 	return nil
 }
 
-func (u *User) Namespace() (*imap.NamespaceData, error) {
+func (u *User) Namespace(ctx context.Context) (*imap.NamespaceData, error) {
 	return &imap.NamespaceData{
 		Personal: []imap.NamespaceDescriptor{{Delim: mailboxDelim}},
 	}, nil

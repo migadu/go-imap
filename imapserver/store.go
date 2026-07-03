@@ -101,7 +101,7 @@ func (c *Conn) handleStore(dec *imapwire.Decoder, numKind NumKind) error {
 	}
 
 	w := &FetchWriter{conn: c}
-	return c.session.Store(w, numSet, &imap.StoreFlags{
+	return c.session.Store(c.ctx, w, numSet, &imap.StoreFlags{
 		Op:     op,
 		Silent: silent,
 		Flags:  flags,

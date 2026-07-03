@@ -20,7 +20,7 @@ func (c *Conn) handleLogin(tag string, dec *imapwire.Decoder) error {
 			Text: "TLS is required to authenticate",
 		}
 	}
-	if err := c.session.Login(username, password); err != nil {
+	if err := c.session.Login(c.ctx, username, password); err != nil {
 		return err
 	}
 	c.state = imap.ConnStateAuthenticated
