@@ -234,14 +234,28 @@ func maybeReadSearchKeyAtom(dec *imapwire.Decoder, ptr *string) bool {
 	})
 }
 
+// maxSearchKeyDepth bounds SEARCH-key nesting. The parenthesized-list path is
+// already capped by the decoder's maxListDepth, but NOT/OR recurse directly and
+// would otherwise be bounded only by the 50 KiB command size — a single small
+// command can drive many thousands of NOT/OR levels. Cap it well above any real
+// query.
+const maxSearchKeyDepth = 100
+
 func readSearchKey(c *Conn, criteria *imap.SearchCriteria, dec *imapwire.Decoder) error {
+	return readSearchKeyDepth(c, criteria, dec, 0)
+}
+
+func readSearchKeyDepth(c *Conn, criteria *imap.SearchCriteria, dec *imapwire.Decoder, depth int) error {
+	if depth > maxSearchKeyDepth {
+		return newClientBugError("SEARCH key nesting too deep")
+	}
 	var key string
 	if maybeReadSearchKeyAtom(dec, &key) {
-		return readSearchKeyWithAtom(c, criteria, dec, key)
+		return readSearchKeyWithAtomDepth(c, criteria, dec, key, depth)
 	}
 	return dec.ExpectList(func() error {
 		for {
-			if err := readSearchKey(c, criteria, dec); err != nil {
+			if err := readSearchKeyDepth(c, criteria, dec, depth+1); err != nil {
 				return err
 			}
 			if !dec.SP() {
@@ -253,6 +267,10 @@ func readSearchKey(c *Conn, criteria *imap.SearchCriteria, dec *imapwire.Decoder
 }
 
 func readSearchKeyWithAtom(c *Conn, criteria *imap.SearchCriteria, dec *imapwire.Decoder, key string) error {
+	return readSearchKeyWithAtomDepth(c, criteria, dec, key, 0)
+}
+
+func readSearchKeyWithAtomDepth(c *Conn, criteria *imap.SearchCriteria, dec *imapwire.Decoder, key string, depth int) error {
 	key = strings.ToUpper(key)
 	switch key {
 	case "ALL":
@@ -359,7 +377,7 @@ func readSearchKeyWithAtom(c *Conn, criteria *imap.SearchCriteria, dec *imapwire
 			return dec.Err()
 		}
 		var not imap.SearchCriteria
-		if err := readSearchKey(c, &not, dec); err != nil {
+		if err := readSearchKeyDepth(c, &not, dec, depth+1); err != nil {
 			return err
 		}
 		criteria.Not = append(criteria.Not, not)
@@ -368,13 +386,13 @@ func readSearchKeyWithAtom(c *Conn, criteria *imap.SearchCriteria, dec *imapwire
 			return dec.Err()
 		}
 		var or [2]imap.SearchCriteria
-		if err := readSearchKey(c, &or[0], dec); err != nil {
+		if err := readSearchKeyDepth(c, &or[0], dec, depth+1); err != nil {
 			return err
 		}
 		if !dec.ExpectSP() {
 			return dec.Err()
 		}
-		if err := readSearchKey(c, &or[1], dec); err != nil {
+		if err := readSearchKeyDepth(c, &or[1], dec, depth+1); err != nil {
 			return err
 		}
 		criteria.Or = append(criteria.Or, or)

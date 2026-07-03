@@ -23,7 +23,7 @@ func (c *Conn) supportsCondStore() bool {
 		sessionCaps := capSession.GetCapabilities()
 		return sessionCaps.Has(imap.CapCondStore) || sessionCaps.Has(imap.CapIMAP4rev2)
 	}
-	return c.enabled.Has(imap.CapIMAP4rev2) || c.availableCapsSet().Has(imap.CapCondStore) || c.availableCapsSet().Has(imap.CapIMAP4rev2)
+	return c.enabledHas(imap.CapIMAP4rev2) || c.availableCapsSet().Has(imap.CapCondStore) || c.availableCapsSet().Has(imap.CapIMAP4rev2)
 }
 
 // markCondStoreEnabled records that the client has issued a CONDSTORE-enabling
