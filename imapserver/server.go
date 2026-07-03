@@ -56,6 +56,12 @@ type Options struct {
 	// connection. If nil, the default check using type assertion is used.
 	// Note: This does NOT affect STARTTLS behavior.
 	IsTLS func(net.Conn) bool
+	// MaxConnections limits the number of concurrent client connections served.
+	// When the limit is reached, further connections are refused with a BYE and
+	// closed immediately, rather than consuming a goroutine and a file
+	// descriptor. Zero means no limit (the historical behavior); operators can
+	// alternatively front the listener with golang.org/x/net/netutil.LimitListener.
+	MaxConnections int
 	// Raw ingress and egress data will be written to this writer, if any.
 	// Note, this may include sensitive information such as credentials used
 	// during authentication.
@@ -93,6 +99,11 @@ type Server struct {
 	listeners map[net.Listener]struct{}
 	conns     map[*Conn]struct{}
 	closed    bool
+
+	// connSem bounds concurrent connections when Options.MaxConnections > 0. A
+	// slot is acquired before spawning a connection goroutine and released when
+	// it exits. nil means unlimited.
+	connSem chan struct{}
 }
 
 // New creates a new server.
@@ -100,11 +111,15 @@ func New(options *Options) *Server {
 	if caps := options.caps(); !caps.Has(imap.CapIMAP4rev2) && !caps.Has(imap.CapIMAP4rev1) {
 		panic("imapserver: at least IMAP4rev1 must be supported")
 	}
-	return &Server{
+	s := &Server{
 		options:   *options,
 		listeners: make(map[net.Listener]struct{}),
 		conns:     make(map[*Conn]struct{}),
 	}
+	if options.MaxConnections > 0 {
+		s.connSem = make(chan struct{}, options.MaxConnections)
+	}
+	return s
 }
 
 func (s *Server) logger() Logger {
@@ -160,12 +175,36 @@ func (s *Server) Serve(ln net.Listener) error {
 		}
 
 		delay = 0
+
+		// Enforce MaxConnections: acquire a slot without blocking the accept
+		// loop; if the server is at capacity, refuse the connection cleanly.
+		if s.connSem != nil {
+			select {
+			case s.connSem <- struct{}{}:
+			default:
+				go s.rejectConn(conn)
+				continue
+			}
+		}
+
 		s.connsWaitGroup.Add(1)
 		go func() {
 			defer s.connsWaitGroup.Done()
+			if s.connSem != nil {
+				defer func() { <-s.connSem }()
+			}
 			newConn(conn, s).serve()
 		}()
 	}
+}
+
+// rejectConn refuses a connection that would exceed MaxConnections, sending a
+// BYE before closing so the client learns why. Best-effort and bounded by a
+// write deadline so a non-reading client can't stall it.
+func (s *Server) rejectConn(conn net.Conn) {
+	conn.SetWriteDeadline(time.Now().Add(respWriteTimeout))
+	conn.Write([]byte("* BYE Too many connections\r\n"))
+	conn.Close()
 }
 
 // ListenAndServe listens on the TCP network address addr and then calls Serve.

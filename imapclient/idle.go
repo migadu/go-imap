@@ -101,6 +101,11 @@ func (cmd *IdleCommand) Wait() error {
 	if cmd.err != nil {
 		return cmd.err
 	}
+	if cmd.lastChild == nil {
+		// Defensive: every err==nil exit path sets lastChild, but guard against a
+		// future path that doesn't rather than nil-dereference here.
+		return cmd.err
+	}
 	return cmd.lastChild.Wait()
 }
 

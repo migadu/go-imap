@@ -303,6 +303,9 @@ func DialStartTLS(address string, options *Options) (*Client, error) {
 	if tlsConfig.ServerName == "" {
 		tlsConfig.ServerName = host
 	}
+	if tlsConfig.NextProtos == nil {
+		tlsConfig.NextProtos = []string{"imap"} // RFC 7817 / parity with DialTLS
+	}
 	newOptions := *options
 	newOptions.TLSConfig = tlsConfig
 	return NewStartTLS(conn, &newOptions)
