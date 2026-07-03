@@ -32,10 +32,12 @@ func NewUser(username, password string) *User {
 }
 
 func (u *User) Login(ctx context.Context, username, password string) error {
-	if username != u.username {
-		return imapserver.ErrAuthFailed
-	}
-	if subtle.ConstantTimeCompare([]byte(password), []byte(u.password)) != 1 {
+	// Compare both username and password without short-circuiting, so response
+	// timing does not distinguish "unknown user" from "wrong password" (username
+	// enumeration). Both use constant-time comparison.
+	userOK := subtle.ConstantTimeCompare([]byte(username), []byte(u.username))
+	passOK := subtle.ConstantTimeCompare([]byte(password), []byte(u.password))
+	if userOK != 1 || passOK != 1 {
 		return imapserver.ErrAuthFailed
 	}
 	return nil
