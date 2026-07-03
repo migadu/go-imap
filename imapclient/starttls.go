@@ -30,6 +30,14 @@ func (c *Client) startTLS(config *tls.Config) error {
 	// The decoder goroutine will invoke Client.upgradeStartTLS
 	<-upgradeDone
 
+	// upgradeStartTLS may have refused the upgrade (e.g. the server sent
+	// buffered data before the OK response) and left tlsConn nil. Surface that
+	// error instead of dereferencing a nil *tls.Conn. upgradeErr is written by
+	// the decoder goroutine before it closes upgradeDone, so the receive above
+	// establishes the happens-before that makes this read race-free.
+	if cmd.upgradeErr != nil {
+		return cmd.upgradeErr
+	}
 	return cmd.tlsConn.Handshake()
 }
 
@@ -41,7 +49,7 @@ func (c *Client) upgradeStartTLS(startTLS *startTLSCommand) {
 	// Refuse STARTTLS if server sent buffered data before the OK response.
 	// This is the canonical defense against smuggling attacks.
 	if c.br.Buffered() > 0 {
-		startTLS.err = fmt.Errorf("STARTTLS refused: server sent buffered data before TLS")
+		startTLS.upgradeErr = fmt.Errorf("STARTTLS refused: server sent buffered data before TLS")
 		return
 	}
 
@@ -62,4 +70,8 @@ type startTLSCommand struct {
 
 	upgradeDone chan<- struct{}
 	tlsConn     *tls.Conn
+	// upgradeErr carries a failure from upgradeStartTLS (decoder goroutine) back
+	// to startTLS (caller goroutine). It is kept separate from commandBase.err,
+	// which wait() mutates, to avoid a data race on that field.
+	upgradeErr error
 }

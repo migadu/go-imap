@@ -43,6 +43,14 @@ const (
 	respReadTimeout    = 30 * time.Second
 	literalReadTimeout = 5 * time.Minute
 
+	// maxResponseSize bounds the non-literal bytes of a single server response.
+	// It defends against a hostile server that streams an unterminated
+	// continuation or status-text line to exhaust client memory. Literals
+	// (message bodies) are excluded from this budget and keep their own caps, so
+	// this only limits response metadata (tags, ENVELOPE, BODYSTRUCTURE, SASL
+	// challenges), which never legitimately approaches this size.
+	maxResponseSize = 8 << 20 // 8 MiB
+
 	cmdWriteTimeout     = 30 * time.Second
 	literalWriteTimeout = 5 * time.Minute
 
@@ -190,12 +198,17 @@ func New(conn net.Conn, options *Options) *Client {
 	br := bufio.NewReader(rw)
 	bw := bufio.NewWriter(rw)
 
+	dec := imapwire.NewDecoder(br, imapwire.ConnSideClient)
+	// Bound per-response memory against a hostile server. The counter is reset
+	// at the start of each response in readResponse.
+	dec.MaxSize = maxResponseSize
+
 	client := &Client{
 		conn:       conn,
 		options:    *options,
 		br:         br,
 		bw:         bw,
-		dec:        imapwire.NewDecoder(br, imapwire.ConnSideClient),
+		dec:        dec,
 		greetingCh: make(chan struct{}),
 		decCh:      make(chan struct{}),
 		state:      imap.ConnStateNone,
@@ -211,6 +224,16 @@ func New(conn net.Conn, options *Options) *Client {
 func NewStartTLS(conn net.Conn, options *Options) (*Client, error) {
 	if options == nil {
 		options = &Options{}
+	}
+
+	// A net.Conn carries no intended hostname, so unlike DialStartTLS we cannot
+	// derive ServerName here. Without it crypto/tls fails the handshake closed,
+	// which tends to push callers toward InsecureSkipVerify. Refuse up front with
+	// actionable guidance instead, so the trust decision is never silent.
+	if options.TLSConfig == nil ||
+		(options.TLSConfig.ServerName == "" && !options.TLSConfig.InsecureSkipVerify) {
+		return nil, fmt.Errorf("imapclient: NewStartTLS requires TLSConfig.ServerName " +
+			"(use DialStartTLS to derive it from the address, or set InsecureSkipVerify to opt out)")
 	}
 
 	client := New(conn, options)
@@ -627,6 +650,9 @@ func (c *Client) read() {
 func (c *Client) readResponse() error {
 	c.setReadTimeout(respReadTimeout)
 	defer c.setReadTimeout(idleReadTimeout)
+
+	// Apply the MaxSize budget per response rather than cumulatively.
+	c.dec.ResetCount()
 
 	if c.dec.Special('+') {
 		if err := c.readContinueReq(); err != nil {

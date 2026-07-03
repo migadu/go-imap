@@ -24,8 +24,12 @@ func (c *Conn) handleAuthenticate(tag string, dec *imapwire.Decoder) error {
 		if !dec.ExpectText(&initialRespStr) {
 			return dec.Err()
 		}
+		// Use decodeSASL (not internal.DecodeSASL) so a malformed initial
+		// response is reported as a client error (BAD "Malformed SASL response")
+		// rather than falling through to NO [SERVERBUG], matching the
+		// continuation path below.
 		var err error
-		initialResp, err = internal.DecodeSASL(initialRespStr)
+		initialResp, err = decodeSASL(initialRespStr)
 		if err != nil {
 			return err
 		}

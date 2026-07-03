@@ -146,12 +146,37 @@ func (c *Conn) handleESearch(tag string, dec *imapwire.Decoder) error {
 	}
 
 	for _, data := range results {
+		// RFC 7377 §2.1: "An ESEARCH response MUST NOT be returned for mailboxes
+		// that contain no matching messages. This is true even when result
+		// options such as MIN, MAX, and COUNT are specified."
+		if multiSearchDataIsEmpty(data, &options) {
+			continue
+		}
 		if err := c.writeESearch(tag, data, &options, NumKindUID); err != nil {
 			return err
 		}
 	}
 
 	return nil
+}
+
+// multiSearchDataIsEmpty reports whether a per-mailbox multi-search result
+// matched no messages, in which case RFC 7377 §2.1 forbids emitting an ESEARCH
+// response for that mailbox — regardless of which return options were requested.
+func multiSearchDataIsEmpty(data *imap.SearchData, options *imap.SearchOptions) bool {
+	if options.ReturnMin && data.Min > 0 {
+		return false
+	}
+	if options.ReturnMax && data.Max > 0 {
+		return false
+	}
+	if options.ReturnCount && data.Count > 0 {
+		return false
+	}
+	if options.ReturnAll && data.All != nil && !isNumSetEmpty(data.All) {
+		return false
+	}
+	return true
 }
 
 // readSearchSource parses the parenthesized source-mbox of an ESEARCH "IN (...)"

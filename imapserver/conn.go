@@ -104,7 +104,12 @@ func (c *Conn) Bye(text string) error {
 		Type: imap.StatusResponseTypeBye,
 		Text: text,
 	})
-	closeErr := c.conn.Close()
+	// Read c.conn under the mutex: STARTTLS reassigns it and forceCloseConns
+	// closes it from other goroutines.
+	c.mutex.Lock()
+	conn := c.conn
+	c.mutex.Unlock()
+	closeErr := conn.Close()
 	if respErr != nil {
 		return respErr
 	}
