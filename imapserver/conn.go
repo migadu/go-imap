@@ -80,6 +80,12 @@ type Conn struct {
 
 	state   imap.ConnState
 	session Session
+
+	// selectedReadOnly is true when the selected mailbox is read-only, either
+	// because it was opened with EXAMINE or because the session reported it
+	// read-only (RFC 4314 §5.2). Only touched from the command-loop goroutine,
+	// like state.
+	selectedReadOnly bool
 }
 
 func newConn(c net.Conn, server *Server) *Conn {

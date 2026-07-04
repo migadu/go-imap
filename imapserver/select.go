@@ -107,6 +107,7 @@ func (c *Conn) handleSelect(tag string, dec *imapwire.Decoder, readOnly bool) er
 			return err
 		}
 		c.state = imap.ConnStateAuthenticated
+		c.selectedReadOnly = false
 		err := c.writeStatusResp("", &imap.StatusResponse{
 			Type: imap.StatusResponseTypeOK,
 			Code: "CLOSED",
@@ -172,6 +173,7 @@ func (c *Conn) handleSelect(tag string, dec *imapwire.Decoder, readOnly bool) er
 	}
 
 	c.state = imap.ConnStateSelected
+	c.selectedReadOnly = readOnly || data.ReadOnly
 
 	var (
 		cmdName string
@@ -206,7 +208,10 @@ func (c *Conn) handleUnselect(dec *imapwire.Decoder, expunge bool) error {
 		return err
 	}
 
-	if expunge {
+	// RFC 3501 §6.4.2: "No messages are removed, and no error is given, if the
+	// mailbox is selected by an EXAMINE command or is otherwise selected
+	// read-only." Skip the expunge attempt entirely for read-only mailboxes.
+	if expunge && !c.selectedReadOnly {
 		w := &ExpungeWriter{conn: c}
 		if err := c.session.Expunge(c.ctx, w, nil); err != nil {
 			// RFC 4314 §4: for CLOSE, if the server cannot expunge because the user
@@ -224,6 +229,7 @@ func (c *Conn) handleUnselect(dec *imapwire.Decoder, expunge bool) error {
 	}
 
 	c.state = imap.ConnStateAuthenticated
+	c.selectedReadOnly = false
 	return nil
 }
 
