@@ -779,6 +779,17 @@ type UpdateWriter struct {
 	allowExpunge bool
 }
 
+// WriteOK writes an untagged OK response carrying only informational text
+// (e.g. "Still here"). Servers use it as an IDLE keepalive so NAT mappings
+// and activity-based idle checkers observe traffic during long IDLE waits
+// (mirrors Dovecot's imap_idle_notify_interval behaviour).
+func (w *UpdateWriter) WriteOK(text string) error {
+	return w.conn.writeStatusResp("", &imap.StatusResponse{
+		Type: imap.StatusResponseTypeOK,
+		Text: text,
+	})
+}
+
 // WriteExpunge writes an EXPUNGE response.
 func (w *UpdateWriter) WriteExpunge(seqNum uint32) error {
 	if !w.allowExpunge {
