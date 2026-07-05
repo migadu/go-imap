@@ -173,6 +173,19 @@ func (c *Conn) serve() {
 	}()
 
 	c.server.mutex.Lock()
+	if c.server.closed {
+		// The server was closed between the accept and this registration.
+		// Close sets closed before forceCloseConns snapshots s.conns, both
+		// under this mutex, so an entry added now would never be
+		// force-closed and the session would outlive Close. Send a
+		// best-effort BYE (like rejectConn, off the mutex and bounded by a
+		// write deadline) and bail out; the deferred conn.Close and cancel
+		// handle cleanup.
+		c.server.mutex.Unlock()
+		c.conn.SetWriteDeadline(time.Now().Add(respWriteTimeout))
+		c.conn.Write([]byte("* BYE Server shutting down\r\n"))
+		return
+	}
 	c.server.conns[c] = struct{}{}
 	c.server.mutex.Unlock()
 	defer func() {

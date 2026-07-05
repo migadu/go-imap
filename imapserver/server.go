@@ -135,6 +135,11 @@ func (s *Server) Serve(ln net.Listener) error {
 	ok := !s.closed
 	if ok {
 		s.listeners[ln] = struct{}{}
+		// Add must happen under the mutex: Close and Shutdown set closed and
+		// snapshot the listeners under the same mutex before calling
+		// listenerWaitGroup.Wait, so the counter can never transition 0->1
+		// concurrently with Wait (a WaitGroup misuse the race detector flags).
+		s.listenerWaitGroup.Add(1)
 	}
 	s.mutex.Unlock()
 	if !ok {
@@ -145,10 +150,8 @@ func (s *Server) Serve(ln net.Listener) error {
 		s.mutex.Lock()
 		delete(s.listeners, ln)
 		s.mutex.Unlock()
+		s.listenerWaitGroup.Done()
 	}()
-
-	s.listenerWaitGroup.Add(1)
-	defer s.listenerWaitGroup.Done()
 
 	var delay time.Duration
 	for {
