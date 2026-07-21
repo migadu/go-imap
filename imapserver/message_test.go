@@ -140,6 +140,57 @@ func TestWriteBodyStructure_StaleEmptyMultipart(t *testing.T) {
 	}
 }
 
+// leafSize returns the BODYSTRUCTURE size of section "1" (the message itself for
+// a single part, or the first child of a multipart).
+func leafSize(bs imap.BodyStructure) uint32 {
+	switch v := bs.(type) {
+	case *imap.BodyStructureSinglePart:
+		return v.Size
+	case *imap.BodyStructureMultiPart:
+		if len(v.Children) > 0 {
+			if sp, ok := v.Children[0].(*imap.BodyStructureSinglePart); ok {
+				return sp.Size
+			}
+		}
+	}
+	return 0
+}
+
+// TestExtractSection_ConsistentWithBodyStructure locks the invariant that a part
+// BODYSTRUCTURE advertises can actually be fetched: BODY[1] must return the same
+// number of bytes ExtractBodyStructure reports for section 1, and BINARY[1] must
+// not be empty for it, even for malformed input. ExtractBodyStructure is lenient
+// (partial header, io.ReadAll discards errors); ExtractBodySection and
+// ExtractBinarySection must be too, or clients see an advertised part that
+// fetches empty. (These fixtures are identity-encoded, so decoded == encoded.)
+func TestExtractSection_ConsistentWithBodyStructure(t *testing.T) {
+	cases := map[string]string{
+		"well-formed multipart": "Content-Type: multipart/mixed; boundary=\"b\"\r\n\r\n" +
+			"--b\r\nContent-Type: text/plain\r\n\r\nhello body\r\n--b--\r\n",
+		"multipart missing final boundary": "Content-Type: multipart/mixed; boundary=\"nofinal\"\r\n\r\n" +
+			"--nofinal\r\nContent-Type: text/plain\r\n\r\npart one, and then the message just ends\r\n",
+		"malformed header block (no colon)": "this header line has no colon\r\n\r\nthe body of the message\r\n",
+		"unknown transfer-encoding": "Content-Type: multipart/mixed; boundary=\"b\"\r\n\r\n" +
+			"--b\r\nContent-Type: text/plain\r\nContent-Transfer-Encoding: x-weird\r\n\r\nundecodable but present\r\n--b--\r\n",
+	}
+	for name, msg := range cases {
+		t.Run(name, func(t *testing.T) {
+			want := leafSize(ExtractBodyStructure(strings.NewReader(msg)))
+			got := ExtractBodySection(strings.NewReader(msg), &imap.FetchItemBodySection{Part: []int{1}})
+			if uint32(len(got)) != want {
+				t.Errorf("BODY[1] = %d bytes (%q), but BODYSTRUCTURE size = %d", len(got), string(got), want)
+			}
+			if want > 0 && len(got) == 0 {
+				t.Errorf("BODY[1] is empty for a part BODYSTRUCTURE advertises as %d bytes", want)
+			}
+			bin := ExtractBinarySection(strings.NewReader(msg), &imap.FetchItemBinarySection{Part: []int{1}})
+			if want > 0 && len(bin) == 0 {
+				t.Errorf("BINARY[1] is empty for a part BODYSTRUCTURE advertises as %d bytes", want)
+			}
+		})
+	}
+}
+
 func TestExtractBodyStructure_ValidMultipart(t *testing.T) {
 	// A well-formed multipart/mixed message should still return a
 	// BodyStructureMultiPart with the real parsed children.
