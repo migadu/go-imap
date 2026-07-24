@@ -41,10 +41,10 @@ func encodeNotifyOptions(enc *imapwire.Encoder, options *imap.NotifyOptions) err
 
 	enc.SP().Atom("SET")
 
+	// status-indicator = SP "STATUS" (RFC 5465 section 8): a bare atom, not
+	// a parenthesized list.
 	if options.Status {
-		enc.SP().List(1, func(i int) {
-			enc.Atom("STATUS")
-		})
+		enc.SP().Atom("STATUS")
 	}
 
 	for _, item := range options.Items {
@@ -52,26 +52,45 @@ func encodeNotifyOptions(enc *imapwire.Encoder, options *imap.NotifyOptions) err
 			return fmt.Errorf("invalid NOTIFY item: must specify either MailboxSpec or Mailboxes")
 		}
 
-		enc.SP().List(1, func(_ int) {
-			if item.MailboxSpec != "" {
-				enc.Atom(string(item.MailboxSpec))
+		enc.SP().Special('(')
+		if item.MailboxSpec != "" {
+			enc.Atom(string(item.MailboxSpec))
+		} else {
+			// filter-mailboxes-other = ("subtree" SP one-or-more-mailbox) /
+			//                          ("mailboxes" SP one-or-more-mailbox)
+			// The MAILBOXES keyword is required by the grammar; without it the
+			// group is not valid RFC 5465 syntax.
+			if item.Subtree {
+				enc.Atom("SUBTREE")
 			} else {
-				// len(item.Mailboxes) > 0, as per the check above.
-				if item.Subtree {
-					enc.Atom("SUBTREE").SP()
+				enc.Atom("MAILBOXES")
+			}
+			enc.SP().List(len(item.Mailboxes), func(j int) {
+				enc.Mailbox(item.Mailboxes[j])
+			})
+		}
+
+		// events = ("(" event *(SP event) ")") / "NONE": the events part is
+		// mandatory in each event-group, an empty list is spelled NONE.
+		enc.SP()
+		if len(item.Events) == 0 {
+			enc.Atom("NONE")
+		} else {
+			enc.Special('(')
+			for j, ev := range item.Events {
+				if j > 0 {
+					enc.SP()
 				}
-				enc.List(len(item.Mailboxes), func(j int) {
-					enc.Mailbox(item.Mailboxes[j])
-				})
+				enc.Atom(string(ev))
+				if ev == imap.NotifyEventMessageNew && item.MessageNewFetch != nil {
+					// MessageNew [SP "(" fetch-att *(SP fetch-att) ")"]
+					enc.SP()
+					writeFetchItems(enc, imapwire.NumKindSeq, item.MessageNewFetch)
+				}
 			}
-
-			if len(item.Events) > 0 {
-				enc.SP().List(len(item.Events), func(j int) {
-					enc.Atom(string(item.Events[j]))
-				})
-			}
-		})
-
+			enc.Special(')')
+		}
+		enc.Special(')')
 	}
 
 	return nil
