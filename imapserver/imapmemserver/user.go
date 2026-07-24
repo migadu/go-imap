@@ -16,6 +16,10 @@ const mailboxDelim rune = '/'
 type User struct {
 	username, password string
 
+	// notify fans mailbox and message change events out to the NOTIFY
+	// (RFC 5465) watchers of this user's sessions.
+	notify notifyRegistry
+
 	mutex           sync.Mutex
 	mailboxes       map[string]*Mailbox
 	prevUidValidity uint32
@@ -148,11 +152,13 @@ func (u *User) Create(ctx context.Context, name string, options *imap.CreateOpti
 	// same name.
 	u.prevUidValidity++
 	mbox := NewMailbox(name, u.prevUidValidity)
+	mbox.notify = u.notify.broadcast
 
 	// Initialize ACL with full rights for the owner
 	mbox.acl[imap.RightsIdentifier(u.username)] = imap.RightSetAll
 
 	u.mailboxes[name] = mbox
+	u.notify.broadcast(memNotifyEvent{kind: evMailboxCreated, mailbox: name})
 	return nil
 }
 
@@ -165,6 +171,7 @@ func (u *User) Delete(ctx context.Context, name string) error {
 	}
 
 	delete(u.mailboxes, name)
+	u.notify.broadcast(memNotifyEvent{kind: evMailboxDeleted, mailbox: name})
 	return nil
 }
 
@@ -193,6 +200,8 @@ func (u *User) Rename(ctx context.Context, w *imapserver.RenameWriter, oldName, 
 	delete(u.mailboxes, oldName)
 	u.mutex.Unlock()
 
+	u.notify.broadcast(memNotifyEvent{kind: evMailboxRenamed, mailbox: newName, oldName: oldName})
+
 	// RFC 9051 §6.3.6: announce the new name with the OLDNAME data item.
 	return w.WriteOldName(&imap.ListData{
 		Mailbox: newName,
@@ -207,6 +216,7 @@ func (u *User) Subscribe(ctx context.Context, name string) error {
 		return err
 	}
 	mbox.SetSubscribed(true)
+	u.notify.broadcast(memNotifyEvent{kind: evSubscriptionChange, mailbox: name})
 	return nil
 }
 
@@ -216,6 +226,7 @@ func (u *User) Unsubscribe(ctx context.Context, name string) error {
 		return err
 	}
 	mbox.SetSubscribed(false)
+	u.notify.broadcast(memNotifyEvent{kind: evSubscriptionChange, mailbox: name})
 	return nil
 }
 

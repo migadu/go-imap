@@ -4,6 +4,7 @@ import (
 	"context"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/imapserver"
@@ -21,6 +22,13 @@ type (
 type UserSession struct {
 	*user    // immutable
 	*mailbox // may be nil
+
+	// notifyMutex guards notifyWatch, and synchronizes updates of the
+	// mailbox pointer (performed on the command goroutine) with reads from
+	// the NOTIFY pump goroutine. Command-goroutine reads need no locking:
+	// they run on the same goroutine as the writes.
+	notifyMutex sync.Mutex
+	notifyWatch *notifyWatch
 }
 
 var (
@@ -33,9 +41,26 @@ func NewUserSession(user *User) *UserSession {
 	return &UserSession{user: user}
 }
 
+// setMailbox updates the selected-mailbox pointer, keeping the NOTIFY pump's
+// view consistent (see notifyMutex).
+func (sess *UserSession) setMailbox(mbox *MailboxView) {
+	sess.notifyMutex.Lock()
+	sess.mailbox = mbox
+	if sess.notifyWatch != nil && mbox != nil {
+		// Rebind the MessageNew fetch-atts high-water mark to the newly
+		// selected mailbox: only messages arriving from now on are "new".
+		sess.notifyWatch.lastUIDNext = mbox.uidNext
+	}
+	sess.notifyMutex.Unlock()
+}
+
 func (sess *UserSession) Close() error {
-	if sess != nil && sess.mailbox != nil {
+	if sess == nil {
+		return nil
+	}
+	if sess.mailbox != nil {
 		sess.mailbox.Close()
+		sess.setMailbox(nil)
 	}
 	return nil
 }
@@ -48,13 +73,13 @@ func (sess *UserSession) Select(ctx context.Context, name string, options *imap.
 	if sess.mailbox != nil {
 		sess.mailbox.Close()
 	}
-	sess.mailbox = mbox.NewView()
+	sess.setMailbox(mbox.NewView())
 	return sess.mailbox.selectData(options)
 }
 
 func (sess *UserSession) Unselect(ctx context.Context) error {
 	sess.mailbox.Close()
-	sess.mailbox = nil
+	sess.setMailbox(nil)
 	return nil
 }
 

@@ -24,6 +24,11 @@ type Mailbox struct {
 	tracker     *imapserver.MailboxTracker
 	uidValidity uint32
 
+	// notify broadcasts message change events to the owning user's NOTIFY
+	// watchers (nil when the mailbox is not attached to a user). Set once at
+	// creation, before the mailbox is shared.
+	notify func(memNotifyEvent)
+
 	mutex         sync.Mutex
 	name          string
 	subscribed    bool
@@ -34,6 +39,28 @@ type Mailbox struct {
 	expunged      []expungedMessage
 	metadata      map[string]*[]byte
 	acl           map[imap.RightsIdentifier]imap.RightSet
+}
+
+// notifyEventLocked broadcasts a message event for this mailbox to the
+// owning user's NOTIFY watchers. The mailbox mutex must be held by the
+// caller (the name is read under it); the broadcast itself never blocks.
+func (mbox *Mailbox) notifyEventLocked(kind memNotifyEventKind) {
+	if mbox.notify == nil {
+		return
+	}
+	mbox.notify(memNotifyEvent{kind: kind, mailbox: mbox.name})
+}
+
+// notifyEvent is notifyEventLocked for callers that do not hold the mailbox
+// mutex.
+func (mbox *Mailbox) notifyEvent(kind memNotifyEventKind) {
+	if mbox.notify == nil {
+		return
+	}
+	mbox.mutex.Lock()
+	name := mbox.name
+	mbox.mutex.Unlock()
+	mbox.notify(memNotifyEvent{kind: kind, mailbox: name})
 }
 
 type expungedMessage struct {
@@ -192,6 +219,7 @@ func (mbox *Mailbox) appendBytes(buf []byte, options *imap.AppendOptions) *imap.
 
 	mbox.l = append(mbox.l, msg)
 	mbox.tracker.QueueNumMessages(uint32(len(mbox.l)))
+	mbox.notifyEventLocked(evMessageNew)
 
 	return &imap.AppendData{
 		UIDValidity: mbox.uidValidity,
@@ -306,6 +334,9 @@ func (mbox *Mailbox) expungeLocked(expunged map[*message]struct{}) (seqNums []ui
 		}
 	}
 	mbox.l = mbox.l[:n]
+	if len(seqNums) > 0 {
+		mbox.notifyEventLocked(evMessageExpunge)
+	}
 	return seqNums
 }
 
@@ -384,6 +415,7 @@ func (mbox *MailboxView) Fetch(ctx context.Context, w *imapserver.FetchWriter, n
 	}
 
 	var err error
+	var flagsChanged bool
 	mbox.forEach(numSet, func(seqNum uint32, msg *message) {
 		if err != nil {
 			return
@@ -395,12 +427,16 @@ func (mbox *MailboxView) Fetch(ctx context.Context, w *imapserver.FetchWriter, n
 
 		if markSeen {
 			msg.flags[canonicalFlag(imap.FlagSeen)] = struct{}{}
+			flagsChanged = true
 			mbox.Mailbox.tracker.QueueMessageFlags(seqNum, msg.uid, msg.flagList(), 0, nil)
 		}
 
 		respWriter := w.CreateMessage(mbox.tracker.EncodeSeqNum(seqNum))
 		err = msg.fetch(respWriter, options)
 	})
+	if flagsChanged {
+		mbox.Mailbox.notifyEvent(evFlagChange)
+	}
 	return err
 }
 
@@ -669,12 +705,14 @@ func writeStoreFetchResponse(w *imapserver.FetchWriter, tracker *imapserver.Sess
 
 func (mbox *MailboxView) Store(ctx context.Context, w *imapserver.FetchWriter, numSet imap.NumSet, flags *imap.StoreFlags, options *imap.StoreOptions) error {
 	var modified []modifiedMessageData
+	var changedAny bool
 	mbox.forEach(numSet, func(seqNum uint32, msg *message) {
 		if options != nil && options.UnchangedSince > 0 && msg.modSeq > options.UnchangedSince {
 			return
 		}
 
 		if changed := msg.store(mbox.Mailbox, flags); changed {
+			changedAny = true
 			mbox.Mailbox.tracker.QueueMessageFlags(seqNum, msg.uid, msg.flagList(), msg.modSeq, mbox.tracker)
 
 			if !flags.Silent {
@@ -687,6 +725,9 @@ func (mbox *MailboxView) Store(ctx context.Context, w *imapserver.FetchWriter, n
 			}
 		}
 	})
+	if changedAny {
+		mbox.Mailbox.notifyEvent(evFlagChange)
+	}
 
 	if !flags.Silent {
 		for _, mod := range modified {
