@@ -86,6 +86,19 @@ type Conn struct {
 	// read-only (RFC 4314 §5.2). Only touched from the command-loop goroutine,
 	// like state.
 	selectedReadOnly bool
+
+	// NOTIFY (RFC 5465) pump state. notifyStop/notifyDone are non-nil while a
+	// SessionNotify.NotifyPoll goroutine is running for this connection.
+	notifyMutex sync.Mutex
+	notifyStop  chan struct{}
+	notifyDone  chan error
+
+	// activeCmd is the name of the command currently being processed by the
+	// command goroutine ("" between commands). The NOTIFY pump consults it to
+	// avoid delivering EXPUNGE/VANISHED updates while a command that forbids
+	// them (FETCH/STORE/SEARCH, RFC 3501 §5.5) is in progress.
+	cmdMutex  sync.Mutex
+	activeCmd string
 }
 
 func newConn(c net.Conn, server *Server) *Conn {
@@ -228,6 +241,10 @@ func (c *Conn) serve() {
 		}
 	}()
 
+	// Stop the NOTIFY pump (if any) before the session is closed: deferred
+	// calls run in LIFO order, so this executes first on teardown.
+	defer c.stopNotifyPump()
+
 	// Capabilities that depend on optional session interfaces (IMAP4rev2,
 	// NAMESPACE, MOVE, UNAUTHENTICATE, ...) are advertised by availableCaps only
 	// when the session implements them, and each command handler returns a clean
@@ -320,6 +337,12 @@ func (c *Conn) readCommand(dec *imapwire.Decoder) (err error) {
 		name = "UID " + strings.ToUpper(subName)
 	}
 
+	// Record the in-progress command so the NOTIFY pump can defer
+	// EXPUNGE/VANISHED updates while commands that forbid them run (see
+	// UpdateWriter.ExpungeAllowed).
+	c.setActiveCommand(name)
+	defer c.setActiveCommand("")
+
 	// TODO: handle multiple commands concurrently
 	sendOK := true
 	switch name {
@@ -375,6 +398,9 @@ func (c *Conn) readCommand(dec *imapwire.Decoder) (err error) {
 		err = c.handleMyRights(dec)
 	case "IDLE":
 		err = c.handleIdle(dec)
+	case "NOTIFY":
+		err = c.handleNotify(tag, dec)
+		sendOK = false
 	case "SELECT", "EXAMINE":
 		err = c.handleSelect(tag, dec, name == "EXAMINE")
 		sendOK = false
@@ -773,10 +799,104 @@ func writeObsoleteRecent(enc *imapwire.Encoder, n uint32) error {
 	return enc.Atom("*").SP().Number(n).SP().Atom("RECENT").CRLF()
 }
 
+func (c *Conn) setActiveCommand(name string) {
+	c.cmdMutex.Lock()
+	c.activeCmd = name
+	c.cmdMutex.Unlock()
+}
+
+// notifyExpungeAllowed reports whether an asynchronous EXPUNGE/VANISHED
+// update may be sent right now: RFC 3501 §5.5 forbids sending EXPUNGE while a
+// FETCH, STORE or SEARCH command is in progress (the UID variants are exempt).
+func (c *Conn) notifyExpungeAllowed() bool {
+	c.cmdMutex.Lock()
+	defer c.cmdMutex.Unlock()
+	switch c.activeCmd {
+	case "FETCH", "STORE", "SEARCH":
+		return false
+	default:
+		return true
+	}
+}
+
 // UpdateWriter writes status updates.
 type UpdateWriter struct {
 	conn         *Conn
 	allowExpunge bool
+
+	// notify is set for writers handed to SessionNotify: expunge delivery is
+	// additionally gated on the command currently in progress (see
+	// ExpungeAllowed).
+	notify bool
+}
+
+// ExpungeAllowed reports whether EXPUNGE/VANISHED updates may be written in
+// the current context.
+//
+// For writers passed to SessionNotify methods this is dynamic: it returns
+// false while a command that forbids unsolicited expunges (FETCH, STORE,
+// SEARCH) is in progress on the connection. Backends running a NOTIFY watch
+// should consult it once per delivery batch and withhold expunge updates
+// (e.g. by passing it as the allowExpunge argument of SessionTracker.Poll)
+// when it reports false; withheld updates are delivered at the next sync
+// point. The check is advisory: a command may start between the check and the
+// write, which is the same ordering ambiguity a single-threaded server has
+// when a command arrives while an update is being written.
+func (w *UpdateWriter) ExpungeAllowed() bool {
+	if !w.allowExpunge {
+		return false
+	}
+	if w.notify {
+		return w.conn.notifyExpungeAllowed()
+	}
+	return true
+}
+
+// CondStoreEnabled reports whether the client has become CONDSTORE-aware on
+// this connection. Backends use it to decide whether STATUS notifications may
+// carry HIGHESTMODSEQ (RFC 5465 §5.1, §5.2) and whether unsolicited FETCH
+// responses may carry MODSEQ.
+func (w *UpdateWriter) CondStoreEnabled() bool {
+	return w.conn.supportsCondStore() && w.conn.CondStoreEnabled()
+}
+
+// WriteStatus writes an untagged STATUS response. It is used by NOTIFY
+// (RFC 5465) to report message events in mailboxes other than the selected
+// one. data must populate every field requested in options.
+func (w *UpdateWriter) WriteStatus(data *imap.StatusData, options *imap.StatusOptions) error {
+	return w.conn.writeStatus(data, options)
+}
+
+// WriteList writes an untagged LIST response. It is used by NOTIFY
+// (RFC 5465) to report MailboxName and SubscriptionChange events: mailbox
+// creation, deletion (with the \NonExistent attribute), renames (with the
+// OLDNAME extended data item, when the client has enabled IMAP4rev2) and
+// subscription changes.
+func (w *UpdateWriter) WriteList(data *imap.ListData) error {
+	return w.conn.writeListData(data, nil, w.conn.enabledHas(imap.CapIMAP4rev2))
+}
+
+// WriteNotificationOverflow writes an untagged OK response with the
+// NOTIFICATIONOVERFLOW response code (RFC 5465 §5.8).
+//
+// A backend calls this from NotifyPoll when it is unable or unwilling to
+// keep delivering the requested notifications. Per the RFC the server then
+// behaves as if NOTIFY NONE had been received: the backend must clear its own
+// watch state and return nil from NotifyPoll after writing the overflow
+// response.
+func (w *UpdateWriter) WriteNotificationOverflow() error {
+	return w.conn.writeStatusResp("", &imap.StatusResponse{
+		Type: imap.StatusResponseTypeOK,
+		Code: imap.ResponseCodeNotificationOverflow,
+		Text: "Notifications disabled",
+	})
+}
+
+// FetchWriter returns a writer for unsolicited FETCH responses. It is used
+// by NOTIFY (RFC 5465 §5.2) to send the fetch attributes requested for
+// MessageNew events in the selected mailbox.
+func (w *UpdateWriter) FetchWriter() *FetchWriter {
+	return &FetchWriter{conn: w.conn}
 }
 
 // WriteOK writes an untagged OK response carrying only informational text

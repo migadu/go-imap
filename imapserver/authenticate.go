@@ -144,6 +144,9 @@ func (c *Conn) handleUnauthenticate(dec *imapwire.Decoder) error {
 	if err := session.Unauthenticate(c.ctx); err != nil {
 		return err
 	}
+	// NOTIFY state does not survive re-authentication: stop the pump. The
+	// backend is expected to drop its watch state in Unauthenticate.
+	c.stopNotifyPump()
 	c.state = imap.ConnStateNotAuthenticated
 	c.mutex.Lock()
 	c.enabled = make(imap.CapSet)

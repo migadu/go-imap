@@ -161,6 +161,52 @@ type SessionAdditionalCaps interface {
 	AdditionalCapabilities() []imap.Cap
 }
 
+// SessionNotify is an IMAP session which supports the NOTIFY extension
+// (RFC 5465).
+//
+// The connection advertises the NOTIFY capability only when the session
+// implements this interface (and the server is configured with
+// imap.CapNotify).
+type SessionNotify interface {
+	Session
+
+	// SetNotify installs, replaces or clears the connection's notification
+	// watch. It is invoked synchronously on the connection's command
+	// goroutine while no NotifyPoll call is running.
+	//
+	// options is nil for NOTIFY NONE, otherwise it describes the requested
+	// watch. The options have already been checked against the structural
+	// rules of RFC 5465 (event pairing, single SELECTED group, fetch-atts
+	// placement); the backend is responsible for rejecting events it does
+	// not support by returning *UnsupportedNotifyEventError, which the
+	// server translates into a tagged NO with the BADEVENT response code.
+	//
+	// If options.Status is set, the implementation must write the initial
+	// STATUS responses for matching non-selected mailboxes to w before
+	// returning, so that they precede NOTIFY's tagged OK (RFC 5465
+	// section 3.1).
+	//
+	// On error, the previously installed watch (if any) must be left in
+	// effect.
+	SetNotify(ctx context.Context, options *imap.NotifyOptions, w *UpdateWriter) error
+
+	// NotifyPoll delivers notifications for the watch installed by
+	// SetNotify, writing to w until stop is closed or ctx is cancelled. It
+	// runs on a dedicated goroutine, concurrently with command processing on
+	// the connection; individual responses are serialized with command
+	// output by the library.
+	//
+	// EXPUNGE/VANISHED updates for the selected mailbox must only be
+	// delivered while w.ExpungeAllowed() reports true (and, with
+	// SELECTED-DELAYED, only at the sync points of RFC 5465 section 6.1.2 —
+	// most backends simply leave delayed expunges queued for the regular
+	// per-command Poll).
+	//
+	// If no watch is currently installed (e.g. it was dropped after a
+	// notification overflow), NotifyPoll returns nil promptly.
+	NotifyPoll(ctx context.Context, w *UpdateWriter, stop <-chan struct{}) error
+}
+
 // SessionMetadata is an IMAP session which supports the METADATA extension (RFC 5464).
 type SessionMetadata interface {
 	Session
