@@ -391,14 +391,51 @@ func (c *Conn) startNotifyPump(session SessionNotify) {
 
 	w := &UpdateWriter{conn: c, allowExpunge: true, notify: true}
 	go func() {
+		var err error
 		defer func() {
 			if v := recover(); v != nil {
 				c.server.logger().Printf("panic in NOTIFY: %v\n%s", v, debug.Stack())
-				done <- fmt.Errorf("imapserver: panic in NOTIFY")
+				err = fmt.Errorf("imapserver: panic in NOTIFY")
+			}
+			done <- err
+
+			// A pump that ends because stop was closed is an intentional stop
+			// (NOTIFY NONE, watch replacement, teardown); stopNotifyPump owns the
+			// aftermath. A pump that ends any OTHER way — NotifyPoll returning a
+			// non-nil error, or a panic — is a broken watch on a live connection:
+			// the client still believes it is being notified, but nothing is
+			// delivered. That silent failure is exactly what NOTIFY exists to
+			// avoid, so tear the connection down. A clean nil return with stop
+			// still open (e.g. NOTIFICATIONOVERFLOW: the backend disabled the
+			// watch and returned) is deliberate and leaves the connection up.
+			select {
+			case <-stop:
+			default:
+				if err != nil {
+					c.abortFromBackground("NOTIFY pump", err)
+				}
 			}
 		}()
-		done <- session.NotifyPoll(c.ctx, w, stop)
+		err = session.NotifyPoll(c.ctx, w, stop)
 	}()
+}
+
+// abortFromBackground tears the connection down from a goroutine other than the
+// command loop (the NOTIFY pump). It cancels the context and closes the socket
+// directly rather than writing a BYE: the socket close unblocks the command
+// read loop without acquiring encMutex, so it works even if a wedged response
+// writer is still holding that mutex. serve()'s deferred teardown then runs
+// normally. Safe to call concurrently with serve exit — cancel and Close are
+// both idempotent.
+func (c *Conn) abortFromBackground(who string, err error) {
+	if err != nil && !isConnectionClosedError(err) {
+		c.server.logger().Printf("%s aborting connection (remote %v): %v", who, c.conn.RemoteAddr(), err)
+	}
+	c.cancel()
+	c.mutex.Lock()
+	conn := c.conn
+	c.mutex.Unlock()
+	conn.Close()
 }
 
 // stopNotifyPump stops the notify pump, if one is running, and waits for the
@@ -423,6 +460,13 @@ func (c *Conn) stopNotifyPump() {
 			c.server.logger().Printf("NOTIFY backend error: %v", err)
 		}
 	case <-timer.C:
-		c.server.logger().Printf("NOTIFY backend did not return within 30s after stop; goroutine leaked")
+		// The pump ignored stop (or is wedged in a slow write). We must not
+		// return and let the caller start a second pump against session state
+		// that assumes a single one. Force the socket closed: that unblocks a
+		// wedged write so the goroutine can exit, and cancels the context so a
+		// replacement pump (if the caller starts one) sees a dead connection
+		// and returns immediately.
+		c.server.logger().Printf("NOTIFY backend did not return within 30s after stop; forcing connection close")
+		c.abortFromBackground("NOTIFY stop timeout", nil)
 	}
 }

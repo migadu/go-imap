@@ -313,24 +313,40 @@ func (sess *UserSession) writeNotifyNewMessages(watch *notifyWatch, mailbox *Mai
 		msg    *message
 	}
 
+	sess.notifyMutex.Lock()
+	since := watch.lastUIDNext
+	sess.notifyMutex.Unlock()
+
 	mailbox.mutex.Lock()
 	var newMsgs []newMessage
+	nextSince := mailbox.uidNext // advance fully if every new message is announced
 	for i, msg := range mailbox.l {
-		if msg.uid >= watch.lastUIDNext {
-			newMsgs = append(newMsgs, newMessage{
-				seqNum: mailbox.tracker.EncodeSeqNum(uint32(i) + 1),
-				msg:    msg,
-			})
+		if msg.uid < since {
+			continue
 		}
+		// Only emit fetch-atts for messages the client has already been told
+		// about via EXISTS. If a message's EXISTS is still queued (e.g. behind
+		// a delayed expunge, or an expunge-unsafe command is in progress),
+		// EncodeSeqNum returns 0; emitting a FETCH now would produce a
+		// wire-invalid "* 0 FETCH". Stop here and retry from this UID on a
+		// later tick, after the EXISTS has been delivered (RFC 5465 §5.2
+		// requires EXISTS to precede the FETCH).
+		seqNum := mailbox.tracker.EncodeSeqNum(uint32(i) + 1)
+		if seqNum == 0 {
+			nextSince = msg.uid
+			break
+		}
+		newMsgs = append(newMsgs, newMessage{seqNum: seqNum, msg: msg})
 	}
-	uidNext := mailbox.uidNext
 	mailbox.mutex.Unlock()
 
-	// Advance the high-water mark before writing: a write failure tears the
-	// connection down anyway, and this avoids duplicate FETCHes if delivery
-	// partially fails.
+	// Advance the high-water mark past the announced messages only. A write
+	// failure tears the connection down anyway; advancing before the write
+	// avoids duplicate FETCHes if delivery partially fails.
 	sess.notifyMutex.Lock()
-	watch.lastUIDNext = uidNext
+	if nextSince > watch.lastUIDNext {
+		watch.lastUIDNext = nextSince
+	}
 	sess.notifyMutex.Unlock()
 
 	fetchWriter := w.FetchWriter()

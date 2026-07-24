@@ -663,9 +663,14 @@ func (c *Conn) poll(cmd string) error {
 		return nil
 	}
 
+	// EXPUNGE renumbers the sequence space, so it must not be delivered by the
+	// post-command poll of a command that referenced messages by sequence
+	// number (RFC 3501 §5.5): FETCH, STORE, SEARCH and their SORT/THREAD
+	// extensions. The UID variants ("UID FETCH", …) key on stable UIDs and are
+	// exempt, so matching the bare names is correct.
 	allowExpunge := true
 	switch cmd {
-	case "FETCH", "STORE", "SEARCH":
+	case "FETCH", "STORE", "SEARCH", "SORT", "THREAD":
 		allowExpunge = false
 	}
 
@@ -806,13 +811,17 @@ func (c *Conn) setActiveCommand(name string) {
 }
 
 // notifyExpungeAllowed reports whether an asynchronous EXPUNGE/VANISHED
-// update may be sent right now: RFC 3501 §5.5 forbids sending EXPUNGE while a
-// FETCH, STORE or SEARCH command is in progress (the UID variants are exempt).
+// update may be sent right now: RFC 3501 §5.5 / RFC 9051 §5.5 forbid sending
+// EXPUNGE while a command that references messages by sequence number is in
+// progress, because expunging renumbers the sequence space underneath it. That
+// is FETCH, STORE and SEARCH, plus their SORT and THREAD extensions (all of
+// which emit sequence-numbered responses); the UID variants are exempt as they
+// key on stable UIDs.
 func (c *Conn) notifyExpungeAllowed() bool {
 	c.cmdMutex.Lock()
 	defer c.cmdMutex.Unlock()
 	switch c.activeCmd {
-	case "FETCH", "STORE", "SEARCH":
+	case "FETCH", "STORE", "SEARCH", "SORT", "THREAD":
 		return false
 	default:
 		return true
@@ -870,10 +879,17 @@ func (w *UpdateWriter) WriteStatus(data *imap.StatusData, options *imap.StatusOp
 // WriteList writes an untagged LIST response. It is used by NOTIFY
 // (RFC 5465) to report MailboxName and SubscriptionChange events: mailbox
 // creation, deletion (with the \NonExistent attribute), renames (with the
-// OLDNAME extended data item, when the client has enabled IMAP4rev2) and
-// subscription changes.
+// OLDNAME extended data item) and subscription changes.
+//
+// For a NOTIFY writer, OLDNAME is emitted regardless of ENABLE IMAP4rev2:
+// RFC 5465 §5.4 requires the extended LIST (RFC 5258) carrying OLDNAME for
+// renames, and a client that issued NOTIFY has, by using the extension,
+// opted into these extended responses — so an IMAP4rev1 NOTIFY client must
+// still learn a mailbox's new name. Non-NOTIFY callers keep the IMAP4rev2
+// gate.
 func (w *UpdateWriter) WriteList(data *imap.ListData) error {
-	return w.conn.writeListData(data, nil, w.conn.enabledHas(imap.CapIMAP4rev2))
+	allowOldName := w.notify || w.conn.enabledHas(imap.CapIMAP4rev2)
+	return w.conn.writeListData(data, nil, allowOldName)
 }
 
 // WriteNotificationOverflow writes an untagged OK response with the

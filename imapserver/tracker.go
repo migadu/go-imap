@@ -144,17 +144,40 @@ type trackerUpdateFetch struct {
 type SessionTracker struct {
 	mailbox *MailboxTracker
 
+	// deliverMutex serializes Poll calls end-to-end (dequeue + network
+	// write), so a batch dequeued by one goroutine is fully written before
+	// another goroutine dequeues and writes the next. Without it, two
+	// concurrent flushers — e.g. the command loop and a NOTIFY pump — can
+	// dequeue batches under `mutex`, release it, and then interleave their
+	// writes, delivering EXPUNGE/EXISTS out of order and corrupting the
+	// client's sequence-number view. It is a separate lock from `mutex`
+	// (which only guards `queue`/`updates`) so queueUpdate never blocks on a
+	// slow network write.
+	deliverMutex sync.Mutex
+
 	mutex   sync.Mutex
 	queue   []trackerUpdate
 	updates chan<- struct{}
 }
 
 // Close unregisters the session.
+//
+// After Close, DecodeSeqNum/EncodeSeqNum return 0 rather than dereferencing the
+// released mailbox: a NOTIFY pump goroutine may still hold a reference to this
+// tracker and call them after a concurrent UNSELECT/SELECT closed it. The
+// t.mailbox field is cleared under t.mutex so those readers observe the change
+// race-free.
 func (t *SessionTracker) Close() {
-	t.mailbox.mutex.Lock()
-	delete(t.mailbox.sessions, t)
-	t.mailbox.mutex.Unlock()
+	t.mutex.Lock()
+	mailbox := t.mailbox
 	t.mailbox = nil
+	t.mutex.Unlock()
+
+	if mailbox != nil {
+		mailbox.mutex.Lock()
+		delete(mailbox.sessions, t)
+		mailbox.mutex.Unlock()
+	}
 }
 
 func (t *SessionTracker) queueUpdate(update *trackerUpdate) {
@@ -175,7 +198,14 @@ func (t *SessionTracker) queueUpdate(update *trackerUpdate) {
 }
 
 // Poll dequeues pending mailbox updates for this session.
+//
+// Poll is safe to call from multiple goroutines: calls are serialized so each
+// dequeued batch is written to the client atomically, preserving update
+// ordering (a NOTIFY pump and the command loop may both flush this tracker).
 func (t *SessionTracker) Poll(w *UpdateWriter, allowExpunge bool) error {
+	t.deliverMutex.Lock()
+	defer t.deliverMutex.Unlock()
+
 	var updates []trackerUpdate
 	t.mutex.Lock()
 	if allowExpunge {
@@ -299,6 +329,10 @@ func (t *SessionTracker) DecodeSeqNum(seqNum uint32) uint32 {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
 
+	if t.mailbox == nil {
+		return 0 // tracker closed (see Close)
+	}
+
 	for _, update := range t.queue {
 		if update.expunge == 0 {
 			continue
@@ -328,6 +362,10 @@ func (t *SessionTracker) EncodeSeqNum(seqNum uint32) uint32 {
 
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
+
+	if t.mailbox == nil {
+		return 0 // tracker closed (see Close)
+	}
 
 	if seqNum > t.mailbox.numMessages {
 		return 0

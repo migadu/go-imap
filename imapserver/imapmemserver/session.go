@@ -166,6 +166,23 @@ func (sess *UserSession) Poll(ctx context.Context, w *imapserver.UpdateWriter, a
 }
 
 func (sess *UserSession) Idle(ctx context.Context, w *imapserver.UpdateWriter, stop <-chan struct{}) error {
+	sess.notifyMutex.Lock()
+	watchActive := sess.notifyWatch != nil
+	sess.notifyMutex.Unlock()
+	if watchActive {
+		// A NOTIFY watch is the single event source for this connection: the
+		// pump delivers according to the client's NOTIFY filter. IDLE then
+		// only keeps the connection open. Delivering via tracker.Idle here
+		// would bypass the filter — e.g. a watch without a SELECTED specifier
+		// (RFC 5465 §3.1: "same as specifying SELECTED NONE") must not push
+		// selected-mailbox message events.
+		select {
+		case <-stop:
+		case <-ctx.Done():
+		}
+		return nil
+	}
+
 	if sess.mailbox == nil {
 		return nil // TODO
 	}

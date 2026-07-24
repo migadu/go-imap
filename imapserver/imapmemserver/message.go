@@ -28,7 +28,19 @@ type message struct {
 	modSeq uint64
 }
 
-func (msg *message) fetch(w *imapserver.FetchResponseWriter, options *imap.FetchOptions) error {
+func (msg *message) fetch(w *imapserver.FetchResponseWriter, options *imap.FetchOptions) (err error) {
+	// Close the response writer exactly once, even on an early error return.
+	// CreateMessage holds the connection's encMutex until Close, so a fetch
+	// that errored midway without closing would leak the mutex and wedge the
+	// connection. That is tolerable on the command path (the connection is
+	// torn down on error) but fatal on the NOTIFY pump path, where the
+	// connection stays alive.
+	defer func() {
+		if closeErr := w.Close(); err == nil {
+			err = closeErr
+		}
+	}()
+
 	w.WriteUID(msg.uid)
 
 	if options.Flags {
@@ -81,7 +93,8 @@ func (msg *message) fetch(w *imapserver.FetchResponseWriter, options *imap.Fetch
 		w.WriteBinarySectionSize(bss, n)
 	}
 
-	return w.Close()
+	// The deferred Close (see top) releases the encoder and returns its error.
+	return nil
 }
 
 func (msg *message) envelope() *imap.Envelope {

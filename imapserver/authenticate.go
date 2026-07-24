@@ -141,12 +141,16 @@ func (c *Conn) handleUnauthenticate(dec *imapwire.Decoder) error {
 	if !ok {
 		return newClientBugError("UNAUTHENTICATE is not supported")
 	}
+	// Stop the NOTIFY pump BEFORE tearing down the backend's session state:
+	// SessionNotify guarantees no NotifyPoll call is in flight when the watch
+	// is torn down, and Unauthenticate drops that state. Stopping first also
+	// means the pump can no longer write to a connection that is about to
+	// re-enter the not-authenticated state.
+	c.stopNotifyPump()
+
 	if err := session.Unauthenticate(c.ctx); err != nil {
 		return err
 	}
-	// NOTIFY state does not survive re-authentication: stop the pump. The
-	// backend is expected to drop its watch state in Unauthenticate.
-	c.stopNotifyPump()
 	c.state = imap.ConnStateNotAuthenticated
 	c.mutex.Lock()
 	c.enabled = make(imap.CapSet)
