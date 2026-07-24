@@ -11,6 +11,19 @@ import (
 	"github.com/emersion/go-imap/v2/internal/imapwire"
 )
 
+const (
+	// maxNotifyEventGroups bounds the number of event-groups in one NOTIFY SET
+	// command. RFC 5465 §3.1 advises clients to limit the mailboxes they watch;
+	// the server enforces a ceiling so a single command cannot hand the backend
+	// an arbitrarily large watch list (bounded otherwise only by the 50 KiB
+	// command-size cap).
+	maxNotifyEventGroups = 64
+
+	// maxNotifyMailboxesPerGroup bounds the mailbox names in one event-group's
+	// mailbox list. With maxNotifyEventGroups this bounds the total watch size.
+	maxNotifyMailboxesPerGroup = 256
+)
+
 // UnsupportedNotifyEventError is returned by SessionNotify.SetNotify when the
 // client requested an event the backend does not support. The server then
 // replies with a tagged NO carrying the BADEVENT response code, which lists
@@ -62,6 +75,13 @@ func (c *Conn) handleNotify(tag string, dec *imapwire.Decoder) error {
 		options = &imap.NotifyOptions{}
 		for dec.SP() {
 			if dec.Special('(') {
+				if len(options.Items) >= maxNotifyEventGroups {
+					return &imap.Error{
+						Type: imap.StatusResponseTypeNo,
+						Code: imap.ResponseCodeNotificationOverflow,
+						Text: "Too many NOTIFY event groups",
+					}
+				}
 				item, err := c.readNotifyEventGroup(dec)
 				if err != nil {
 					return err
@@ -184,6 +204,9 @@ func (c *Conn) readNotifyEventGroup(dec *imapwire.Decoder) (*imap.NotifyItem, er
 		}
 		// one-or-more-mailbox = mailbox / "(" mailbox *(SP mailbox) ")"
 		isList, err := dec.List(func() error {
+			if len(item.Mailboxes) >= maxNotifyMailboxesPerGroup {
+				return newClientBugError("NOTIFY: too many mailboxes in one event group")
+			}
 			var name string
 			if !dec.ExpectMailbox(&name) {
 				return dec.Err()
