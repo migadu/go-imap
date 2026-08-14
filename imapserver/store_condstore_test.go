@@ -230,56 +230,68 @@ func TestStoreUnchangedSincePresence(t *testing.T) {
 		caps    imap.CapSet
 		cmd     string
 		want    imap.StoreOptions
+		wantBAD bool // the modifier is rejected and the backend never reached
 		wantCS  bool // CONDSTORE became enabled on the connection
-		checkCS bool
 	}{
 		{
-			name:    "modifier absent",
-			caps:    condStoreCaps,
-			cmd:     `UID STORE 1 +FLAGS (\Seen)`,
-			want:    imap.StoreOptions{UnchangedSince: 0, UnchangedSinceSet: false, UIDStore: true},
-			wantCS:  false,
-			checkCS: true,
+			name:   "modifier absent",
+			caps:   condStoreCaps,
+			cmd:    `UID STORE 1 +FLAGS (\Seen)`,
+			want:   imap.StoreOptions{UnchangedSince: 0, UnchangedSinceSet: false, UIDStore: true},
+			wantCS: false,
 		},
 		{
-			name:    "explicit zero",
-			caps:    condStoreCaps,
+			name:   "explicit zero",
+			caps:   condStoreCaps,
+			cmd:    `UID STORE 1 (UNCHANGEDSINCE 0) +FLAGS (\Seen)`,
+			want:   imap.StoreOptions{UnchangedSince: 0, UnchangedSinceSet: true, UIDStore: true},
+			wantCS: true,
+		},
+		{
+			name:   "explicit non-zero",
+			caps:   condStoreCaps,
+			cmd:    `UID STORE 1 (UNCHANGEDSINCE 5) +FLAGS (\Seen)`,
+			want:   imap.StoreOptions{UnchangedSince: 5, UnchangedSinceSet: true, UIDStore: true},
+			wantCS: true,
+		},
+		{
+			// Without CONDSTORE the modifier must be rejected with a tagged BAD
+			// (RFC 4466 §2.5). Silently ignoring it would invert the request:
+			// the always-fail probe "UNCHANGEDSINCE 0" would store
+			// unconditionally.
+			name:    "capability absent rejects zero probe",
+			caps:    imap.CapSet{imap.CapIMAP4rev1: {}},
 			cmd:     `UID STORE 1 (UNCHANGEDSINCE 0) +FLAGS (\Seen)`,
-			want:    imap.StoreOptions{UnchangedSince: 0, UnchangedSinceSet: true, UIDStore: true},
-			wantCS:  true,
-			checkCS: true,
+			wantBAD: true,
 		},
 		{
-			name:    "explicit non-zero",
-			caps:    condStoreCaps,
+			name:    "capability absent rejects non-zero value",
+			caps:    imap.CapSet{imap.CapIMAP4rev1: {}},
 			cmd:     `UID STORE 1 (UNCHANGEDSINCE 5) +FLAGS (\Seen)`,
-			want:    imap.StoreOptions{UnchangedSince: 5, UnchangedSinceSet: true, UIDStore: true},
-			wantCS:  true,
-			checkCS: true,
-		},
-		{
-			// Without CONDSTORE the modifier is ignored, which must clear both
-			// the value and its presence flag: leaving presence set would turn
-			// the command into an always-fail store.
-			name: "capability absent clears presence",
-			caps: imap.CapSet{imap.CapIMAP4rev1: {}},
-			cmd:  `UID STORE 1 (UNCHANGEDSINCE 0) +FLAGS (\Seen)`,
-			want: imap.StoreOptions{UnchangedSince: 0, UnchangedSinceSet: false, UIDStore: true},
-		},
-		{
-			name: "capability absent clears non-zero value",
-			caps: imap.CapSet{imap.CapIMAP4rev1: {}},
-			cmd:  `UID STORE 1 (UNCHANGEDSINCE 5) +FLAGS (\Seen)`,
-			want: imap.StoreOptions{UnchangedSince: 0, UnchangedSinceSet: false, UIDStore: true},
+			wantBAD: true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			c := newStoreTestConn(t, tt.caps, 1)
-			c.do("store", tt.cmd)
+			resp := c.do("store", tt.cmd)
 
 			got := c.session.storeOptions()
+			if tt.wantBAD {
+				if !strings.Contains(resp, "store BAD") {
+					t.Errorf("STORE = %q, want a tagged BAD", resp)
+				}
+				if got != nil {
+					t.Errorf("backend Store was reached with %+v, want it not to run", *got)
+				}
+				// The rejected store must not have touched the message.
+				if resp := c.do("fetch", "FETCH 1 (FLAGS)"); containsFlag(resp, imap.FlagSeen) {
+					t.Errorf("FETCH after rejected STORE = %q, want no \\Seen", resp)
+				}
+				return
+			}
+
 			if got == nil {
 				t.Fatal("backend Store was not reached")
 			}
@@ -289,10 +301,8 @@ func TestStoreUnchangedSincePresence(t *testing.T) {
 
 			// STORE ... (UNCHANGEDSINCE n) is a CONDSTORE-enabling command
 			// (RFC 7162 §3.1) for every n, including 0.
-			if tt.checkCS {
-				if gotCS := c.srvConn.CondStoreEnabled(); gotCS != tt.wantCS {
-					t.Errorf("CondStoreEnabled() = %v, want %v", gotCS, tt.wantCS)
-				}
+			if gotCS := c.srvConn.CondStoreEnabled(); gotCS != tt.wantCS {
+				t.Errorf("CondStoreEnabled() = %v, want %v", gotCS, tt.wantCS)
 			}
 		})
 	}
@@ -454,4 +464,69 @@ func TestStoreModifiedFlushesPendingUpdates(t *testing.T) {
 	if !containsFlag(resp, imap.FlagSeen) {
 		t.Errorf("conditional STORE = %q, want the pending unsolicited FETCH (\\Seen) flushed before the tagged line", resp)
 	}
+}
+
+// TestStoreUnseenMessageNoZeroFetch verifies that a UID STORE touching a
+// message this session has not yet been told about (its EXISTS is still queued)
+// does not emit a grammar-invalid "* 0 FETCH" response: such a message has no
+// client-side sequence number, so its FETCH response is suppressed.
+func TestStoreUnseenMessageNoZeroFetch(t *testing.T) {
+	caps := imap.CapSet{imap.CapIMAP4rev1: {}, imap.CapCondStore: {}}
+	c := newStoreTestConn(t, caps, 1)
+	p := c.dialPeer()
+
+	// The peer appends message 2; c's session has not polled, so it only
+	// knows 1 message.
+	p.appendMessage("pappend")
+
+	resp := c.do("store", `UID STORE 2 +FLAGS (\Seen)`)
+	if strings.Contains(resp, "* 0 FETCH") {
+		t.Errorf("UID STORE = %q, want no \"* 0 FETCH\" (invalid nz-number)", resp)
+	}
+	if !strings.Contains(resp, "store OK") {
+		t.Errorf("UID STORE = %q, want a tagged OK", resp)
+	}
+}
+
+// TestStoreSilentConditionalReportsModSeq verifies that a conditional STORE
+// with .SILENT still sends an untagged FETCH carrying the new MODSEQ for every
+// message it changed — required by RFC 7162 §3.1.3 even with the .SILENT
+// suffix — while suppressing the FLAGS item the client asked not to receive.
+// A plain (unconditional) .SILENT store stays fully silent.
+func TestStoreSilentConditionalReportsModSeq(t *testing.T) {
+	caps := imap.CapSet{imap.CapIMAP4rev1: {}, imap.CapCondStore: {}}
+
+	t.Run("conditional", func(t *testing.T) {
+		c := newStoreTestConn(t, caps, 2)
+
+		// Both messages pass the precondition (appends left them at modseq
+		// 2,3), so both are stored and both must be reported with MODSEQ.
+		resp := c.do("store", `UID STORE 1:2 (UNCHANGEDSINCE 100) +FLAGS.SILENT (\Seen)`)
+		if !strings.Contains(resp, "store OK") || strings.Contains(resp, "MODIFIED") {
+			t.Fatalf("conditional silent STORE = %q, want a plain tagged OK", resp)
+		}
+		for _, want := range []string{"* 1 FETCH", "* 2 FETCH"} {
+			if !strings.Contains(resp, want) {
+				t.Errorf("conditional silent STORE = %q, want %q with MODSEQ", resp, want)
+			}
+		}
+		if !strings.Contains(resp, "MODSEQ") {
+			t.Errorf("conditional silent STORE = %q, want MODSEQ data items", resp)
+		}
+		if containsFlag(resp, imap.FlagSeen) {
+			t.Errorf("conditional silent STORE = %q, want no FLAGS item (.SILENT)", resp)
+		}
+	})
+
+	t.Run("unconditional stays silent", func(t *testing.T) {
+		c := newStoreTestConn(t, caps, 2)
+
+		resp := c.do("store", `UID STORE 1:2 +FLAGS.SILENT (\Seen)`)
+		if !strings.Contains(resp, "store OK") {
+			t.Fatalf("silent STORE = %q, want a tagged OK", resp)
+		}
+		if strings.Contains(resp, "FETCH") {
+			t.Errorf("silent STORE = %q, want no untagged FETCH responses", resp)
+		}
+	})
 }
