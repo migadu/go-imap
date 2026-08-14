@@ -82,6 +82,11 @@ const (
 // An empty or nil numSet yields the empty ResponseCode rather than a bare
 // "[MODIFIED]", which the grammar does not allow: a conditional STORE in which
 // every message satisfied the precondition must not report MODIFIED at all.
+//
+// The returned value carries its argument, so it never compares equal to
+// ResponseCodeModified; on the client side, imapclient parses the bare code
+// atom into Error.Code and exposes the set via FetchCommand.Modified. Match
+// with strings.HasPrefix (or use Modified) rather than equality.
 func ModifiedResponseCode(numSet NumSet) ResponseCode {
 	if numSet == nil {
 		return ""
