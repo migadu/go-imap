@@ -18,7 +18,7 @@ func (c *Conn) handleStore(dec *imapwire.Decoder, numKind NumKind) error {
 		return dec.Err()
 	}
 
-	options := imap.StoreOptions{}
+	options := imap.StoreOptions{UIDStore: numKind == NumKindUID}
 	if dec.Special('(') {
 		var param string
 		if !dec.ExpectAtom(&param) {

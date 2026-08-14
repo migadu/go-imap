@@ -58,8 +58,37 @@ type storeTestConn struct {
 	t       *testing.T
 	conn    net.Conn
 	br      *bufio.Reader
+	addr    string
 	session *storeOptionsSession
 	srvConn *imapserver.Conn
+}
+
+// dialPeer opens a second connection to the same server, logs in as the same
+// user and selects INBOX, so a test can exercise cross-session update
+// delivery.
+func (c *storeTestConn) dialPeer() *storeTestConn {
+	c.t.Helper()
+
+	conn, err := net.Dial("tcp", c.addr)
+	if err != nil {
+		c.t.Fatalf("Dial peer: %v", err)
+	}
+	c.t.Cleanup(func() { conn.Close() })
+	if err := conn.SetDeadline(time.Now().Add(10 * time.Second)); err != nil {
+		c.t.Fatalf("SetDeadline: %v", err)
+	}
+
+	p := &storeTestConn{t: c.t, conn: conn, br: bufio.NewReader(conn), addr: c.addr}
+	if _, err := p.br.ReadString('\n'); err != nil { // greeting
+		c.t.Fatalf("read peer greeting: %v", err)
+	}
+	if resp := p.do("plogin", "LOGIN user pass"); !strings.Contains(resp, "plogin OK") {
+		c.t.Fatalf("peer LOGIN failed: %q", resp)
+	}
+	if resp := p.do("pselect", "SELECT INBOX"); !strings.Contains(resp, "pselect OK") {
+		c.t.Fatalf("peer SELECT failed: %q", resp)
+	}
+	return p
 }
 
 func (c *storeTestConn) send(s string) {
@@ -163,7 +192,7 @@ func newStoreTestConn(t *testing.T, caps imap.CapSet, numMessages int) *storeTes
 		t.Fatalf("SetDeadline: %v", err)
 	}
 
-	c := &storeTestConn{t: t, conn: conn, br: bufio.NewReader(conn)}
+	c := &storeTestConn{t: t, conn: conn, br: bufio.NewReader(conn), addr: ln.Addr().String()}
 	if _, err := c.br.ReadString('\n'); err != nil { // greeting
 		t.Fatalf("read greeting: %v", err)
 	}
@@ -208,7 +237,7 @@ func TestStoreUnchangedSincePresence(t *testing.T) {
 			name:    "modifier absent",
 			caps:    condStoreCaps,
 			cmd:     `UID STORE 1 +FLAGS (\Seen)`,
-			want:    imap.StoreOptions{UnchangedSince: 0, UnchangedSinceSet: false},
+			want:    imap.StoreOptions{UnchangedSince: 0, UnchangedSinceSet: false, UIDStore: true},
 			wantCS:  false,
 			checkCS: true,
 		},
@@ -216,7 +245,7 @@ func TestStoreUnchangedSincePresence(t *testing.T) {
 			name:    "explicit zero",
 			caps:    condStoreCaps,
 			cmd:     `UID STORE 1 (UNCHANGEDSINCE 0) +FLAGS (\Seen)`,
-			want:    imap.StoreOptions{UnchangedSince: 0, UnchangedSinceSet: true},
+			want:    imap.StoreOptions{UnchangedSince: 0, UnchangedSinceSet: true, UIDStore: true},
 			wantCS:  true,
 			checkCS: true,
 		},
@@ -224,7 +253,7 @@ func TestStoreUnchangedSincePresence(t *testing.T) {
 			name:    "explicit non-zero",
 			caps:    condStoreCaps,
 			cmd:     `UID STORE 1 (UNCHANGEDSINCE 5) +FLAGS (\Seen)`,
-			want:    imap.StoreOptions{UnchangedSince: 5, UnchangedSinceSet: true},
+			want:    imap.StoreOptions{UnchangedSince: 5, UnchangedSinceSet: true, UIDStore: true},
 			wantCS:  true,
 			checkCS: true,
 		},
@@ -235,13 +264,13 @@ func TestStoreUnchangedSincePresence(t *testing.T) {
 			name: "capability absent clears presence",
 			caps: imap.CapSet{imap.CapIMAP4rev1: {}},
 			cmd:  `UID STORE 1 (UNCHANGEDSINCE 0) +FLAGS (\Seen)`,
-			want: imap.StoreOptions{UnchangedSince: 0, UnchangedSinceSet: false},
+			want: imap.StoreOptions{UnchangedSince: 0, UnchangedSinceSet: false, UIDStore: true},
 		},
 		{
 			name: "capability absent clears non-zero value",
 			caps: imap.CapSet{imap.CapIMAP4rev1: {}},
 			cmd:  `UID STORE 1 (UNCHANGEDSINCE 5) +FLAGS (\Seen)`,
-			want: imap.StoreOptions{UnchangedSince: 0, UnchangedSinceSet: false},
+			want: imap.StoreOptions{UnchangedSince: 0, UnchangedSinceSet: false, UIDStore: true},
 		},
 	}
 
@@ -355,4 +384,74 @@ func TestStoreUnchangedSinceZeroFailsAll(t *testing.T) {
 			t.Errorf("partially failing STORE = %q, want untagged FETCH responses for the stored messages", resp)
 		}
 	})
+}
+
+// TestStoreSearchResModifiedNumberSpace pins the number space of the MODIFIED
+// response code when the command's message set is the SEARCHRES marker "$"
+// (RFC 5182). The marker always decodes as a UIDSet, so only
+// StoreOptions.UIDStore can tell STORE from UID STORE: MODIFIED must use
+// sequence numbers for the former and UIDs for the latter (RFC 7162 §3.1.3).
+func TestStoreSearchResModifiedNumberSpace(t *testing.T) {
+	caps := imap.CapSet{
+		imap.CapIMAP4rev1: {},
+		imap.CapCondStore: {},
+		imap.CapESearch:   {},
+		imap.CapSearchRes: {},
+	}
+	c := newStoreTestConn(t, caps, 3)
+
+	// Skew UIDs against sequence numbers: expunge message 1 so that UIDs 2,3
+	// sit at sequence numbers 1,2.
+	if resp := c.do("del", `STORE 1 +FLAGS.SILENT (\Deleted)`); !strings.Contains(resp, "del OK") {
+		t.Fatalf("STORE \\Deleted failed: %q", resp)
+	}
+	if resp := c.do("exp", "EXPUNGE"); !strings.Contains(resp, "exp OK") {
+		t.Fatalf("EXPUNGE failed: %q", resp)
+	}
+
+	if resp := c.do("search", "SEARCH RETURN (SAVE) ALL"); !strings.Contains(resp, "search OK") {
+		t.Fatalf("SEARCH RETURN (SAVE) failed: %q", resp)
+	}
+
+	// Non-UID STORE: MODIFIED must name sequence numbers 1:2, not UIDs 2:3.
+	resp := c.do("store", `STORE $ (UNCHANGEDSINCE 0) +FLAGS (\Answered)`)
+	if !strings.Contains(resp, "store OK [MODIFIED 1:2]") {
+		t.Errorf("STORE $ = %q, want a tagged OK carrying [MODIFIED 1:2] (sequence numbers)", resp)
+	}
+
+	// UID STORE: MODIFIED must name UIDs 2:3.
+	resp = c.do("ustore", `UID STORE $ (UNCHANGEDSINCE 0) +FLAGS (\Answered)`)
+	if !strings.Contains(resp, "ustore OK [MODIFIED 2:3]") {
+		t.Errorf("UID STORE $ = %q, want a tagged OK carrying [MODIFIED 2:3] (UIDs)", resp)
+	}
+}
+
+// TestStoreModifiedFlushesPendingUpdates verifies that a conditional STORE
+// completing with OK [MODIFIED] still flushes pending mailbox updates before
+// the tagged line, like every successful command does. The pending unsolicited
+// FETCH is typically the very flag change that made the STORE fail its
+// UNCHANGEDSINCE precondition, so withholding it would leave the client's
+// cached modseq stale.
+func TestStoreModifiedFlushesPendingUpdates(t *testing.T) {
+	caps := imap.CapSet{imap.CapIMAP4rev1: {}, imap.CapCondStore: {}}
+	c := newStoreTestConn(t, caps, 1)
+	p := c.dialPeer()
+
+	// The peer's store bumps the message's modseq and queues an unsolicited
+	// FETCH update for c's session. By the time the peer's tagged OK arrives,
+	// the update is in c's tracker queue.
+	if resp := p.do("pstore", `STORE 1 +FLAGS (\Seen)`); !strings.Contains(resp, "pstore OK") {
+		t.Fatalf("peer STORE failed: %q", resp)
+	}
+
+	// The message's modseq is now above 2 (appends left it at 2), so this
+	// conditional store fails — and its response must carry the pending FETCH
+	// before the tagged [MODIFIED] line.
+	resp := c.do("store", `STORE 1 (UNCHANGEDSINCE 2) +FLAGS (\Flagged)`)
+	if !strings.Contains(resp, "store OK [MODIFIED 1]") {
+		t.Fatalf("conditional STORE = %q, want a tagged OK carrying [MODIFIED 1]", resp)
+	}
+	if !containsFlag(resp, imap.FlagSeen) {
+		t.Errorf("conditional STORE = %q, want the pending unsolicited FETCH (\\Seen) flushed before the tagged line", resp)
+	}
 }

@@ -671,15 +671,40 @@ func (mbox *MailboxView) Store(ctx context.Context, w *imapserver.FetchWriter, n
 	// RFC 7162 §3.1.3.1: an absent UNCHANGEDSINCE modifier means an
 	// unconditional store, while an explicit "UNCHANGEDSINCE 0" is the
 	// always-fail probe, which must fail for every message that carries a
-	// modification sequence. Presence is what separates the two, so a non-zero
-	// value is not enough on its own; it still implies presence, for callers
-	// written before StoreOptions.UnchangedSinceSet existed.
-	conditional := options != nil && (options.UnchangedSinceSet || options.UnchangedSince > 0)
+	// modification sequence. Conditional folds presence and value into the one
+	// correct check.
+	conditional := options.Conditional()
 
-	var modified, failed []modifiedMessageData
+	// The MODIFIED response code (RFC 7162 §3.1.3) is expressed in the number
+	// space of the command: UIDs for UID STORE, sequence numbers for STORE.
+	// The Go type of numSet decides — except for the SEARCHRES marker "$",
+	// which decodes as a UIDSet regardless of the command's number space, so
+	// there only StoreOptions.UIDStore can tell the two commands apart.
+	uidSpace := false
+	if _, isUID := numSet.(imap.UIDSet); isUID {
+		uidSpace = !imap.IsSearchRes(numSet) || (options != nil && options.UIDStore)
+	}
+
+	var (
+		modified   []modifiedMessageData
+		failedUIDs imap.UIDSet
+		failedSeqs imap.SeqSet
+	)
 	mbox.forEach(numSet, func(seqNum uint32, msg *message) {
 		if conditional && msg.modSeq > options.UnchangedSince {
-			failed = append(failed, modifiedMessageData{seqNum: seqNum, uid: msg.uid})
+			// Build the MODIFIED set here, inside the callback: forEach holds
+			// mbox.mutex, so the session tracker cannot pick up a concurrent
+			// expunge between selecting the failed message and encoding its
+			// sequence number — encoding later would let the two disagree.
+			if uidSpace {
+				failedUIDs.AddNum(msg.uid)
+			} else if encSeqNum := mbox.tracker.EncodeSeqNum(seqNum); encSeqNum != 0 {
+				// Report sequence numbers as this session sees them. A message
+				// the session has not been told about yet has no client-side
+				// sequence number (EncodeSeqNum returns 0), and 0 would encode
+				// as "*", so such a message is left out instead.
+				failedSeqs.AddNum(encSeqNum)
+			}
 			return
 		}
 
@@ -708,7 +733,11 @@ func (mbox *MailboxView) Store(ctx context.Context, w *imapserver.FetchWriter, n
 	// The untagged FETCH responses above cover the messages that were stored;
 	// the ones that failed the precondition are reported on the tagged
 	// completion line, whether or not .SILENT was used (RFC 7162 §3.1.3).
-	if code := imap.ModifiedResponseCode(mbox.modifiedNumSet(numSet, failed)); code != "" {
+	var failed imap.NumSet = failedSeqs
+	if uidSpace {
+		failed = failedUIDs
+	}
+	if code := imap.ModifiedResponseCode(failed); code != "" {
 		return &imap.Error{
 			Type: imap.StatusResponseTypeOK,
 			Code: code,
@@ -717,32 +746,6 @@ func (mbox *MailboxView) Store(ctx context.Context, w *imapserver.FetchWriter, n
 	}
 
 	return nil
-}
-
-// modifiedNumSet builds the message set for a MODIFIED response code
-// (RFC 7162 §3.1.3) out of the messages that failed a conditional STORE. The
-// set is expressed in the number space of the command that produced it: UIDs
-// for UID STORE, sequence numbers for STORE.
-func (mbox *MailboxView) modifiedNumSet(cmdNumSet imap.NumSet, failed []modifiedMessageData) imap.NumSet {
-	if _, isUID := cmdNumSet.(imap.UIDSet); isUID {
-		var uids imap.UIDSet
-		for _, msg := range failed {
-			uids.AddNum(msg.uid)
-		}
-		return uids
-	}
-
-	var seqNums imap.SeqSet
-	for _, msg := range failed {
-		// Report sequence numbers as this session sees them. A message the
-		// session has not been told about yet has no client-side sequence
-		// number (EncodeSeqNum returns 0), and 0 would encode as "*", so such a
-		// message is left out instead.
-		if seqNum := mbox.tracker.EncodeSeqNum(msg.seqNum); seqNum != 0 {
-			seqNums.AddNum(seqNum)
-		}
-	}
-	return seqNums
 }
 
 func (mbox *MailboxView) Poll(ctx context.Context, w *imapserver.UpdateWriter, allowExpunge bool) error {
