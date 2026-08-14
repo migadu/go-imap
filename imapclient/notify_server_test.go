@@ -169,9 +169,38 @@ func TestNotifyIntegration_StatusOnExternalAppend(t *testing.T) {
 		// expected: nothing
 	}
 
-	// The queued EXISTS is flushed by the next command (implicit NOOP sync).
+	// Not even at a command sync point: without a SELECTED specifier the client
+	// asked for no message events at all for the selected mailbox, which RFC
+	// 5465 section 3.1 defines as "the same as specifying SELECTED NONE". The
+	// update stays queued.
 	if err := client.Noop().Wait(); err != nil {
 		t.Fatalf("Noop() = %v", err)
+	}
+	select {
+	case n := <-existsCh:
+		t.Fatalf("unexpected EXISTS %v at a sync point without a SELECTED specifier", n)
+	case <-time.After(300 * time.Millisecond):
+		// expected: nothing
+	}
+
+	// Enabling message events for the selected mailbox flushes the accumulated
+	// changes: a successful NOTIFY SET implies a NOOP (RFC 5465 section 3.1).
+	cmd, err = client.Notify(&imap.NotifyOptions{
+		Items: []imap.NotifyItem{
+			{
+				MailboxSpec: imap.NotifyMailboxSpecSelected,
+				Events: []imap.NotifyEvent{
+					imap.NotifyEventMessageNew,
+					imap.NotifyEventMessageExpunge,
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Notify() = %v", err)
+	}
+	if err := cmd.Wait(); err != nil {
+		t.Fatalf("Notify().Wait() = %v", err)
 	}
 	select {
 	case n := <-existsCh:
@@ -179,7 +208,7 @@ func TestNotifyIntegration_StatusOnExternalAppend(t *testing.T) {
 			t.Errorf("EXISTS = %v, want 1", n)
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("timeout waiting for EXISTS after NOOP")
+		t.Fatal("timeout waiting for EXISTS after NOTIFY SET (SELECTED ...)")
 	}
 }
 

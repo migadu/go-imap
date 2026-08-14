@@ -65,6 +65,30 @@ func (sess *UserSession) Close() error {
 	return nil
 }
 
+// Create, Delete, Rename, Subscribe and Unsubscribe shadow the methods
+// promoted from the embedded User to pass the originating session along: RFC
+// 5465 section 5 asks the server not to notify the client that caused an event.
+
+func (sess *UserSession) Create(ctx context.Context, name string, options *imap.CreateOptions) error {
+	return sess.user.create(name, sess)
+}
+
+func (sess *UserSession) Delete(ctx context.Context, name string) error {
+	return sess.user.delete(name, sess)
+}
+
+func (sess *UserSession) Rename(ctx context.Context, w *imapserver.RenameWriter, oldName, newName string, options *imap.RenameOptions) error {
+	return sess.user.rename(w, oldName, newName, sess)
+}
+
+func (sess *UserSession) Subscribe(ctx context.Context, name string) error {
+	return sess.user.setSubscribed(name, true, sess)
+}
+
+func (sess *UserSession) Unsubscribe(ctx context.Context, name string) error {
+	return sess.user.setSubscribed(name, false, sess)
+}
+
 func (sess *UserSession) Select(ctx context.Context, name string, options *imap.SelectOptions) (*imap.SelectData, error) {
 	mbox, err := sess.user.mailbox(name)
 	if err != nil {
@@ -359,6 +383,34 @@ func (sess *UserSession) GetMetadata(ctx context.Context, mailboxName string, en
 }
 
 func (sess *UserSession) SetMetadata(ctx context.Context, mailboxName string, entries map[string]*[]byte) error {
+	if err := sess.setMetadata(mailboxName, entries); err != nil {
+		return err
+	}
+	if len(entries) == 0 {
+		return nil
+	}
+
+	// RFC 5465 sections 5.6 and 5.7: report the change to NOTIFY watchers with
+	// an unsolicited METADATA response. Deleted entries (nil values) are part
+	// of the change and must be reported too.
+	changed := make(map[string]*[]byte, len(entries))
+	for name, value := range entries {
+		changed[name] = value
+	}
+	kind := evMailboxMetadataChange
+	if mailboxName == "" {
+		kind = evServerMetadataChange
+	}
+	sess.user.notify.broadcast(memNotifyEvent{
+		kind:    kind,
+		mailbox: mailboxName,
+		entries: changed,
+		source:  sess,
+	})
+	return nil
+}
+
+func (sess *UserSession) setMetadata(mailboxName string, entries map[string]*[]byte) error {
 	sess.user.mutex.Lock()
 	defer sess.user.mutex.Unlock()
 

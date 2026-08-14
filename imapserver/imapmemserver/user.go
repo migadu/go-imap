@@ -135,6 +135,13 @@ func (u *User) Append(ctx context.Context, mailbox string, r imap.LiteralReader,
 }
 
 func (u *User) Create(ctx context.Context, name string, options *imap.CreateOptions) error {
+	return u.create(name, nil)
+}
+
+// create is Create with the session that requested it, so that the resulting
+// notification can be withheld from it (RFC 5465 section 5). source may be nil
+// when the change does not originate from a session.
+func (u *User) create(name string, source *UserSession) error {
 	u.mutex.Lock()
 	defer u.mutex.Unlock()
 
@@ -158,11 +165,16 @@ func (u *User) Create(ctx context.Context, name string, options *imap.CreateOpti
 	mbox.acl[imap.RightsIdentifier(u.username)] = imap.RightSetAll
 
 	u.mailboxes[name] = mbox
-	u.notify.broadcast(memNotifyEvent{kind: evMailboxCreated, mailbox: name})
+	u.notify.broadcast(memNotifyEvent{kind: evMailboxCreated, mailbox: name, source: source})
 	return nil
 }
 
 func (u *User) Delete(ctx context.Context, name string) error {
+	return u.delete(name, nil)
+}
+
+// delete is Delete with the originating session (see create).
+func (u *User) delete(name string, source *UserSession) error {
 	u.mutex.Lock()
 	defer u.mutex.Unlock()
 
@@ -171,11 +183,16 @@ func (u *User) Delete(ctx context.Context, name string) error {
 	}
 
 	delete(u.mailboxes, name)
-	u.notify.broadcast(memNotifyEvent{kind: evMailboxDeleted, mailbox: name})
+	u.notify.broadcast(memNotifyEvent{kind: evMailboxDeleted, mailbox: name, source: source})
 	return nil
 }
 
 func (u *User) Rename(ctx context.Context, w *imapserver.RenameWriter, oldName, newName string, options *imap.RenameOptions) error {
+	return u.rename(w, oldName, newName, nil)
+}
+
+// rename is Rename with the originating session (see create).
+func (u *User) rename(w *imapserver.RenameWriter, oldName, newName string, source *UserSession) error {
 	u.mutex.Lock()
 
 	newName = strings.TrimRight(newName, string(mailboxDelim))
@@ -200,7 +217,7 @@ func (u *User) Rename(ctx context.Context, w *imapserver.RenameWriter, oldName, 
 	delete(u.mailboxes, oldName)
 	u.mutex.Unlock()
 
-	u.notify.broadcast(memNotifyEvent{kind: evMailboxRenamed, mailbox: newName, oldName: oldName})
+	u.notify.broadcast(memNotifyEvent{kind: evMailboxRenamed, mailbox: newName, oldName: oldName, source: source})
 
 	// RFC 9051 §6.3.6: announce the new name with the OLDNAME data item.
 	return w.WriteOldName(&imap.ListData{
@@ -211,22 +228,22 @@ func (u *User) Rename(ctx context.Context, w *imapserver.RenameWriter, oldName, 
 }
 
 func (u *User) Subscribe(ctx context.Context, name string) error {
-	mbox, err := u.mailbox(name)
-	if err != nil {
-		return err
-	}
-	mbox.SetSubscribed(true)
-	u.notify.broadcast(memNotifyEvent{kind: evSubscriptionChange, mailbox: name})
-	return nil
+	return u.setSubscribed(name, true, nil)
 }
 
 func (u *User) Unsubscribe(ctx context.Context, name string) error {
+	return u.setSubscribed(name, false, nil)
+}
+
+// setSubscribed is Subscribe/Unsubscribe with the originating session (see
+// create).
+func (u *User) setSubscribed(name string, subscribed bool, source *UserSession) error {
 	mbox, err := u.mailbox(name)
 	if err != nil {
 		return err
 	}
-	mbox.SetSubscribed(false)
-	u.notify.broadcast(memNotifyEvent{kind: evSubscriptionChange, mailbox: name})
+	mbox.SetSubscribed(subscribed)
+	u.notify.broadcast(memNotifyEvent{kind: evSubscriptionChange, mailbox: name, source: source})
 	return nil
 }
 

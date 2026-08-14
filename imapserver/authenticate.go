@@ -147,6 +147,10 @@ func (c *Conn) handleUnauthenticate(dec *imapwire.Decoder) error {
 	// means the pump can no longer write to a connection that is about to
 	// re-enter the not-authenticated state.
 	c.stopNotifyPump()
+	// The watch belongs to the authenticated session: a connection returning to
+	// the not-authenticated state also returns to the pre-NOTIFY notification
+	// behaviour of RFC 5465 §3.1.
+	c.resetNotifySelectedEvents()
 
 	if err := session.Unauthenticate(c.ctx); err != nil {
 		return err

@@ -93,6 +93,19 @@ type Conn struct {
 	notifyStop  chan struct{}
 	notifyDone  chan error
 
+	// notifyUsed reports whether the client has issued a NOTIFY command on this
+	// connection. Until it does, the legacy behaviour of RFC 5465 §3.1 applies:
+	// message events for the selected mailbox are reported while a command is
+	// being processed.
+	//
+	// notifySelectedEvents is the set of message events requested with the
+	// SELECTED/SELECTED-DELAYED specifier. It is empty after NOTIFY NONE, or
+	// when NOTIFY SET carried no such event group — which RFC 5465 §3.1 defines
+	// as "the same as specifying SELECTED NONE". Both are guarded by
+	// notifyMutex, as the pump goroutine reads them.
+	notifyUsed           bool
+	notifySelectedEvents map[imap.NotifyEvent]bool
+
 	// activeCmd is the name of the command currently being processed by the
 	// command goroutine ("" between commands). The NOTIFY pump consults it to
 	// avoid delivering EXPUNGE/VANISHED updates while a command that forbids
@@ -663,6 +676,18 @@ func (c *Conn) poll(cmd string) error {
 		return nil
 	}
 
+	// RFC 5465 §3.1: once NOTIFY has been used, message events for the selected
+	// mailbox are reported only when the client asked for them with the
+	// SELECTED/SELECTED-DELAYED specifier. Omitting that specifier "is the same
+	// as specifying SELECTED NONE", and NOTIFY NONE disables everything — in
+	// both cases the pending updates must stay queued rather than be flushed at
+	// this sync point, which is what makes NOTIFY SET ... NONE usable as the
+	// snapshot facility of RFC 5465 §5 and what keeps sequence numbers stable
+	// for clients that rely on it.
+	if !c.notifySelectedMessageEventsEnabled() {
+		return nil
+	}
+
 	// EXPUNGE renumbers the sequence space, so it must not be delivered by the
 	// post-command poll of a command that referenced messages by sequence
 	// number (RFC 3501 §5.5): FETCH, STORE, SEARCH and their SORT/THREAD
@@ -828,6 +853,68 @@ func (c *Conn) notifyExpungeAllowed() bool {
 	}
 }
 
+// setNotifySelectedEvents records the message events the client requested for
+// the selected mailbox with the SELECTED/SELECTED-DELAYED specifier. options is
+// nil for NOTIFY NONE. It is called by the NOTIFY handler once the backend has
+// accepted the new watch.
+func (c *Conn) setNotifySelectedEvents(options *imap.NotifyOptions) {
+	events := make(map[imap.NotifyEvent]bool)
+	if options != nil {
+		for _, item := range options.Items {
+			if item.MailboxSpec != imap.NotifyMailboxSpecSelected &&
+				item.MailboxSpec != imap.NotifyMailboxSpecSelectedDelayed {
+				continue
+			}
+			for _, event := range item.Events {
+				events[event] = true
+			}
+		}
+	}
+
+	c.notifyMutex.Lock()
+	c.notifyUsed = true
+	c.notifySelectedEvents = events
+	c.notifyMutex.Unlock()
+}
+
+// resetNotifySelectedEvents restores the pre-NOTIFY behaviour. It is called
+// when the session is torn down (UNAUTHENTICATE), since the watch belongs to
+// the authenticated session rather than to the connection.
+func (c *Conn) resetNotifySelectedEvents() {
+	c.notifyMutex.Lock()
+	c.notifyUsed = false
+	c.notifySelectedEvents = nil
+	c.notifyMutex.Unlock()
+}
+
+// notifySelectedEventEnabled reports whether the given message event may be
+// reported for the selected mailbox (RFC 5465 §3.1). It is always true until
+// the client uses NOTIFY for the first time.
+func (c *Conn) notifySelectedEventEnabled(event imap.NotifyEvent) bool {
+	c.notifyMutex.Lock()
+	defer c.notifyMutex.Unlock()
+	if !c.notifyUsed {
+		return true
+	}
+	return c.notifySelectedEvents[event]
+}
+
+// notifySelectedMessageEventsEnabled reports whether any message event at all
+// may be reported for the selected mailbox.
+func (c *Conn) notifySelectedMessageEventsEnabled() bool {
+	c.notifyMutex.Lock()
+	defer c.notifyMutex.Unlock()
+	if !c.notifyUsed {
+		return true
+	}
+	for event := range c.notifySelectedEvents {
+		if event.IsMessageEvent() {
+			return true
+		}
+	}
+	return false
+}
+
 // UpdateWriter writes status updates.
 type UpdateWriter struct {
 	conn         *Conn
@@ -890,6 +977,17 @@ func (w *UpdateWriter) WriteStatus(data *imap.StatusData, options *imap.StatusOp
 func (w *UpdateWriter) WriteList(data *imap.ListData) error {
 	allowOldName := w.notify || w.conn.enabledHas(imap.CapIMAP4rev2)
 	return w.conn.writeListData(data, nil, allowOldName)
+}
+
+// WriteMetadata writes an untagged METADATA response (RFC 5464 §4.4.2). It is
+// used by NOTIFY (RFC 5465) to report MailboxMetadataChange events (with the
+// mailbox name) and ServerMetadataChange events (with an empty mailbox name).
+//
+// entries maps entry names to their new values; a nil value denotes a deleted
+// entry, which RFC 5465 §5.6 and §5.7 require to always be included. Writing an
+// empty map is a no-op.
+func (w *UpdateWriter) WriteMetadata(mailbox string, entries map[string]*[]byte) error {
+	return w.conn.writeMetadataResp(mailbox, entries)
 }
 
 // WriteNotificationOverflow writes an untagged OK response with the
@@ -969,6 +1067,15 @@ func (w *UpdateWriter) WriteMailboxFlags(flags []imap.Flag) error {
 // client can advance its per-message modseq from the unsolicited update rather than
 // falling back to a full re-sync (RFC 7162 §3.2). A zero modSeq is omitted.
 func (w *UpdateWriter) WriteMessageFlags(seqNum uint32, uid imap.UID, flags []imap.Flag, modSeq uint64) error {
+	// RFC 5465 §3.1: a client that used NOTIFY only receives the message events
+	// it asked for with the SELECTED/SELECTED-DELAYED specifier. Dropping an
+	// unrequested flag update is safe (unlike EXISTS/EXPUNGE, it carries no
+	// sequence-number change), so the whole tracker queue can still be drained
+	// while FlagChange stays filtered out.
+	if !w.conn.notifySelectedEventEnabled(imap.NotifyEventFlagChange) {
+		return nil
+	}
+
 	fetchWriter := &FetchWriter{conn: w.conn}
 	respWriter := fetchWriter.CreateMessage(seqNum)
 	if uid != 0 {

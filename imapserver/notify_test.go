@@ -37,6 +37,7 @@ func newNotifyTestServer(t *testing.T) (addr string, user *imapmemserver.User, c
 		Caps: imap.CapSet{
 			imap.CapIMAP4rev1: {},
 			imap.CapNotify:    {},
+			imap.CapMetadata:  {},
 		},
 		InsecureAuth: true,
 	})
@@ -218,7 +219,7 @@ func TestNotifyCommandSyntax(t *testing.T) {
 		{
 			name: "UnsupportedEvent",
 			cmd:  "NOTIFY SET (SELECTED (MessageNew MessageExpunge AnnotationChange))",
-			want: "NO [BADEVENT (MessageNew MessageExpunge FlagChange MailboxName SubscriptionChange)]",
+			want: "NO [BADEVENT (MessageNew MessageExpunge FlagChange MailboxName SubscriptionChange MailboxMetadataChange ServerMetadataChange)]",
 		},
 		{
 			name: "UnknownEvent",
@@ -382,5 +383,229 @@ func TestNotifyMailboxEventsDelivery(t *testing.T) {
 	}
 	if line, err := watcher.readLine(300 * time.Millisecond); err == nil {
 		t.Errorf("expected no notification after NOTIFY NONE, got %q", line)
+	}
+}
+
+// appendMessage appends a one-line message to the given mailbox. The literal
+// is sent without waiting for the continuation request, which the server
+// accepts.
+func (c *notifyTestConn) appendMessage(t *testing.T, mailbox string) {
+	t.Helper()
+	if resp := c.cmd("APPEND %s {5}\r\nhello", mailbox); !strings.Contains(resp, "OK") {
+		t.Fatalf("APPEND %s failed: %q", mailbox, resp)
+	}
+}
+
+// TestNotifySelectedNoneSuppressesSelectedUpdates verifies RFC 5465 section
+// 3.1: "If the SELECTED/SELECTED-DELAYED mailbox selector is not specified in
+// the NOTIFY SET command, this means that the client doesn't want to receive
+// any <message-event>s for the currently selected mailbox. This is the same as
+// specifying SELECTED NONE."
+//
+// The suppression must also hold at command sync points: a NOOP must not
+// report EXISTS for the selected mailbox.
+func TestNotifySelectedNoneSuppressesSelectedUpdates(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		notify string
+	}{
+		{name: "SelectedOmitted", notify: "NOTIFY SET (PERSONAL (MessageNew MessageExpunge))"},
+		{name: "SelectedNone", notify: "NOTIFY SET (SELECTED NONE) (PERSONAL (MailboxName))"},
+		{name: "NotifyNone", notify: "NOTIFY NONE"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			addr, _, closer := newNotifyTestServer(t)
+			defer closer()
+
+			watcher := dialNotifyTest(t, addr)
+			defer watcher.close()
+			watcher.login(t)
+			if resp := watcher.cmd("CREATE INBOX"); !strings.Contains(resp, "OK") {
+				t.Fatalf("CREATE failed: %q", resp)
+			}
+			if resp := watcher.cmd("SELECT INBOX"); !strings.Contains(resp, "OK") {
+				t.Fatalf("SELECT failed: %q", resp)
+			}
+			if resp := watcher.cmd("%s", tc.notify); !strings.Contains(resp, "OK") {
+				t.Fatalf("%s failed: %q", tc.notify, resp)
+			}
+
+			other := dialNotifyTest(t, addr)
+			defer other.close()
+			other.login(t)
+			other.appendMessage(t, "INBOX")
+
+			// No asynchronous message event for the selected mailbox.
+			if line, err := watcher.readLine(300 * time.Millisecond); err == nil {
+				t.Errorf("unexpected unsolicited response for the selected mailbox: %q", line)
+			}
+
+			// And none at the next sync point either.
+			resp := watcher.cmd("NOOP")
+			if strings.Contains(resp, "EXISTS") {
+				t.Errorf("expected no EXISTS for the selected mailbox at a sync point, got %q", resp)
+			}
+		})
+	}
+}
+
+// TestNotifySelectedEventFiltering verifies that only the message events
+// requested with the SELECTED specifier are reported for the selected mailbox
+// (RFC 5465 sections 3.1 and 5): a watch without FlagChange must not produce
+// unsolicited FETCH responses, while MessageNew must still be delivered.
+func TestNotifySelectedEventFiltering(t *testing.T) {
+	addr, _, closer := newNotifyTestServer(t)
+	defer closer()
+
+	watcher := dialNotifyTest(t, addr)
+	defer watcher.close()
+	watcher.login(t)
+	if resp := watcher.cmd("CREATE INBOX"); !strings.Contains(resp, "OK") {
+		t.Fatalf("CREATE failed: %q", resp)
+	}
+	watcher.appendMessage(t, "INBOX")
+	if resp := watcher.cmd("SELECT INBOX"); !strings.Contains(resp, "OK") {
+		t.Fatalf("SELECT failed: %q", resp)
+	}
+	if resp := watcher.cmd("NOTIFY SET (SELECTED (MessageNew MessageExpunge))"); !strings.Contains(resp, "OK") {
+		t.Fatalf("NOTIFY SET failed: %q", resp)
+	}
+
+	other := dialNotifyTest(t, addr)
+	defer other.close()
+	other.login(t)
+	if resp := other.cmd("SELECT INBOX"); !strings.Contains(resp, "OK") {
+		t.Fatalf("SELECT failed: %q", resp)
+	}
+	if resp := other.cmd(`STORE 1 +FLAGS (\Seen)`); !strings.Contains(resp, "OK") {
+		t.Fatalf("STORE failed: %q", resp)
+	}
+
+	// FlagChange was not requested: neither asynchronously...
+	if line, err := watcher.readLine(300 * time.Millisecond); err == nil {
+		t.Errorf("unexpected unsolicited response for an unrequested FlagChange: %q", line)
+	}
+	// ...nor at a sync point.
+	if resp := watcher.cmd("NOOP"); strings.Contains(resp, "FETCH") {
+		t.Errorf("expected no FETCH for an unrequested FlagChange, got %q", resp)
+	}
+
+	// MessageNew was requested, so it must still be delivered.
+	other.appendMessage(t, "INBOX")
+	line, err := watcher.readLine(5 * time.Second)
+	if err != nil {
+		t.Fatalf("waiting for EXISTS after append: %v", err)
+	}
+	if !strings.Contains(line, "EXISTS") {
+		t.Errorf("expected an unsolicited EXISTS, got %q", line)
+	}
+	if strings.Contains(line, "FETCH") {
+		t.Errorf("expected no FETCH for an unrequested FlagChange, got %q", line)
+	}
+}
+
+// TestNotifySelfCausedEvents verifies RFC 5465 section 5: "The server SHOULD
+// omit notifying the client if the event is caused by this client."
+func TestNotifySelfCausedEvents(t *testing.T) {
+	addr, _, closer := newNotifyTestServer(t)
+	defer closer()
+
+	watcher := dialNotifyTest(t, addr)
+	defer watcher.close()
+	watcher.login(t)
+	if resp := watcher.cmd("NOTIFY SET (PERSONAL (MailboxName SubscriptionChange))"); !strings.Contains(resp, "OK") {
+		t.Fatalf("NOTIFY SET failed: %q", resp)
+	}
+
+	// Caused by this client: no notification.
+	if resp := watcher.cmd("CREATE SelfMade"); !strings.Contains(resp, "OK") {
+		t.Fatalf("CREATE failed: %q", resp)
+	}
+	if line, err := watcher.readLine(300 * time.Millisecond); err == nil {
+		t.Errorf("unexpected notification for a self-caused event: %q", line)
+	}
+	if resp := watcher.cmd("SUBSCRIBE SelfMade"); !strings.Contains(resp, "OK") {
+		t.Fatalf("SUBSCRIBE failed: %q", resp)
+	}
+	if line, err := watcher.readLine(300 * time.Millisecond); err == nil {
+		t.Errorf("unexpected notification for a self-caused event: %q", line)
+	}
+
+	// Caused by another client: notification as usual.
+	other := dialNotifyTest(t, addr)
+	defer other.close()
+	other.login(t)
+	if resp := other.cmd("CREATE OtherMade"); !strings.Contains(resp, "OK") {
+		t.Fatalf("CREATE failed: %q", resp)
+	}
+	line, err := watcher.readLine(5 * time.Second)
+	if err != nil {
+		t.Fatalf("waiting for LIST after foreign CREATE: %v", err)
+	}
+	if !strings.HasPrefix(line, "* LIST") || !strings.Contains(line, "OtherMade") {
+		t.Errorf("expected an unsolicited LIST for OtherMade, got %q", line)
+	}
+}
+
+// TestNotifyMetadataChangeDelivery verifies RFC 5465 sections 5.6 and 5.7:
+// MailboxMetadataChange and ServerMetadataChange are reported with unsolicited
+// METADATA responses. Support is REQUIRED when the server implements METADATA
+// (RFC 5464).
+func TestNotifyMetadataChangeDelivery(t *testing.T) {
+	addr, _, closer := newNotifyTestServer(t)
+	defer closer()
+
+	watcher := dialNotifyTest(t, addr)
+	defer watcher.close()
+	watcher.login(t)
+	if resp := watcher.cmd("CREATE INBOX"); !strings.Contains(resp, "OK") {
+		t.Fatalf("CREATE failed: %q", resp)
+	}
+	if resp := watcher.cmd("NOTIFY SET (PERSONAL (MailboxMetadataChange ServerMetadataChange))"); !strings.Contains(resp, "OK") {
+		t.Fatalf("NOTIFY SET failed: %q", resp)
+	}
+
+	other := dialNotifyTest(t, addr)
+	defer other.close()
+	other.login(t)
+
+	if resp := other.cmd(`SETMETADATA INBOX (/private/comment "hi")`); !strings.Contains(resp, "OK") {
+		t.Fatalf("SETMETADATA failed: %q", resp)
+	}
+	line, err := watcher.readLine(5 * time.Second)
+	if err != nil {
+		t.Fatalf("waiting for METADATA after SETMETADATA: %v", err)
+	}
+	for _, want := range []string{"* METADATA", "INBOX", "/private/comment", "hi"} {
+		if !strings.Contains(line, want) {
+			t.Errorf("METADATA response %q is missing %q", line, want)
+		}
+	}
+
+	if resp := other.cmd(`SETMETADATA "" (/private/vendor/test "v")`); !strings.Contains(resp, "OK") {
+		t.Fatalf("SETMETADATA failed: %q", resp)
+	}
+	line, err = watcher.readLine(5 * time.Second)
+	if err != nil {
+		t.Fatalf("waiting for METADATA after server SETMETADATA: %v", err)
+	}
+	for _, want := range []string{"* METADATA", "/private/vendor/test"} {
+		if !strings.Contains(line, want) {
+			t.Errorf("METADATA response %q is missing %q", line, want)
+		}
+	}
+
+	// A deleted entry must still be reported (RFC 5465 section 5.6).
+	if resp := other.cmd(`SETMETADATA INBOX (/private/comment NIL)`); !strings.Contains(resp, "OK") {
+		t.Fatalf("SETMETADATA failed: %q", resp)
+	}
+	line, err = watcher.readLine(5 * time.Second)
+	if err != nil {
+		t.Fatalf("waiting for METADATA after deletion: %v", err)
+	}
+	for _, want := range []string{"* METADATA", "/private/comment", "NIL"} {
+		if !strings.Contains(line, want) {
+			t.Errorf("METADATA response %q is missing %q", line, want)
+		}
 	}
 }

@@ -158,6 +158,11 @@ func (c *Conn) handleNotify(tag string, dec *imapwire.Decoder) error {
 		return err
 	}
 
+	// Record which message events the client wants for the selected mailbox, so
+	// that the per-command sync points stop reporting the ones it did not ask
+	// for (RFC 5465 section 3.1).
+	c.setNotifySelectedEvents(options)
+
 	if options != nil {
 		c.startNotifyPump(session)
 	}

@@ -19,6 +19,8 @@ const (
 	evMailboxDeleted
 	evMailboxRenamed
 	evSubscriptionChange
+	evMailboxMetadataChange
+	evServerMetadataChange
 	evMessageNew
 	evMessageExpunge
 	evFlagChange
@@ -43,6 +45,10 @@ func (kind memNotifyEventKind) notifyEvent() imap.NotifyEvent {
 		return imap.NotifyEventMailboxName
 	case evSubscriptionChange:
 		return imap.NotifyEventSubscriptionChange
+	case evMailboxMetadataChange:
+		return imap.NotifyEventMailboxMetadataChange
+	case evServerMetadataChange:
+		return imap.NotifyEventServerMetadataChange
 	case evMessageNew:
 		return imap.NotifyEventMessageNew
 	case evMessageExpunge:
@@ -58,6 +64,15 @@ type memNotifyEvent struct {
 	kind    memNotifyEventKind
 	mailbox string // current mailbox name
 	oldName string // previous name, for evMailboxRenamed
+
+	// entries holds the changed annotations of a metadata event. A nil value
+	// denotes a deleted entry (RFC 5465 sections 5.6 and 5.7).
+	entries map[string]*[]byte
+
+	// source is the session that caused the event, when known. RFC 5465
+	// section 5: "The server SHOULD omit notifying the client if the event is
+	// caused by this client."
+	source *UserSession
 }
 
 // notifyRegistry fans change events out to the NOTIFY watchers of a user.
@@ -66,16 +81,16 @@ type memNotifyEvent struct {
 // would send NOTIFICATIONOVERFLOW instead).
 type notifyRegistry struct {
 	mutex    sync.Mutex
-	watchers map[chan<- memNotifyEvent]struct{}
+	watchers map[chan<- memNotifyEvent]*UserSession
 }
 
-func (r *notifyRegistry) register(ch chan<- memNotifyEvent) {
+func (r *notifyRegistry) register(ch chan<- memNotifyEvent, owner *UserSession) {
 	r.mutex.Lock()
 	defer r.mutex.Unlock()
 	if r.watchers == nil {
-		r.watchers = make(map[chan<- memNotifyEvent]struct{})
+		r.watchers = make(map[chan<- memNotifyEvent]*UserSession)
 	}
-	r.watchers[ch] = struct{}{}
+	r.watchers[ch] = owner
 }
 
 func (r *notifyRegistry) unregister(ch chan<- memNotifyEvent) {
@@ -87,7 +102,11 @@ func (r *notifyRegistry) unregister(ch chan<- memNotifyEvent) {
 func (r *notifyRegistry) broadcast(ev memNotifyEvent) {
 	r.mutex.Lock()
 	defer r.mutex.Unlock()
-	for ch := range r.watchers {
+	for ch, owner := range r.watchers {
+		// RFC 5465 section 5: don't notify the session that caused the event.
+		if ev.source != nil && owner == ev.source {
+			continue
+		}
 		select {
 		case ch <- ev:
 		default:
@@ -104,6 +123,8 @@ var memNotifySupportedEvents = []imap.NotifyEvent{
 	imap.NotifyEventFlagChange,
 	imap.NotifyEventMailboxName,
 	imap.NotifyEventSubscriptionChange,
+	imap.NotifyEventMailboxMetadataChange,
+	imap.NotifyEventServerMetadataChange,
 }
 
 // notifyWatch is the per-session NOTIFY state installed by SetNotify.
@@ -150,7 +171,8 @@ func (sess *UserSession) SetNotify(ctx context.Context, options *imap.NotifyOpti
 			switch ev {
 			case imap.NotifyEventMessageNew, imap.NotifyEventMessageExpunge,
 				imap.NotifyEventFlagChange, imap.NotifyEventMailboxName,
-				imap.NotifyEventSubscriptionChange:
+				imap.NotifyEventSubscriptionChange,
+				imap.NotifyEventMailboxMetadataChange, imap.NotifyEventServerMetadataChange:
 				// supported
 			default:
 				return &imapserver.UnsupportedNotifyEventError{
@@ -217,7 +239,7 @@ func (sess *UserSession) NotifyPoll(ctx context.Context, w *imapserver.UpdateWri
 	}
 
 	ch := make(chan memNotifyEvent, 256)
-	sess.user.notify.register(ch)
+	sess.user.notify.register(ch, sess)
 	defer sess.user.notify.unregister(ch)
 
 	for {
@@ -252,6 +274,15 @@ func (sess *UserSession) handleNotifyEvent(ev memNotifyEvent, w *imapserver.Upda
 		return sess.handleSelectedNotifyEvent(ev, watch, mailbox, w)
 	}
 
+	// RFC 5465 sections 5.7 and 8: ServerMetadataChange is a <user-event>, not
+	// tied to a mailbox, so it is enabled by any non-selected event group.
+	if ev.kind == evServerMetadataChange {
+		if !notifyEventRequested(watch, imap.NotifyEventServerMetadataChange) {
+			return nil
+		}
+		return w.WriteMetadata("", ev.entries)
+	}
+
 	events := sess.notifyEventsForMailbox(watch, ev.mailbox)
 	if !events[ev.kind.notifyEvent()] {
 		return nil
@@ -260,6 +291,10 @@ func (sess *UserSession) handleNotifyEvent(ev memNotifyEvent, w *imapserver.Upda
 	switch ev.kind {
 	case evMailboxCreated, evMailboxDeleted, evMailboxRenamed, evSubscriptionChange:
 		return w.WriteList(sess.notifyListData(ev))
+	case evMailboxMetadataChange:
+		// RFC 5465 section 5.6: report the changed annotations with an
+		// unsolicited METADATA response.
+		return w.WriteMetadata(ev.mailbox, ev.entries)
 	case evMessageNew, evMessageExpunge, evFlagChange:
 		// RFC 5465 sections 5.1-5.3: message events in non-selected
 		// mailboxes are reported with an unsolicited STATUS response.
@@ -357,6 +392,25 @@ func (sess *UserSession) writeNotifyNewMessages(watch *notifyWatch, mailbox *Mai
 		}
 	}
 	return nil
+}
+
+// notifyEventRequested reports whether any non-selected event group requests
+// the given event, regardless of the mailboxes it applies to. It is used for
+// server-wide events, which are not tied to a mailbox.
+func notifyEventRequested(watch *notifyWatch, event imap.NotifyEvent) bool {
+	for i := range watch.options.Items {
+		item := &watch.options.Items[i]
+		if item.MailboxSpec == imap.NotifyMailboxSpecSelected ||
+			item.MailboxSpec == imap.NotifyMailboxSpecSelectedDelayed {
+			continue
+		}
+		for _, ev := range item.Events {
+			if ev == event {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // notifyEventsForMailbox returns the union of events requested for the given

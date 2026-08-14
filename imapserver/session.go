@@ -71,7 +71,24 @@ type Session interface {
 	List(ctx context.Context, w *ListWriter, ref string, patterns []string, options *imap.ListOptions) error
 	Status(ctx context.Context, mailbox string, options *imap.StatusOptions) (*imap.StatusData, error)
 	Append(ctx context.Context, mailbox string, r imap.LiteralReader, options *imap.AppendOptions) (*imap.AppendData, error)
+
+	// Poll delivers pending updates for the selected mailbox at a command sync
+	// point. Pending updates must stay queued when they cannot be delivered, so
+	// that the client's sequence-number view stays consistent.
+	//
+	// With the NOTIFY extension (RFC 5465) in use, the library does not call
+	// Poll at all when the client's watch disables message events for the
+	// selected mailbox; see SessionNotify for the events the backend itself
+	// must filter.
 	Poll(ctx context.Context, w *UpdateWriter, allowExpunge bool) error
+
+	// Idle continuously delivers updates until stop is closed.
+	//
+	// A backend implementing SessionNotify must honor the installed watch here
+	// as well: RFC 5465 section 4 requires IDLE to deliver exactly the events
+	// the client requested with NOTIFY. The usual implementation lets the
+	// NotifyPoll pump be the only source of updates while a watch is installed,
+	// and simply waits for stop.
 	Idle(ctx context.Context, w *UpdateWriter, stop <-chan struct{}) error
 
 	// Selected state
@@ -195,6 +212,13 @@ type SessionNotify interface {
 	// runs on a dedicated goroutine, concurrently with command processing on
 	// the connection; individual responses are serialized with command
 	// output by the library.
+	//
+	// Only the message events requested with the SELECTED/SELECTED-DELAYED
+	// specifier may be reported for the selected mailbox; omitting that
+	// specifier "is the same as specifying SELECTED NONE" (RFC 5465 section
+	// 3.1). The library enforces this for the per-command sync points (it
+	// skips Session.Poll, and drops unrequested flag updates), but the
+	// backend must not push such updates from NotifyPoll or Idle either.
 	//
 	// EXPUNGE/VANISHED updates for the selected mailbox must only be
 	// delivered while w.ExpungeAllowed() reports true (and, with
