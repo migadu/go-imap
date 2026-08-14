@@ -1084,7 +1084,14 @@ func readBodyType1part(dec *imapwire.Decoder, typ string, options *Options) (*im
 		return &bs, nil
 	}
 
-	if strings.EqualFold(bs.Type, "message") && (strings.EqualFold(bs.Subtype, "rfc822") || strings.EqualFold(bs.Subtype, "global")) {
+	// message/rfc822 is body-type-msg in both revisions, so the envelope, the
+	// nested body structure and the line count always follow. message/global
+	// (RFC 6532) is body-type-msg only in RFC 9051: an IMAP4rev1 server emits
+	// it as a body-type-basic and goes straight to the extension data. Decide
+	// by what actually follows -- an envelope is a parenthesized list, so a '('
+	// means the fields are there and anything else means they are not.
+	// See https://github.com/emersion/go-imap/issues/741
+	if strings.EqualFold(bs.Type, "message") && (strings.EqualFold(bs.Subtype, "rfc822") || strings.EqualFold(bs.Subtype, "global") && dec.NextByteIs('(')) {
 		var msg imap.BodyStructureMessageRFC822
 
 		msg.Envelope, err = readEnvelope(dec, options)
