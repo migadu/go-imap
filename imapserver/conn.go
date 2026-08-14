@@ -434,6 +434,17 @@ func (c *Conn) readCommand(dec *imapwire.Decoder) (err error) {
 	)
 	if errors.As(err, &imapErr) {
 		resp = (*imap.StatusResponse)(imapErr)
+		// An OK-typed error is a successful completion that carries a response
+		// code (e.g. MODIFIED from a conditional STORE, RFC 7162 §3.1.3), not a
+		// failure. Flush pending mailbox updates before the tagged line, as the
+		// nil-error path below does — for MODIFIED in particular the pending
+		// unsolicited FETCH is often the very flag change that made the STORE
+		// fail its precondition.
+		if imapErr.Type == imap.StatusResponseTypeOK {
+			if err := c.poll(name); err != nil {
+				return err
+			}
+		}
 	} else if errors.As(err, &decErr) {
 		resp = &imap.StatusResponse{
 			Type: imap.StatusResponseTypeBad,
