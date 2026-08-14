@@ -668,9 +668,18 @@ func writeStoreFetchResponse(w *imapserver.FetchWriter, tracker *imapserver.Sess
 }
 
 func (mbox *MailboxView) Store(ctx context.Context, w *imapserver.FetchWriter, numSet imap.NumSet, flags *imap.StoreFlags, options *imap.StoreOptions) error {
-	var modified []modifiedMessageData
+	// RFC 7162 §3.1.3.1: an absent UNCHANGEDSINCE modifier means an
+	// unconditional store, while an explicit "UNCHANGEDSINCE 0" is the
+	// always-fail probe, which must fail for every message that carries a
+	// modification sequence. Presence is what separates the two, so a non-zero
+	// value is not enough on its own; it still implies presence, for callers
+	// written before StoreOptions.UnchangedSinceSet existed.
+	conditional := options != nil && (options.UnchangedSinceSet || options.UnchangedSince > 0)
+
+	var modified, failed []modifiedMessageData
 	mbox.forEach(numSet, func(seqNum uint32, msg *message) {
-		if options != nil && options.UnchangedSince > 0 && msg.modSeq > options.UnchangedSince {
+		if conditional && msg.modSeq > options.UnchangedSince {
+			failed = append(failed, modifiedMessageData{seqNum: seqNum, uid: msg.uid})
 			return
 		}
 
@@ -696,7 +705,44 @@ func (mbox *MailboxView) Store(ctx context.Context, w *imapserver.FetchWriter, n
 		}
 	}
 
+	// The untagged FETCH responses above cover the messages that were stored;
+	// the ones that failed the precondition are reported on the tagged
+	// completion line, whether or not .SILENT was used (RFC 7162 §3.1.3).
+	if code := imap.ModifiedResponseCode(mbox.modifiedNumSet(numSet, failed)); code != "" {
+		return &imap.Error{
+			Type: imap.StatusResponseTypeOK,
+			Code: code,
+			Text: "Conditional STORE failed for some messages",
+		}
+	}
+
 	return nil
+}
+
+// modifiedNumSet builds the message set for a MODIFIED response code
+// (RFC 7162 §3.1.3) out of the messages that failed a conditional STORE. The
+// set is expressed in the number space of the command that produced it: UIDs
+// for UID STORE, sequence numbers for STORE.
+func (mbox *MailboxView) modifiedNumSet(cmdNumSet imap.NumSet, failed []modifiedMessageData) imap.NumSet {
+	if _, isUID := cmdNumSet.(imap.UIDSet); isUID {
+		var uids imap.UIDSet
+		for _, msg := range failed {
+			uids.AddNum(msg.uid)
+		}
+		return uids
+	}
+
+	var seqNums imap.SeqSet
+	for _, msg := range failed {
+		// Report sequence numbers as this session sees them. A message the
+		// session has not been told about yet has no client-side sequence
+		// number (EncodeSeqNum returns 0), and 0 would encode as "*", so such a
+		// message is left out instead.
+		if seqNum := mbox.tracker.EncodeSeqNum(msg.seqNum); seqNum != 0 {
+			seqNums.AddNum(seqNum)
+		}
+	}
+	return seqNums
 }
 
 func (mbox *MailboxView) Poll(ctx context.Context, w *imapserver.UpdateWriter, allowExpunge bool) error {

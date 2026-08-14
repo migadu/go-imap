@@ -19,7 +19,11 @@ func (c *Client) Store(numSet imap.NumSet, store *imap.StoreFlags, options *imap
 	}
 	enc := c.beginCommand(uidCmdName("STORE", imapwire.NumSetKind(numSet)), cmd)
 	enc.SP().NumSet(numSet).SP()
-	if options != nil && options.UnchangedSince != 0 {
+	// An explicit "UNCHANGEDSINCE 0" is the always-fail probe of RFC 7162
+	// §3.1.3.1 and must reach the server, so emit the modifier whenever it is
+	// marked present. A non-zero value implies presence, for callers written
+	// before StoreOptions.UnchangedSinceSet existed.
+	if options != nil && (options.UnchangedSinceSet || options.UnchangedSince != 0) {
 		enc.Special('(').Atom("UNCHANGEDSINCE").SP().ModSeq(options.UnchangedSince).Special(')').SP()
 	}
 	switch store.Op {
