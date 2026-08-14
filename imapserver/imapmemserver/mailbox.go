@@ -653,46 +653,109 @@ func (mbox *MailboxView) staticSearchCriteria(criteria *imap.SearchCriteria) {
 }
 
 type modifiedMessageData struct {
-	seqNum uint32
-	uid    imap.UID
-	flags  []imap.Flag
-	modSeq uint64
+	// encSeqNum is the sequence number as this session sees it, encoded while
+	// mbox.mutex is held so a concurrent expunge cannot shift it afterwards.
+	encSeqNum uint32
+	uid       imap.UID
+	flags     []imap.Flag
+	modSeq    uint64
 }
 
-func writeStoreFetchResponse(w *imapserver.FetchWriter, tracker *imapserver.SessionTracker, mod modifiedMessageData) error {
-	respWriter := w.CreateMessage(tracker.EncodeSeqNum(mod.seqNum))
+// writeStoreFetchResponse writes the untagged FETCH response for one message a
+// STORE changed. For a .SILENT conditional store the response carries only UID
+// and MODSEQ (RFC 7162 §3.1.3): the client asked not to be told the flags, but
+// must still receive the new modification sequence.
+func writeStoreFetchResponse(w *imapserver.FetchWriter, mod modifiedMessageData, silent bool) error {
+	respWriter := w.CreateMessage(mod.encSeqNum)
 	respWriter.WriteUID(mod.uid)
-	respWriter.WriteFlags(mod.flags)
+	if !silent {
+		respWriter.WriteFlags(mod.flags)
+	}
 	respWriter.WriteModSeq(mod.modSeq)
 	return respWriter.Close()
 }
 
 func (mbox *MailboxView) Store(ctx context.Context, w *imapserver.FetchWriter, numSet imap.NumSet, flags *imap.StoreFlags, options *imap.StoreOptions) error {
-	var modified []modifiedMessageData
+	// RFC 7162 §3.1.3.1: an absent UNCHANGEDSINCE modifier means an
+	// unconditional store, while an explicit "UNCHANGEDSINCE 0" is the
+	// always-fail probe, which must fail for every message that carries a
+	// modification sequence. Conditional folds presence and value into the one
+	// correct check.
+	conditional := options.Conditional()
+
+	// The MODIFIED response code (RFC 7162 §3.1.3) is expressed in the number
+	// space of the command: UIDs for UID STORE, sequence numbers for STORE.
+	// The Go type of numSet decides — except for the SEARCHRES marker "$",
+	// which decodes as a UIDSet regardless of the command's number space, so
+	// there only StoreOptions.UIDStore can tell the two commands apart.
+	uidSpace := false
+	if _, isUID := numSet.(imap.UIDSet); isUID {
+		uidSpace = !imap.IsSearchRes(numSet) || (options != nil && options.UIDStore)
+	}
+
+	var (
+		modified   []modifiedMessageData
+		failedUIDs imap.UIDSet
+		failedSeqs imap.SeqSet
+	)
 	mbox.forEach(numSet, func(seqNum uint32, msg *message) {
-		if options != nil && options.UnchangedSince > 0 && msg.modSeq > options.UnchangedSince {
+		if conditional && msg.modSeq > options.UnchangedSince {
+			// Build the MODIFIED set here, inside the callback: forEach holds
+			// mbox.mutex, so the session tracker cannot pick up a concurrent
+			// expunge between selecting the failed message and encoding its
+			// sequence number — encoding later would let the two disagree.
+			if uidSpace {
+				failedUIDs.AddNum(msg.uid)
+			} else if encSeqNum := mbox.tracker.EncodeSeqNum(seqNum); encSeqNum != 0 {
+				// Report sequence numbers as this session sees them. A message
+				// the session has not been told about yet has no client-side
+				// sequence number (EncodeSeqNum returns 0), and 0 would encode
+				// as "*", so such a message is left out instead.
+				failedSeqs.AddNum(encSeqNum)
+			}
 			return
 		}
 
 		if changed := msg.store(mbox.Mailbox, flags); changed {
-			mbox.Mailbox.tracker.QueueMessageFlags(seqNum, msg.uid, msg.flagList(), msg.modSeq, mbox.tracker)
+			flagList := msg.flagList()
+			mbox.Mailbox.tracker.QueueMessageFlags(seqNum, msg.uid, flagList, msg.modSeq, mbox.tracker)
 
-			if !flags.Silent {
-				modified = append(modified, modifiedMessageData{
-					seqNum: seqNum,
-					uid:    msg.uid,
-					flags:  msg.flagList(),
-					modSeq: msg.modSeq,
-				})
+			// A conditional store must report the new modification sequence
+			// even with .SILENT (RFC 7162 §3.1.3); a plain .SILENT store stays
+			// silent. Skip messages this session has not been told about yet
+			// (EncodeSeqNum returns 0): a zero sequence number is not
+			// representable in an untagged FETCH response.
+			if !flags.Silent || conditional {
+				if encSeqNum := mbox.tracker.EncodeSeqNum(seqNum); encSeqNum != 0 {
+					modified = append(modified, modifiedMessageData{
+						encSeqNum: encSeqNum,
+						uid:       msg.uid,
+						flags:     flagList,
+						modSeq:    msg.modSeq,
+					})
+				}
 			}
 		}
 	})
 
-	if !flags.Silent {
-		for _, mod := range modified {
-			if err := writeStoreFetchResponse(w, mbox.tracker, mod); err != nil {
-				return err
-			}
+	for _, mod := range modified {
+		if err := writeStoreFetchResponse(w, mod, flags.Silent); err != nil {
+			return err
+		}
+	}
+
+	// The untagged FETCH responses above cover the messages that were stored;
+	// the ones that failed the precondition are reported on the tagged
+	// completion line (RFC 7162 §3.1.3).
+	var failed imap.NumSet = failedSeqs
+	if uidSpace {
+		failed = failedUIDs
+	}
+	if code := imap.ModifiedResponseCode(failed); code != "" {
+		return &imap.Error{
+			Type: imap.StatusResponseTypeOK,
+			Code: code,
+			Text: "Conditional STORE failed for some messages",
 		}
 	}
 

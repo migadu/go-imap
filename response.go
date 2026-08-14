@@ -51,7 +51,52 @@ const (
 
 	// APPENDLIMIT
 	ResponseCodeTooBig ResponseCode = "TOOBIG"
+
+	// CONDSTORE
+	ResponseCodeModified ResponseCode = "MODIFIED"
 )
+
+// ModifiedResponseCode returns the MODIFIED response code (RFC 7162 §3.1.3)
+// carrying the messages that a conditional STORE left untouched because they
+// failed its UNCHANGEDSINCE precondition.
+//
+// numSet must be expressed in the number space of the command that produced it:
+// UIDs for UID STORE, sequence numbers for STORE. It is returned complete with
+// its argument (e.g. "MODIFIED 7,9"), ready to use as StatusResponse.Code, so
+// that a server writes a tagged completion of the form:
+//
+//	A1 OK [MODIFIED 7,9] Conditional STORE failed for some messages
+//
+// A backend reaches that tagged line by returning an *Error from Session.Store:
+//
+//	return &imap.Error{
+//		Type: imap.StatusResponseTypeOK, // or StatusResponseTypeNo, see below
+//		Code: imap.ModifiedResponseCode(failed),
+//		Text: "Conditional STORE failed for some messages",
+//	}
+//
+// Use StatusResponseTypeOK when the listed messages merely failed the
+// precondition, and StatusResponseTypeNo when they no longer exist because they
+// were expunged (RFC 7162 §3.1.3 and §3.1.5).
+//
+// An empty or nil numSet yields the empty ResponseCode rather than a bare
+// "[MODIFIED]", which the grammar does not allow: a conditional STORE in which
+// every message satisfied the precondition must not report MODIFIED at all.
+//
+// The returned value carries its argument, so it never compares equal to
+// ResponseCodeModified; on the client side, imapclient parses the bare code
+// atom into Error.Code and exposes the set via FetchCommand.Modified. Match
+// with strings.HasPrefix (or use Modified) rather than equality.
+func ModifiedResponseCode(numSet NumSet) ResponseCode {
+	if numSet == nil {
+		return ""
+	}
+	s := numSet.String()
+	if s == "" {
+		return ""
+	}
+	return ResponseCode(fmt.Sprintf("%v %v", ResponseCodeModified, s))
+}
 
 // StatusResponse is a generic status response.
 //
