@@ -530,3 +530,49 @@ func TestStoreSilentConditionalReportsModSeq(t *testing.T) {
 		}
 	})
 }
+
+// TestStoreModSeqRequiresCondStoreAware verifies that MODSEQ data items are
+// only sent to CONDSTORE-aware clients (RFC 7162 §3.1.2): strict parsers such
+// as mbsync/isync treat an unrequested MODSEQ as malformed. A client becomes
+// aware by issuing a CONDSTORE-enabling command; merely connecting to a server
+// that advertises CONDSTORE is not enough.
+func TestStoreModSeqRequiresCondStoreAware(t *testing.T) {
+	t.Run("no CONDSTORE capability", func(t *testing.T) {
+		c := newStoreTestConn(t, imap.CapSet{imap.CapIMAP4rev1: {}}, 1)
+
+		resp := c.do("store", `STORE 1 +FLAGS (\Seen)`)
+		if strings.Contains(resp, "MODSEQ") {
+			t.Errorf("STORE = %q, want no MODSEQ for a server without CONDSTORE", resp)
+		}
+		if !containsFlag(resp, imap.FlagSeen) {
+			t.Errorf("STORE = %q, want the untagged FETCH with the new flags", resp)
+		}
+	})
+
+	t.Run("capable but not aware", func(t *testing.T) {
+		caps := imap.CapSet{imap.CapIMAP4rev1: {}, imap.CapCondStore: {}}
+		c := newStoreTestConn(t, caps, 1)
+
+		// The client has issued no CONDSTORE-enabling command.
+		resp := c.do("store", `STORE 1 +FLAGS (\Seen)`)
+		if strings.Contains(resp, "MODSEQ") {
+			t.Errorf("STORE = %q, want no MODSEQ for a client that never became CONDSTORE-aware", resp)
+		}
+	})
+
+	t.Run("aware after enabling command", func(t *testing.T) {
+		caps := imap.CapSet{imap.CapIMAP4rev1: {}, imap.CapCondStore: {}}
+		c := newStoreTestConn(t, caps, 1)
+
+		// FETCH (MODSEQ) is a CONDSTORE-enabling command (RFC 7162 §3.1)...
+		if resp := c.do("fetch", "FETCH 1 (MODSEQ)"); !strings.Contains(resp, "MODSEQ") {
+			t.Fatalf("FETCH (MODSEQ) = %q, want a MODSEQ data item", resp)
+		}
+
+		// ...so subsequent STORE responses must carry MODSEQ.
+		resp := c.do("store", `STORE 1 +FLAGS (\Seen)`)
+		if !strings.Contains(resp, "MODSEQ") {
+			t.Errorf("STORE = %q, want MODSEQ for a CONDSTORE-aware client", resp)
+		}
+	})
+}

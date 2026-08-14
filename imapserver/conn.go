@@ -850,13 +850,9 @@ func (w *UpdateWriter) WriteMessageFlags(seqNum uint32, uid imap.UID, flags []im
 		respWriter.WriteUID(uid)
 	}
 	respWriter.WriteFlags(flags)
-	// RFC 7162 §3.2: only CONDSTORE-aware clients may receive MODSEQ in an
-	// unsolicited FETCH. supportsCondStore() alone is the advertised capability,
-	// which is always on for capable clients; a client that never issued a
-	// CONDSTORE-enabling command (e.g. mbsync/isync) must not be sent MODSEQ, or it
-	// treats the FETCH as malformed. Also require supportsCondStore() so a
-	// capability filter can still suppress it mid-connection.
-	if modSeq != 0 && w.conn.supportsCondStore() && w.conn.CondStoreEnabled() {
+	// WriteModSeq itself drops the item for sessions that are not
+	// CONDSTORE-aware (RFC 7162 §3.2); only the zero value is guarded here.
+	if modSeq != 0 {
 		respWriter.WriteModSeq(modSeq)
 	}
 	return respWriter.Close()

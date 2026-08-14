@@ -584,7 +584,20 @@ func (w *FetchResponseWriter) WriteEnvelope(envelope *imap.Envelope) {
 }
 
 // WriteModSeq writes the message's MODSEQ.
+//
+// The item is silently dropped unless the client is CONDSTORE-aware
+// (RFC 7162 §3.1.2): strict parsers such as mbsync/isync treat a FETCH
+// response carrying an unrequested MODSEQ as malformed. Backends may therefore
+// call WriteModSeq unconditionally; the gate mirrors the one for unsolicited
+// flag updates in UpdateWriter.WriteMessageFlags. A legitimately solicited
+// MODSEQ (FETCH MODSEQ/CHANGEDSINCE, conditional STORE) is never suppressed:
+// those commands are themselves CONDSTORE-enabling, so the client is aware by
+// the time the response is written. supportsCondStore is also required so a
+// capability filter can suppress the item mid-connection.
 func (w *FetchResponseWriter) WriteModSeq(modSeq uint64) {
+	if conn := w.enc.conn; conn != nil && !(conn.supportsCondStore() && conn.CondStoreEnabled()) {
+		return
+	}
 	w.writeItemSep()
 	w.enc.Atom("MODSEQ").SP().Special('(').ModSeq(modSeq).Special(')')
 }
