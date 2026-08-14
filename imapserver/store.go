@@ -29,22 +29,23 @@ func (c *Conn) handleStore(dec *imapwire.Decoder, numKind NumKind) error {
 			if !dec.ExpectSP() || !dec.ExpectModSeq(&options.UnchangedSince) {
 				return dec.Err()
 			}
+			// A modifier the server does not support for this client must be
+			// rejected with a tagged BAD (RFC 4466 §2.5). Silently dropping it
+			// instead would invert the request's meaning: an explicit
+			// "UNCHANGEDSINCE 0" is the always-fail probe (RFC 7162 §3.1.3.1),
+			// and running it as an unconditional store would modify exactly the
+			// messages the client asked never to touch.
+			if !c.supportsCondStore() {
+				return newClientBugError("UNCHANGEDSINCE requires CONDSTORE")
+			}
 			// Record presence separately from the value: RFC 7162 §3.1.3.1 gives
 			// an absent modifier (unconditional store) and an explicit
 			// "UNCHANGEDSINCE 0" (always-fail probe) opposite meanings, and the
 			// value alone cannot tell them apart.
 			options.UnchangedSinceSet = true
-			// Only apply UNCHANGEDSINCE if CONDSTORE is supported, otherwise ignore
-			if !c.supportsCondStore() {
-				// Reset to ignore the modifier. Both fields must be cleared, or
-				// the backend would still see a conditional (always-fail) store.
-				options.UnchangedSince = 0
-				options.UnchangedSinceSet = false
-			} else {
-				// STORE ... (UNCHANGEDSINCE n) is a CONDSTORE-enabling command
-				// (RFC 7162 §3.1), including for n = 0.
-				c.markCondStoreEnabled()
-			}
+			// STORE ... (UNCHANGEDSINCE n) is a CONDSTORE-enabling command
+			// (RFC 7162 §3.1), including for n = 0.
+			c.markCondStoreEnabled()
 		} else {
 			return newClientBugError(fmt.Sprintf("unknown STORE modifier: %v", param))
 		}
