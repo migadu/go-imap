@@ -402,6 +402,15 @@ func (c *Conn) serve() {
 	}
 
 	if byeOnExit {
+		// The NOTIFY pump writes unsolicited responses from its own goroutine,
+		// independent of this loop. BYE announces that the server is done
+		// talking (RFC 9051 §7.1.5), so the pump must be gone before the BYE
+		// goes out -- not stopped in the deferred teardown, which only runs
+		// after the lingering close. Left running, a pump write during the
+		// linger would hit the half-closed socket, fail, and abort the
+		// connection hard, defeating the clean close. stopNotifyPump is
+		// idempotent, so the deferred call is then a no-op.
+		c.stopNotifyPump()
 		c.shutdownBye()
 	}
 }

@@ -70,15 +70,19 @@ type shutdownTestServer struct {
 	addr   string
 }
 
-func newShutdownTestServer(t *testing.T, newSession func() imapserver.Session) *shutdownTestServer {
+func newShutdownTestServer(t *testing.T, newSession func() imapserver.Session, extraCaps ...imap.Cap) *shutdownTestServer {
 	t.Helper()
 
+	caps := imap.CapSet{imap.CapIMAP4rev1: {}, imap.CapIMAP4rev2: {}}
+	for _, c := range extraCaps {
+		caps[c] = struct{}{}
+	}
 	server := imapserver.New(&imapserver.Options{
 		NewSession: func(*imapserver.Conn) (imapserver.Session, *imapserver.GreetingData, error) {
 			return newSession(), nil, nil
 		},
 		InsecureAuth: true,
-		Caps:         imap.CapSet{imap.CapIMAP4rev1: {}, imap.CapIMAP4rev2: {}},
+		Caps:         caps,
 	})
 
 	ln, err := net.Listen("tcp", "localhost:0")
