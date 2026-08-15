@@ -183,6 +183,13 @@ func (dec *Decoder) NextByteIs(want byte) bool {
 }
 
 // EOF returns true if end-of-file is reached.
+//
+// A read failure that is not io.EOF -- a timeout, a reset connection, a TLS
+// record error -- is recorded on the decoder and reported as false, i.e. as
+// "not at EOF". Callers that branch on EOF alone therefore go on to parse from
+// a connection that is already broken; they get the right error in the end,
+// because the recorded one wins over anything found later, but they should
+// check Err() if they want to fail at the cause.
 func (dec *Decoder) EOF() bool {
 	_, err := dec.r.ReadByte()
 	if err == io.EOF {
@@ -598,6 +605,14 @@ func (dec *Decoder) ExpectAString(ptr *string) bool {
 	return dec.Expect(dec.Func(ptr, isAStringChar), "ASTRING-CHAR")
 }
 
+// String reads a quoted string or a literal.
+//
+// It is NOT a safe probe: the literal path records a decode error when the
+// literal is malformed, refused by a CheckBufferedLiteralFunc, or over the size
+// cap, and the decoder stops reading input once an error is recorded. Callers
+// that try String and then fall back to another syntactic form must propagate a
+// recorded Err() rather than treat the false as "not this form". Use NextByteIs
+// to choose between forms without consuming input.
 func (dec *Decoder) String(ptr *string) bool {
 	return dec.Quoted(ptr) || dec.Literal(ptr)
 }
