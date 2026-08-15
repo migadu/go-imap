@@ -182,6 +182,11 @@ type Client struct {
 	pendingCmds []command
 	contReqs    []continuationRequest
 	closed      bool
+	// awaitingResp is true while the read goroutine is parked waiting for the
+	// first byte of the next response. Only then may another goroutine retune
+	// the read deadline: once a response is being decoded the deadline belongs
+	// to the reader, which lengthens it for literals.
+	awaitingResp bool
 }
 
 // New creates a new IMAP client.
@@ -309,6 +314,46 @@ func DialStartTLS(address string, options *Options) (*Client, error) {
 	newOptions := *options
 	newOptions.TLSConfig = tlsConfig
 	return NewStartTLS(conn, &newOptions)
+}
+
+// readTimeoutLocked returns how long to wait for the first byte of the next
+// response. A command in flight means the server owes us a reply, so the
+// response timeout applies. With nothing pending, or with IDLE running -- where
+// silence is expected and may last for many minutes -- the idle timeout does.
+//
+// c.mutex must be held.
+func (c *Client) readTimeoutLocked() time.Duration {
+	var pending bool
+	for _, cmd := range c.pendingCmds {
+		if _, ok := cmd.(*idleCommand); ok {
+			return idleReadTimeout
+		}
+		pending = true
+	}
+	if pending {
+		return respReadTimeout
+	}
+	return idleReadTimeout
+}
+
+// beginAwaitResponse arms the read deadline for a wait on the next response and
+// marks the reader as parked, so beginCommand may shorten the deadline if a
+// command is sent while we are blocked.
+func (c *Client) beginAwaitResponse() {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	c.awaitingResp = true
+	c.setReadTimeout(c.readTimeoutLocked())
+}
+
+// endAwaitResponse marks the reader as no longer parked. From here until the
+// next beginAwaitResponse the deadline is the reader's alone: readResponse and
+// the literal readers move it around, and a concurrent beginCommand must not
+// cut a literal short.
+func (c *Client) endAwaitResponse() {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	c.awaitingResp = false
 }
 
 func (c *Client) setReadTimeout(dur time.Duration) {
@@ -462,6 +507,12 @@ func (c *Client) beginCommand(name string, cmd command) *commandEncoder {
 	}
 
 	c.pendingCmds = append(c.pendingCmds, cmd)
+	// The read goroutine may already be parked waiting for the next response,
+	// in which case it armed its deadline before this command existed. Retune
+	// it now: SetReadDeadline applies to a read that is already blocked.
+	if c.awaitingResp {
+		c.setReadTimeout(c.readTimeoutLocked())
+	}
 	quotedUTF8 := c.useQuotedUTF8Locked()
 	literalMinus := c.caps.Has(imap.CapLiteralMinus)
 	literalPlus := c.caps.Has(imap.CapLiteralPlus)
@@ -636,10 +687,18 @@ func (c *Client) read() {
 
 	c.setReadTimeout(respReadTimeout) // We're waiting for the greeting
 	for {
+		// Arm the deadline for the wait that is about to happen. dec.EOF blocks
+		// until the first byte of the next response arrives, so this is where a
+		// server that has gone silent must be caught.
+		c.beginAwaitResponse()
+
 		// Ignore net.ErrClosed here, because we also call conn.Close in c.Close
 		if c.dec.EOF() || errors.Is(c.dec.Err(), net.ErrClosed) || errors.Is(c.dec.Err(), io.ErrClosedPipe) {
+			c.endAwaitResponse()
 			break
 		}
+		c.endAwaitResponse()
+
 		if err := c.readResponse(); err != nil {
 			c.decErr = err
 			break
@@ -651,8 +710,9 @@ func (c *Client) read() {
 }
 
 func (c *Client) readResponse() error {
+	// The read loop re-arms the deadline for the next wait, so there is nothing
+	// to restore on the way out.
 	c.setReadTimeout(respReadTimeout)
-	defer c.setReadTimeout(idleReadTimeout)
 
 	// Apply the MaxSize budget per response rather than cumulatively.
 	c.dec.ResetCount()
