@@ -121,7 +121,7 @@ func (c *Conn) handleSearch(tag string, dec *imapwire.Decoder, numKind NumKind) 
 	// wire form it knows how to parse. supportsESEARCH is kept as the outer
 	// guard so the response form can never outrun what the session reports it
 	// can do via SessionCapabilities.
-	if supportsESEARCH && (extended || c.enabledHas(imap.CapIMAP4rev2)) {
+	if supportsESEARCH && (extended || c.isIMAP4rev2()) {
 		return c.writeESearch(tag, data, &options, numKind)
 	} else {
 		return c.writeSearch(data.All, data.ModSeq)
