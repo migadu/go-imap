@@ -406,6 +406,15 @@ func (dec *Decoder) ExpectModSeq(ptr *uint64) bool {
 }
 
 func (dec *Decoder) Quoted(ptr *string) bool {
+	return dec.quoted(ptr, false)
+}
+
+// maxStrayQuotes bounds the recovery in quoted: the malformation seen in the
+// wild is a doubled empty string ("" written as """"), so two is enough, and a
+// bound keeps a hostile peer from making us discard an unbounded run.
+const maxStrayQuotes = 2
+
+func (dec *Decoder) quoted(ptr *string, allowStrayQuotes bool) bool {
 	if !dec.Special('"') {
 		return false
 	}
@@ -429,8 +438,56 @@ func (dec *Decoder) Quoted(ptr *string) bool {
 
 		sb.WriteByte(ch)
 	}
+
+	if allowStrayQuotes {
+		// A conformant peer always follows the closing quote with a delimiter
+		// (SP, '(', ')', ']' or CRLF), so a '"' here means the peer emitted a
+		// malformed token and the rest of the response would decode against the
+		// wrong offsets. Swallowing the stray run costs nothing on conformant
+		// input and keeps one bad field from failing the whole response.
+		//
+		// Peek rather than readByte: hitting the end of the input here is not
+		// an error, and must not set the decoder error.
+		for i := 0; i < maxStrayQuotes; i++ {
+			b, err := dec.r.Peek(1)
+			if err != nil || b[0] != '"' {
+				break
+			}
+			dec.r.Discard(1)
+			dec.readBytes++
+		}
+	}
+
 	*ptr = sb.String()
 	return true
+}
+
+// ExpectNStringAllowStrayQuotes is ExpectNString, tolerating a malformed quoted
+// string that carries stray trailing quotes. Use it only for fields where a
+// non-conformant server has been observed in the wild and the value is not
+// load-bearing.
+func (dec *Decoder) ExpectNStringAllowStrayQuotes(ptr *string) bool {
+	var s string
+	if dec.Atom(&s) {
+		if !dec.Expect(s == "NIL", "nstring") {
+			return false
+		}
+		*ptr = ""
+		return true
+	}
+	if dec.quoted(ptr, true) || dec.Literal(ptr) {
+		return true
+	}
+	return dec.Expect(false, "string")
+}
+
+// ExpectStringAllowStrayQuotes is ExpectString with the same tolerance as
+// ExpectNStringAllowStrayQuotes.
+func (dec *Decoder) ExpectStringAllowStrayQuotes(ptr *string) bool {
+	if dec.quoted(ptr, true) || dec.Literal(ptr) {
+		return true
+	}
+	return dec.Expect(false, "string")
 }
 
 func (dec *Decoder) ExpectAString(ptr *string) bool {
