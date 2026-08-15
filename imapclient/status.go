@@ -211,6 +211,11 @@ func readStatusAttVal(dec *imapwire.Decoder, data *imap.StatusData) error {
 		if !dec.DiscardValue() {
 			return dec.Err()
 		}
+		// An unknown item was skipped successfully. Say so, rather than leaving
+		// ok false and relying on the check below finding a nil Err(): that made
+		// the success accidental, and any future branch that records an error
+		// while returning true would turn it into a silent success.
+		ok = true
 	}
 	if !ok {
 		return dec.Err()
