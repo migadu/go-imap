@@ -813,7 +813,10 @@ func (mbox *MailboxView) staticNumSet(numSet imap.NumSet) imap.NumSet {
 
 	switch numSet := numSet.(type) {
 	case imap.SeqSet:
-		max := uint32(len(mbox.l))
+		// "*" is the largest sequence number the client can name, which is a
+		// property of its view: pending appends are not addressable yet, and
+		// pending expunges still are.
+		max := mbox.tracker.EncodeNumMessages()
 		for i := range numSet {
 			r := &numSet[i]
 			staticNumRange(&r.Start, &r.Stop, max)
