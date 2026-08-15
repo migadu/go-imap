@@ -1028,8 +1028,26 @@ func readBody(dec *imapwire.Decoder, options *Options) (imap.BodyStructure, erro
 		err       error
 	)
 	if dec.String(&mediaType) {
-		token = "body-type-1part"
-		bs, err = readBodyType1part(dec, mediaType, options)
+		// A body opening with a string is body-type-1part, whose media type is
+		// followed by a media subtype -- also a string.
+		//
+		// Except when it is a multipart that lost all of its children. RFC 9051
+		// requires at least one ("1*body SP media-subtype [SP body-ext-mpart]"),
+		// but servers do emit an empty alternative as ("ALTERNATIVE" (params)
+		// ...), where the leading string is the subtype and what follows is the
+		// extension data. Tell them apart by whether a string comes next: it
+		// always does in a conformant 1part, and never in this shape.
+		// See https://github.com/emersion/go-imap/issues/701
+		hasSP := dec.SP()
+
+		var subtype string
+		if hasSP && dec.String(&subtype) {
+			token = "body-type-1part"
+			bs, err = readBodyType1part(dec, mediaType, subtype, options)
+		} else {
+			token = "body-type-mpart"
+			bs, err = readChildlessBodyTypeMpart(dec, mediaType, hasSP, options)
+		}
 	} else {
 		token = "body-type-mpart"
 		bs, err = readBodyTypeMpart(dec, options)
@@ -1051,10 +1069,13 @@ func readBody(dec *imapwire.Decoder, options *Options) (imap.BodyStructure, erro
 	return bs, nil
 }
 
-func readBodyType1part(dec *imapwire.Decoder, typ string, options *Options) (*imap.BodyStructureSinglePart, error) {
-	bs := imap.BodyStructureSinglePart{Type: typ}
+// readBodyType1part reads a body-type-1part whose media type and subtype have
+// already been consumed by readBody, which needs them to tell a single part
+// from a childless multipart.
+func readBodyType1part(dec *imapwire.Decoder, typ, subtype string, options *Options) (*imap.BodyStructureSinglePart, error) {
+	bs := imap.BodyStructureSinglePart{Type: typ, Subtype: subtype}
 
-	if !dec.ExpectSP() || !dec.ExpectString(&bs.Subtype) || !dec.ExpectSP() {
+	if !dec.ExpectSP() {
 		return nil, dec.Err()
 	}
 	var err error
@@ -1174,6 +1195,24 @@ func readBodyExt1part(dec *imapwire.Decoder, options *Options) (*imap.BodyStruct
 	}
 
 	return &ext, nil
+}
+
+// readChildlessBodyTypeMpart reads the malformed multipart described in
+// readBody: no child bodies, the media subtype already consumed, and optional
+// body-ext-mpart left to read.
+func readChildlessBodyTypeMpart(dec *imapwire.Decoder, subtype string, hasSP bool, options *Options) (*imap.BodyStructureMultiPart, error) {
+	bs := imap.BodyStructureMultiPart{Subtype: subtype}
+	if !hasSP {
+		// Nothing follows the subtype at all, e.g. ("ALTERNATIVE").
+		return &bs, nil
+	}
+
+	var err error
+	bs.Extended, err = readBodyExtMpart(dec, options)
+	if err != nil {
+		return nil, fmt.Errorf("in body-ext-mpart: %w", err)
+	}
+	return &bs, nil
 }
 
 func readBodyTypeMpart(dec *imapwire.Decoder, options *Options) (*imap.BodyStructureMultiPart, error) {
