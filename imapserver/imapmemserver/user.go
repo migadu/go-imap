@@ -59,6 +59,13 @@ func (u *User) mailboxLocked(name string) (*Mailbox, error) {
 	return mbox, nil
 }
 
+// mailboxIfExists returns the mailbox with this name, or nil.
+func (u *User) mailboxIfExists(name string) *Mailbox {
+	u.mutex.Lock()
+	defer u.mutex.Unlock()
+	return u.mailboxes[name]
+}
+
 func (u *User) mailbox(name string) (*Mailbox, error) {
 	u.mutex.Lock()
 	defer u.mutex.Unlock()
@@ -166,7 +173,32 @@ func (u *User) create(name string, source *UserSession) error {
 
 	u.mailboxes[name] = mbox
 	u.notify.broadcast(memNotifyEvent{kind: evMailboxCreated, mailbox: name, source: source})
+	u.notifyParentLocked(name, source)
 	return nil
+}
+
+// notifyParentLocked reports the direct parent of a created or deleted mailbox,
+// which RFC 5465 section 5.4 also counts as affected ("the mailbox itself and
+// its direct parent (whether it is an existing mailbox or not)").
+func (u *User) notifyParentLocked(name string, source *UserSession) {
+	i := strings.LastIndexByte(name, byte(mailboxDelim))
+	if i <= 0 {
+		return
+	}
+	u.notify.broadcast(memNotifyEvent{kind: evMailboxParent, mailbox: name[:i], source: source})
+}
+
+// hasChildren reports whether any mailbox is subordinate to name.
+func (u *User) hasChildren(name string) bool {
+	u.mutex.Lock()
+	defer u.mutex.Unlock()
+	prefix := name + string(mailboxDelim)
+	for other := range u.mailboxes {
+		if strings.HasPrefix(other, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func (u *User) Delete(ctx context.Context, name string) error {
@@ -184,6 +216,7 @@ func (u *User) delete(name string, source *UserSession) error {
 
 	delete(u.mailboxes, name)
 	u.notify.broadcast(memNotifyEvent{kind: evMailboxDeleted, mailbox: name, source: source})
+	u.notifyParentLocked(name, source)
 	return nil
 }
 

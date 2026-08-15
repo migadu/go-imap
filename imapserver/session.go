@@ -198,6 +198,14 @@ type SessionNotify interface {
 	// not support by returning *UnsupportedNotifyEventError, which the
 	// server translates into a tagged NO with the BADEVENT response code.
 	//
+	// The per-mailbox access checks of RFC 5465 section 3.1 are also the
+	// backend's: a named mailbox that does not exist, or that the user cannot
+	// LIST, must be ignored silently, and one the user can LIST but lacks the
+	// rights to monitor must be reported with an untagged LIST carrying
+	// imap.MailboxAttrNoAccess (written with UpdateWriter.WriteList). Section
+	// 5.9 extends this to later changes: monitoring stops when access is lost
+	// and resumes when it is granted again.
+	//
 	// If options.Status is set, the implementation must write the initial
 	// STATUS responses for matching non-selected mailboxes to w before
 	// returning, so that they precede NOTIFY's tagged OK (RFC 5465

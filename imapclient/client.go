@@ -1309,7 +1309,25 @@ type UnilateralDataMailbox struct {
 type UnilateralDataHandler struct {
 	Expunge func(seqNum uint32)
 	Mailbox func(data *UnilateralDataMailbox)
-	Fetch   func(msg *FetchMessageData)
+
+	// Fetch is called for an unsolicited FETCH response, such as the flag
+	// update a NOTIFY FlagChange event produces for the selected mailbox
+	// (RFC 5465 §5.1).
+	//
+	// One case is not routed here: a FETCH command is in flight and the
+	// notification concerns a message inside its set. Nothing distinguishes
+	// the two at the point the response must be attributed — the data items
+	// have not been read yet, and FLAGS legitimately accompany a command's own
+	// data (a FETCH that implicitly sets \Seen reports the new flags the same
+	// way) — so the notification is attributed to the command. The cost is
+	// real: that message's buffer then holds the notification's items instead
+	// of the requested ones, and the command's own response for it, arriving
+	// afterwards, is treated as unsolicited and reaches this handler instead.
+	// A client that runs FETCH commands while watching FlagChange on the
+	// selected mailbox should therefore treat a message buffer that lacks a
+	// requested item as incomplete and re-fetch it, or keep FlagChange out of
+	// the SELECTED specifier of its watch.
+	Fetch func(msg *FetchMessageData)
 
 	// Requires ENABLE QRESYNC.
 	Vanished func(data *imap.VanishedData)

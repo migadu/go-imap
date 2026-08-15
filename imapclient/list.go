@@ -67,6 +67,8 @@ func getReturnOpts(options *imap.ListOptions) []string {
 func (c *Client) List(ref, pattern string, options *imap.ListOptions) *ListCommand {
 	cmd := &ListCommand{
 		mailboxes:      make(chan *imap.ListData, 64),
+		ref:            ref,
+		pattern:        pattern,
 		returnStatus:   options != nil && options.ReturnStatus != nil,
 		returnMetadata: options != nil && options.ReturnMetadata != nil,
 	}
@@ -109,7 +111,7 @@ func (c *Client) handleList() error {
 	cmd := c.findPendingCmdFunc(func(cmd command) bool {
 		switch cmd := cmd.(type) {
 		case *ListCommand:
-			return true // TODO: match pattern, check if already handled
+			return cmd.matches(data)
 		case *SelectCommand:
 			return cmd.mailbox == data.Mailbox && cmd.data.List == nil
 		default:
@@ -144,9 +146,51 @@ type ListCommand struct {
 	commandBase
 	mailboxes chan *imap.ListData
 
+	ref            string
+	pattern        string
 	returnStatus   bool
 	returnMetadata bool
 	pendingData    *imap.ListData
+}
+
+// matches reports whether a LIST response belongs to this command rather than
+// being unsolicited. With NOTIFY (RFC 5465 §5.4, §5.5) a LIST response can
+// arrive at any time, including while a LIST command is in flight.
+//
+// The test is deliberately lopsided: mistaking the command's own response for
+// an unsolicited one loses data the caller asked for, while the reverse merely
+// adds a mailbox to the results. So anything that could plausibly answer this
+// command is claimed, and only a clear mismatch is treated as unsolicited.
+func (cmd *ListCommand) matches(data *imap.ListData) bool {
+	if data.ChildInfo != nil {
+		// A RECURSIVEMATCH parent is reported because of its children, so it
+		// need not match the pattern itself.
+		return true
+	}
+	if cmd.pattern == "" {
+		// RFC 9051 §6.3.9: an empty mailbox name asks for the hierarchy
+		// delimiter, answered with the reference's root — which by definition
+		// does not match the (empty) pattern.
+		return true
+	}
+	// The wire form is what the server matched against: INBOX is canonicalized
+	// to upper case in both directions (RFC 9051 §6.3.9 has the server match
+	// and report the uppercase spelling), so compare the canonical forms.
+	return internal.MatchList(data.Mailbox, data.Delim, canonicalMailbox(cmd.ref), canonicalMailbox(cmd.pattern))
+}
+
+// canonicalMailbox spells a mailbox name the way the encoder puts it on the
+// wire, so that a name coming back from the server can be compared with it.
+//
+// It mirrors Encoder.Mailbox exactly: only a name that is entirely "INBOX" is
+// rewritten. Anything else is sent verbatim, so rewriting a mere prefix here
+// would compare against a string the server never saw — and drop the response.
+func canonicalMailbox(name string) string {
+	const inbox = "INBOX"
+	if strings.EqualFold(name, inbox) {
+		return inbox
+	}
+	return name
 }
 
 // Next advances to the next mailbox.

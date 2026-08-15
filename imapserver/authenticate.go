@@ -146,15 +146,20 @@ func (c *Conn) handleUnauthenticate(dec *imapwire.Decoder) error {
 	// is torn down, and Unauthenticate drops that state. Stopping first also
 	// means the pump can no longer write to a connection that is about to
 	// re-enter the not-authenticated state.
+	hadPump := c.notifyPumpRunning()
 	c.stopNotifyPump()
+
+	if err := session.Unauthenticate(c.ctx); err != nil {
+		// The command failed, so the session — and with it the client's watch —
+		// is still in effect. Put the pump back.
+		c.restartNotifyPump(hadPump)
+		return err
+	}
+
 	// The watch belongs to the authenticated session: a connection returning to
 	// the not-authenticated state also returns to the pre-NOTIFY notification
 	// behaviour of RFC 5465 §3.1.
 	c.resetNotifySelectedEvents()
-
-	if err := session.Unauthenticate(c.ctx); err != nil {
-		return err
-	}
 	c.state = imap.ConnStateNotAuthenticated
 	c.mutex.Lock()
 	c.enabled = make(imap.CapSet)

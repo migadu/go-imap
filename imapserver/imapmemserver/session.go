@@ -23,12 +23,35 @@ type UserSession struct {
 	*user    // immutable
 	*mailbox // may be nil
 
+	// ownMessages records the UIDs this session created in the selected
+	// mailbox, so that no MessageNew fetch-att response is generated for them
+	// (RFC 5465 section 5.2: "A FETCH response SHOULD NOT be generated for a
+	// new message created by the client on this particular connection").
+	//
+	// Entries are recorded only while a watch that produces such responses is
+	// installed, consumed when the notification is emitted, and dropped
+	// wholesale when the selected mailbox changes — so the set stays bounded
+	// and can never outlive the mailbox it refers to. Guarded by notifyMutex.
+	ownMessages map[imap.UID]struct{}
+
 	// notifyMutex guards notifyWatch, and synchronizes updates of the
 	// mailbox pointer (performed on the command goroutine) with reads from
 	// the NOTIFY pump goroutine. Command-goroutine reads need no locking:
 	// they run on the same goroutine as the writes.
 	notifyMutex sync.Mutex
 	notifyWatch *notifyWatch
+
+	// notifyUsed records that the client issued NOTIFY on this session. It
+	// stays set after NOTIFY NONE: that command asks for no events at all
+	// (RFC 5465 section 3.1), so IDLE must not fall back to pushing the
+	// selected mailbox's updates either.
+	notifyUsed bool
+
+	// notifyEvents receives the change events of the user while a watch is
+	// installed. It belongs to the session rather than to the NotifyPoll call,
+	// so events raised while the pump is stopped (the library fences it around
+	// every change of the selected mailbox) are queued instead of lost.
+	notifyEvents chan memNotifyEvent
 }
 
 var (
@@ -44,12 +67,23 @@ func NewUserSession(user *User) *UserSession {
 // setMailbox updates the selected-mailbox pointer, keeping the NOTIFY pump's
 // view consistent (see notifyMutex).
 func (sess *UserSession) setMailbox(mbox *MailboxView) {
+	// Read uidNext under the mailbox lock that guards it, before taking
+	// notifyMutex: another session may be appending concurrently.
+	var uidNext imap.UID
+	if mbox != nil {
+		mbox.mutex.Lock()
+		uidNext = mbox.uidNext
+		mbox.mutex.Unlock()
+	}
+
 	sess.notifyMutex.Lock()
 	sess.mailbox = mbox
+	// The recorded UIDs belong to the mailbox being left.
+	sess.ownMessages = nil
 	if sess.notifyWatch != nil && mbox != nil {
 		// Rebind the MessageNew fetch-atts high-water mark to the newly
 		// selected mailbox: only messages arriving from now on are "new".
-		sess.notifyWatch.lastUIDNext = mbox.uidNext
+		sess.notifyWatch.lastUIDNext = uidNext
 	}
 	sess.notifyMutex.Unlock()
 }
@@ -58,6 +92,7 @@ func (sess *UserSession) Close() error {
 	if sess == nil {
 		return nil
 	}
+	sess.stopNotifyEvents()
 	if sess.mailbox != nil {
 		sess.mailbox.Close()
 		sess.setMailbox(nil)
@@ -87,6 +122,63 @@ func (sess *UserSession) Subscribe(ctx context.Context, name string) error {
 
 func (sess *UserSession) Unsubscribe(ctx context.Context, name string) error {
 	return sess.user.setSubscribed(name, false, sess)
+}
+
+// Append records the UID it creates before delegating, so the MessageNew
+// notification for the selected mailbox does not echo the message back to its
+// author (RFC 5465 section 5.2).
+func (sess *UserSession) Append(ctx context.Context, mailbox string, r imap.LiteralReader, options *imap.AppendOptions) (*imap.AppendData, error) {
+	data, err := sess.user.Append(ctx, mailbox, r, options)
+	if err != nil {
+		return nil, err
+	}
+	sess.recordOwnMessage(mailbox, data.UID)
+	return data, nil
+}
+
+// maxOwnMessages bounds the recorded set; past it, self-created messages are
+// simply reported like any other (the RFC 5465 section 5.2 rule is a SHOULD).
+const maxOwnMessages = 4096
+
+// recordOwnMessage remembers a message this session created in the mailbox it
+// has selected.
+func (sess *UserSession) recordOwnMessage(mailbox string, uid imap.UID) {
+	if uid == 0 {
+		return
+	}
+
+	sess.notifyMutex.Lock()
+	defer sess.notifyMutex.Unlock()
+
+	// Only messages that could produce a MessageNew fetch-att response are
+	// worth remembering: those in the selected mailbox, while such a watch is
+	// installed.
+	watch := sess.notifyWatch
+	if watch == nil || watch.selected == nil || watch.selected.MessageNewFetch == nil {
+		return
+	}
+	if sess.mailbox == nil || sess.mailbox.Mailbox != sess.user.mailboxIfExists(mailbox) {
+		return
+	}
+	if len(sess.ownMessages) >= maxOwnMessages {
+		return
+	}
+	if sess.ownMessages == nil {
+		sess.ownMessages = make(map[imap.UID]struct{})
+	}
+	sess.ownMessages[uid] = struct{}{}
+}
+
+// takeOwnMessage reports whether the message was created by this session,
+// forgetting it in the process.
+func (sess *UserSession) takeOwnMessage(uid imap.UID) bool {
+	sess.notifyMutex.Lock()
+	defer sess.notifyMutex.Unlock()
+	if _, ok := sess.ownMessages[uid]; !ok {
+		return false
+	}
+	delete(sess.ownMessages, uid)
+	return true
 }
 
 func (sess *UserSession) Select(ctx context.Context, name string, options *imap.SelectOptions) (*imap.SelectData, error) {
@@ -128,6 +220,12 @@ func (sess *UserSession) Copy(ctx context.Context, numSet imap.NumSet, destName 
 		sourceUIDs.AddNum(msg.uid)
 		destUIDs.AddNum(appendData.UID)
 	})
+
+	if uids, ok := destUIDs.Nums(); ok {
+		for _, uid := range uids {
+			sess.recordOwnMessage(destName, uid)
+		}
+	}
 
 	return &imap.CopyData{
 		UIDValidity: dest.uidValidity,
@@ -186,20 +284,25 @@ func (sess *UserSession) Poll(ctx context.Context, w *imapserver.UpdateWriter, a
 	if sess.mailbox == nil {
 		return nil
 	}
-	return sess.mailbox.Poll(ctx, w, allowExpunge)
+	if err := sess.mailbox.Poll(ctx, w, allowExpunge); err != nil {
+		return err
+	}
+	// This flush may have released the EXISTS a pending MessageNew fetch-att
+	// response was waiting for.
+	return sess.notifyPendingFetch(w)
 }
 
 func (sess *UserSession) Idle(ctx context.Context, w *imapserver.UpdateWriter, stop <-chan struct{}) error {
 	sess.notifyMutex.Lock()
-	watchActive := sess.notifyWatch != nil
+	notifyUsed := sess.notifyUsed
 	sess.notifyMutex.Unlock()
-	if watchActive {
-		// A NOTIFY watch is the single event source for this connection: the
-		// pump delivers according to the client's NOTIFY filter. IDLE then
-		// only keeps the connection open. Delivering via tracker.Idle here
-		// would bypass the filter — e.g. a watch without a SELECTED specifier
-		// (RFC 5465 §3.1: "same as specifying SELECTED NONE") must not push
-		// selected-mailbox message events.
+	if notifyUsed {
+		// Once NOTIFY has been used, it is the single event source for this
+		// connection: the pump delivers according to the client's filter, and
+		// IDLE only keeps the connection open. Delivering via tracker.Idle
+		// here would bypass the filter — a watch without a SELECTED specifier
+		// (RFC 5465 §3.1: "same as specifying SELECTED NONE"), or NOTIFY NONE,
+		// must not push selected-mailbox message events.
 		select {
 		case <-stop:
 		case <-ctx.Done():
@@ -391,12 +494,13 @@ func (sess *UserSession) SetMetadata(ctx context.Context, mailboxName string, en
 	}
 
 	// RFC 5465 sections 5.6 and 5.7: report the change to NOTIFY watchers with
-	// an unsolicited METADATA response. Deleted entries (nil values) are part
-	// of the change and must be reported too.
-	changed := make(map[string]*[]byte, len(entries))
-	for name, value := range entries {
-		changed[name] = value
+	// an unsolicited METADATA response naming the changed entries, deletions
+	// included. Sorted so the response order is deterministic.
+	changed := make([]string, 0, len(entries))
+	for name := range entries {
+		changed = append(changed, name)
 	}
+	sort.Strings(changed)
 	kind := evMailboxMetadataChange
 	if mailboxName == "" {
 		kind = evServerMetadataChange
@@ -559,6 +663,8 @@ func (sess *UserSession) SetACL(ctx context.Context, name string, identifier ima
 		rights = rights.Add(imap.RightSet("te"))
 	}
 
+	before := mbox.acl[imap.RightsIdentifier(sess.user.username)]
+
 	switch modification {
 	case imap.RightModificationReplace:
 		mbox.acl[identifier] = rights
@@ -568,12 +674,45 @@ func (sess *UserSession) SetACL(ctx context.Context, name string, identifier ima
 		mbox.acl[identifier] = currentRights.Remove(rights)
 	}
 
+	if kind, ok := aclNotifyEvent(before, mbox.acl[imap.RightsIdentifier(sess.user.username)]); ok {
+		sess.user.notify.broadcast(memNotifyEvent{kind: kind, mailbox: name, source: sess})
+	}
+
 	return nil
 }
 
 // DeleteACL removes the access control list entry for an identifier
 func (sess *UserSession) DeleteACL(ctx context.Context, name string, identifier imap.RightsIdentifier) error {
 	return sess.SetACL(ctx, name, identifier, imap.RightModificationReplace, nil)
+}
+
+// aclNotifyEvent maps a change of the current user's rights on a mailbox to the
+// NOTIFY event it must be reported as. RFC 5465 section 5.4: "granting or
+// revocation of the 'l' right to the current user on the affected mailbox MUST
+// be considered mailbox creation or deletion". Section 5.9 asks for a
+// \NoAccess LIST response when a right needed to monitor the mailbox is lost
+// while it stays listable.
+func aclNotifyEvent(before, after imap.RightSet) (memNotifyEventKind, bool) {
+	couldList, canList := hasRight(before, imap.RightLookup), hasRight(after, imap.RightLookup)
+	switch {
+	case !couldList && canList:
+		return evMailboxCreated, true
+	case couldList && !canList:
+		return evMailboxDeleted, true
+	case canList && hasRight(before, imap.RightRead) && !hasRight(after, imap.RightRead):
+		return evMailboxNoAccess, true
+	default:
+		return 0, false
+	}
+}
+
+func hasRight(rights imap.RightSet, right imap.Right) bool {
+	for _, r := range rights {
+		if r == right {
+			return true
+		}
+	}
+	return false
 }
 
 // ListRights lists the rights that can be granted to an identifier on a mailbox

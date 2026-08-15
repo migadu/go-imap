@@ -413,3 +413,165 @@ func TestNotifyIntegration_BadEvent(t *testing.T) {
 		t.Errorf("response code = %v, want BADEVENT", imapErr.Code)
 	}
 }
+
+// TestNotifyIntegration_MetadataChange verifies that a metadata change in a
+// watched mailbox reaches the client's unilateral METADATA handler. RFC 5464
+// section 4.4 requires the unsolicited form to carry entry names only, which is
+// also the only form imapclient reports as unsolicited.
+func TestNotifyIntegration_MetadataChange(t *testing.T) {
+	addr, _, closer := newNotifyIntegrationServer(t, "INBOX")
+	defer closer()
+
+	type metadataNotification struct {
+		mailbox string
+		entries []string
+	}
+	metadataCh := make(chan metadataNotification, 8)
+	client := dialNotifyClient(t, addr, &imapclient.Options{
+		UnilateralDataHandler: &imapclient.UnilateralDataHandler{
+			Metadata: func(mailbox string, entries []string) {
+				metadataCh <- metadataNotification{mailbox: mailbox, entries: entries}
+			},
+		},
+	})
+	defer client.Close()
+
+	cmd, err := client.Notify(&imap.NotifyOptions{
+		Items: []imap.NotifyItem{{
+			MailboxSpec: imap.NotifyMailboxSpecPersonal,
+			Events:      []imap.NotifyEvent{imap.NotifyEventMailboxMetadataChange},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Notify() = %v", err)
+	}
+	if err := cmd.Wait(); err != nil {
+		t.Fatalf("Notify().Wait() = %v", err)
+	}
+
+	// A second connection changes an annotation of the watched mailbox.
+	other := dialNotifyClient(t, addr, nil)
+	defer other.Close()
+	value := []byte("hello")
+	if err := other.SetMetadata("INBOX", map[string]*[]byte{"/private/comment": &value}).Wait(); err != nil {
+		t.Fatalf("SetMetadata() = %v", err)
+	}
+
+	select {
+	case notification := <-metadataCh:
+		if notification.mailbox != "INBOX" {
+			t.Errorf("METADATA for mailbox %q, want INBOX", notification.mailbox)
+		}
+		if len(notification.entries) != 1 || notification.entries[0] != "/private/comment" {
+			t.Errorf("METADATA entries = %v, want [/private/comment]", notification.entries)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for the unsolicited METADATA notification")
+	}
+}
+
+// TestNotifyIntegration_UnsolicitedListNotAbsorbed verifies that an unsolicited
+// LIST arriving while a LIST command is in flight is reported to the unilateral
+// handler instead of being appended to the command's results (RFC 5465 section
+// 5.4 delivers MailboxName events this way, at any time).
+func TestNotifyIntegration_UnsolicitedListNotAbsorbed(t *testing.T) {
+	addr, user, closer := newNotifyIntegrationServer(t, "Box1", "Box2")
+	defer closer()
+
+	listCh := make(chan *imap.ListData, 8)
+	client := dialNotifyClient(t, addr, &imapclient.Options{
+		UnilateralDataHandler: &imapclient.UnilateralDataHandler{
+			List: func(data *imap.ListData) { listCh <- data },
+		},
+	})
+	defer client.Close()
+
+	cmd, err := client.Notify(&imap.NotifyOptions{
+		Items: []imap.NotifyItem{{
+			MailboxSpec: imap.NotifyMailboxSpecPersonal,
+			Events:      []imap.NotifyEvent{imap.NotifyEventMailboxName},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Notify() = %v", err)
+	}
+	if err := cmd.Wait(); err != nil {
+		t.Fatalf("Notify().Wait() = %v", err)
+	}
+
+	// Create a mailbox outside the pattern the client is about to list. The
+	// notification races the LIST command's own responses.
+	if err := user.Create(context.Background(), "OutOfBand", nil); err != nil {
+		t.Fatalf("Create() = %v", err)
+	}
+
+	mailboxes, err := client.List("", "Box*", nil).Collect()
+	if err != nil {
+		t.Fatalf("List() = %v", err)
+	}
+	for _, data := range mailboxes {
+		if data.Mailbox == "OutOfBand" {
+			t.Errorf("unsolicited LIST was absorbed by the LIST command: %v", data.Mailbox)
+		}
+	}
+
+	select {
+	case data := <-listCh:
+		if data.Mailbox != "OutOfBand" {
+			t.Errorf("unilateral LIST for %q, want OutOfBand", data.Mailbox)
+		}
+	case <-time.After(5 * time.Second):
+		t.Error("timeout waiting for the unsolicited LIST notification")
+	}
+}
+
+// TestNotifyIntegration_UnsolicitedStatusNotAbsorbed verifies that a second
+// STATUS response for the mailbox of an in-flight STATUS command is treated as
+// unsolicited (RFC 5465 sections 5.1-5.3) instead of overwriting its result.
+func TestNotifyIntegration_UnsolicitedStatusNotAbsorbed(t *testing.T) {
+	addr, user, closer := newNotifyIntegrationServer(t, "Archive")
+	defer closer()
+
+	statusCh := make(chan *imap.StatusData, 8)
+	client := dialNotifyClient(t, addr, &imapclient.Options{
+		UnilateralDataHandler: &imapclient.UnilateralDataHandler{
+			Status: func(data *imap.StatusData) { statusCh <- data },
+		},
+	})
+	defer client.Close()
+
+	cmd, err := client.Notify(&imap.NotifyOptions{
+		Items: []imap.NotifyItem{{
+			MailboxSpec: imap.NotifyMailboxSpecPersonal,
+			Events: []imap.NotifyEvent{
+				imap.NotifyEventMessageNew,
+				imap.NotifyEventMessageExpunge,
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Notify() = %v", err)
+	}
+	if err := cmd.Wait(); err != nil {
+		t.Fatalf("Notify().Wait() = %v", err)
+	}
+
+	if _, err := user.Append(context.Background(), "Archive", newNotifyLiteral(notifyTestMessage), &imap.AppendOptions{}); err != nil {
+		t.Fatalf("Append() = %v", err)
+	}
+	select {
+	case <-statusCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for the unsolicited STATUS")
+	}
+
+	// The STATUS command must still get its own answer, with the items it
+	// asked for.
+	data, err := client.Status("Archive", &imap.StatusOptions{NumMessages: true}).Wait()
+	if err != nil {
+		t.Fatalf("Status() = %v", err)
+	}
+	if data.NumMessages == nil || *data.NumMessages != 1 {
+		t.Errorf("STATUS NumMessages = %v, want 1", data.NumMessages)
+	}
+}

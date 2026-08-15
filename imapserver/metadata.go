@@ -178,6 +178,27 @@ func (c *Conn) handleSetMetadata(dec *imapwire.Decoder) error {
 	return nil
 }
 
+// writeMetadataEntryList writes an untagged METADATA response in the entry-list
+// form of RFC 5464 §4.4.2: "* METADATA <mailbox> <entry> *(SP <entry>)".
+//
+// This is the form REQUIRED for unsolicited responses — RFC 5464 §4.4:
+// "Unsolicited METADATA responses MUST only contain entry names, not the
+// values." The entry-values form of writeMetadataResp answers GETMETADATA.
+func (c *Conn) writeMetadataEntryList(mailbox string, entries []string) error {
+	if len(entries) == 0 {
+		return nil
+	}
+
+	enc := newResponseEncoder(c)
+	defer enc.end()
+
+	enc.Atom("*").SP().Atom("METADATA").SP().Mailbox(mailbox)
+	for _, entry := range entries {
+		enc.SP().String(entry)
+	}
+	return enc.CRLF()
+}
+
 func (c *Conn) writeMetadataResp(mailbox string, entries map[string]*[]byte) error {
 	if len(entries) == 0 {
 		return nil

@@ -82,8 +82,11 @@ func encodeNotifyOptions(enc *imapwire.Encoder, options *imap.NotifyOptions) err
 					enc.SP()
 				}
 				enc.Atom(string(ev))
-				if ev == imap.NotifyEventMessageNew && item.MessageNewFetch != nil {
-					// MessageNew [SP "(" fetch-att *(SP fetch-att) ")"]
+				// message-event = "MessageNew" [SP "(" fetch-att
+				// *(SP fetch-att) ")"] — the group must hold at least one
+				// fetch-att (RFC 5465 §8), so fetch options that select
+				// nothing are encoded as a bare MessageNew.
+				if ev == imap.NotifyEventMessageNew && hasFetchItems(item.MessageNewFetch) {
 					enc.SP()
 					writeFetchItems(enc, imapwire.NumKindSeq, item.MessageNewFetch)
 				}

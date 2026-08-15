@@ -87,6 +87,18 @@ func (c *Client) Fetch(numSet imap.NumSet, options *imap.FetchOptions) *FetchCom
 	return cmd
 }
 
+// hasFetchItems reports whether options select at least one data item, i.e.
+// whether writeFetchItems would produce a non-empty list.
+func hasFetchItems(options *imap.FetchOptions) bool {
+	if options == nil {
+		return false
+	}
+	return options.UID || options.BodyStructure != nil || options.Envelope ||
+		options.Flags || options.InternalDate || options.RFC822Size ||
+		options.ModSeq || len(options.BodySection) > 0 ||
+		len(options.BinarySection) > 0 || len(options.BinarySectionSize) > 0
+}
+
 func writeFetchItems(enc *imapwire.Encoder, numKind imapwire.NumKind, options *imap.FetchOptions) {
 	listEnc := enc.BeginList()
 
@@ -704,6 +716,14 @@ func (c *Client) handleFetch(seqNum uint32) error {
 			if !ok {
 				return false
 			}
+
+			// Note: an unsolicited FETCH (a NOTIFY FlagChange for the
+			// selected mailbox, RFC 5465 §5.1) for a message inside this
+			// command's set is indistinguishable from the command's own
+			// response at this point — the items have not been read yet, and
+			// FLAGS legitimately accompany requested data items (a FETCH that
+			// implicitly sets \Seen reports it the same way). It is therefore
+			// attributed to the command; see UnilateralDataHandler.Fetch.
 
 			// Skip if we haven't requested or already handled this message
 			if _, ok := cmd.numSet.(imap.UIDSet); ok {

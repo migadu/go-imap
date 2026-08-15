@@ -203,9 +203,34 @@ func (t *SessionTracker) queueUpdate(update *trackerUpdate) {
 // dequeued batch is written to the client atomically, preserving update
 // ordering (a NOTIFY pump and the command loop may both flush this tracker).
 func (t *SessionTracker) Poll(w *UpdateWriter, allowExpunge bool) error {
+	return t.PollWith(w, allowExpunge, nil)
+}
+
+// PollWith is Poll with a follow-up write that must not be interleaved with
+// another flush.
+//
+// after runs once the pending updates have been written, while the delivery
+// lock is still held. A NOTIFY backend uses it for the FETCH responses of the
+// MessageNew fetch-atts (RFC 5465 §5.2): their sequence numbers are computed
+// from the state Poll just delivered, so another goroutine flushing an EXPUNGE
+// in between would renumber the client's view and make those responses point
+// at the wrong messages. Encode the sequence numbers inside after, not before
+// the call.
+func (t *SessionTracker) PollWith(w *UpdateWriter, allowExpunge bool, after func() error) error {
 	t.deliverMutex.Lock()
 	defer t.deliverMutex.Unlock()
 
+	if err := t.poll(w, allowExpunge); err != nil {
+		return err
+	}
+	if after != nil {
+		return after()
+	}
+	return nil
+}
+
+// poll delivers pending updates. The delivery lock must be held.
+func (t *SessionTracker) poll(w *UpdateWriter, allowExpunge bool) error {
 	var updates []trackerUpdate
 	t.mutex.Lock()
 	if allowExpunge {
@@ -280,6 +305,23 @@ func (t *SessionTracker) Poll(w *UpdateWriter, allowExpunge bool) error {
 		}
 	}
 	return flushVanished()
+}
+
+// QueuedUpdates returns the number of updates waiting to be delivered to this
+// session.
+//
+// It grows without bound while the client's NOTIFY watch disables message
+// events for the selected mailbox (RFC 5465 section 3.1): the updates cannot be
+// delivered, and dropping them would desynchronise the client's sequence
+// numbers. A backend watching a large mailbox should therefore check it and,
+// past a limit of its choosing, declare a notification overflow with
+// UpdateWriter.WriteNotificationOverflow — which tells the client its
+// notifications are off (RFC 5465 section 5.8) and lets the server resume
+// ordinary delivery, draining the queue.
+func (t *SessionTracker) QueuedUpdates() int {
+	t.mutex.Lock()
+	defer t.mutex.Unlock()
+	return len(t.queue)
 }
 
 // Idle continuously writes mailbox updates.

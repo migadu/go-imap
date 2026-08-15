@@ -48,7 +48,7 @@ func (mbox *Mailbox) notifyEventLocked(kind memNotifyEventKind) {
 	if mbox.notify == nil {
 		return
 	}
-	mbox.notify(memNotifyEvent{kind: kind, mailbox: mbox.name})
+	mbox.notify(memNotifyEvent{kind: kind, mailbox: mbox.name, mbox: mbox})
 }
 
 // notifyEvent is notifyEventLocked for callers that do not hold the mailbox
@@ -60,7 +60,7 @@ func (mbox *Mailbox) notifyEvent(kind memNotifyEventKind) {
 	mbox.mutex.Lock()
 	name := mbox.name
 	mbox.mutex.Unlock()
-	mbox.notify(memNotifyEvent{kind: kind, mailbox: name})
+	mbox.notify(memNotifyEvent{kind: kind, mailbox: name, mbox: mbox})
 }
 
 type expungedMessage struct {

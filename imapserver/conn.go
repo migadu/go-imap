@@ -106,6 +106,11 @@ type Conn struct {
 	notifyUsed           bool
 	notifySelectedEvents map[imap.NotifyEvent]bool
 
+	// notifyFetchWriterOptions holds the response-writer options of the
+	// MessageNew fetch-att list of the installed watch, so unsolicited FETCH
+	// responses use the data-item names the client asked for.
+	notifyFetchWriterOptions *fetchWriterOptions
+
 	// activeCmd is the name of the command currently being processed by the
 	// command goroutine ("" between commands). The NOTIFY pump consults it to
 	// avoid delivering EXPUNGE/VANISHED updates while a command that forbids
@@ -466,6 +471,18 @@ func (c *Conn) readCommand(dec *imapwire.Decoder) (err error) {
 
 	dec.DiscardLine()
 
+	// A command whose remaining octets could not be skipped leaves the stream
+	// pointing into client data rather than at a command boundary: whatever
+	// follows would be executed as commands. There is no way back from that, so
+	// end the connection instead of continuing to parse (RFC 9051 §2.2.1).
+	if dec.Desynchronized() {
+		_ = c.writeStatusResp("", &imap.StatusResponse{
+			Type: imap.StatusResponseTypeBye,
+			Text: "Unable to resynchronize command stream",
+		})
+		return fmt.Errorf("imapserver: command stream desynchronized")
+	}
+
 	var (
 		resp    *imap.StatusResponse
 		imapErr *imap.Error
@@ -668,6 +685,19 @@ func (c *Conn) setWriteTimeout(dur time.Duration) {
 	}
 }
 
+// expungeReportingCmd reports whether the command's own tagged OK must be
+// preceded by an untagged EXPUNGE for each removed message (RFC 9051 §6.4.3,
+// RFC 4315 §2.1 for the UID variant). CLOSE is deliberately absent: it removes
+// messages without reporting them.
+func expungeReportingCmd(cmd string) bool {
+	switch cmd {
+	case "EXPUNGE", "UID EXPUNGE":
+		return true
+	default:
+		return false
+	}
+}
+
 func (c *Conn) poll(cmd string) error {
 	switch c.state {
 	case imap.ConnStateAuthenticated, imap.ConnStateSelected:
@@ -684,7 +714,15 @@ func (c *Conn) poll(cmd string) error {
 	// this sync point, which is what makes NOTIFY SET ... NONE usable as the
 	// snapshot facility of RFC 5465 §5 and what keeps sequence numbers stable
 	// for clients that rely on it.
-	if !c.notifySelectedMessageEventsEnabled() {
+	//
+	// The filter covers notifications only. EXPUNGE and UID EXPUNGE MUST report
+	// each removed message with an untagged EXPUNGE before their tagged OK (RFC
+	// 9051 §6.4.3, RFC 4315 §2.1); that is command response data, which no
+	// NOTIFY setting suppresses. Flushing then necessarily also delivers
+	// whatever else the queue holds: updates are sequence-numbered, so a later
+	// EXPUNGE cannot be reported without the earlier ones that shift the
+	// numbering.
+	if !expungeReportingCmd(cmd) && !c.notifySelectedMessageEventsEnabled() {
 		return nil
 	}
 
@@ -857,7 +895,7 @@ func (c *Conn) notifyExpungeAllowed() bool {
 // the selected mailbox with the SELECTED/SELECTED-DELAYED specifier. options is
 // nil for NOTIFY NONE. It is called by the NOTIFY handler once the backend has
 // accepted the new watch.
-func (c *Conn) setNotifySelectedEvents(options *imap.NotifyOptions) {
+func (c *Conn) setNotifySelectedEvents(options *imap.NotifyOptions, fetchWriterOpts *fetchWriterOptions) {
 	events := make(map[imap.NotifyEvent]bool)
 	if options != nil {
 		for _, item := range options.Items {
@@ -874,6 +912,7 @@ func (c *Conn) setNotifySelectedEvents(options *imap.NotifyOptions) {
 	c.notifyMutex.Lock()
 	c.notifyUsed = true
 	c.notifySelectedEvents = events
+	c.notifyFetchWriterOptions = fetchWriterOpts
 	c.notifyMutex.Unlock()
 }
 
@@ -884,6 +923,7 @@ func (c *Conn) resetNotifySelectedEvents() {
 	c.notifyMutex.Lock()
 	c.notifyUsed = false
 	c.notifySelectedEvents = nil
+	c.notifyFetchWriterOptions = nil
 	c.notifyMutex.Unlock()
 }
 
@@ -948,6 +988,33 @@ func (w *UpdateWriter) ExpungeAllowed() bool {
 	return true
 }
 
+// DelayedExpungeAllowed reports whether an expunge withheld by the
+// SELECTED-DELAYED specifier may be released now.
+//
+// RFC 5465 §6.1.2 delays MessageExpunge "until the client issues a command that
+// allows returning information about expunged messages ... for example, till a
+// NOOP or an IDLE command has been issued". This reports true while such a
+// command is in progress, so a backend can release its delayed expunges from
+// NotifyPoll instead of leaving them queued until the command ends — which for
+// IDLE would mean holding them, and every update queued behind them, for the
+// entire IDLE.
+//
+// Between commands it returns false: a client using SELECTED-DELAYED is
+// entitled to stable sequence numbers until it asks.
+func (w *UpdateWriter) DelayedExpungeAllowed() bool {
+	if !w.ExpungeAllowed() {
+		return false
+	}
+	w.conn.cmdMutex.Lock()
+	defer w.conn.cmdMutex.Unlock()
+	switch w.conn.activeCmd {
+	case "NOOP", "IDLE", "CHECK", "EXPUNGE", "UID EXPUNGE":
+		return true
+	default:
+		return false
+	}
+}
+
 // CondStoreEnabled reports whether the client has become CONDSTORE-aware on
 // this connection. Backends use it to decide whether STATUS notifications may
 // carry HIGHESTMODSEQ (RFC 5465 §5.1, §5.2) and whether unsolicited FETCH
@@ -979,38 +1046,64 @@ func (w *UpdateWriter) WriteList(data *imap.ListData) error {
 	return w.conn.writeListData(data, nil, allowOldName)
 }
 
-// WriteMetadata writes an untagged METADATA response (RFC 5464 §4.4.2). It is
-// used by NOTIFY (RFC 5465) to report MailboxMetadataChange events (with the
+// WriteMetadata writes an unsolicited METADATA response (RFC 5464 §4.4.2). It
+// is used by NOTIFY (RFC 5465) to report MailboxMetadataChange events (with the
 // mailbox name) and ServerMetadataChange events (with an empty mailbox name).
 //
-// entries maps entry names to their new values; a nil value denotes a deleted
-// entry, which RFC 5465 §5.6 and §5.7 require to always be included. Writing an
-// empty map is a no-op.
-func (w *UpdateWriter) WriteMetadata(mailbox string, entries map[string]*[]byte) error {
-	return w.conn.writeMetadataResp(mailbox, entries)
+// entries lists the names of the changed annotations. Values are deliberately
+// not part of the API: RFC 5464 §4.4 requires that "unsolicited METADATA
+// responses MUST only contain entry names, not the values" — a client that
+// wants the new value retrieves it with GETMETADATA. Deleted entries are
+// reported like any other change (RFC 5465 §5.6, §5.7). Writing an empty list
+// is a no-op.
+func (w *UpdateWriter) WriteMetadata(mailbox string, entries []string) error {
+	return w.conn.writeMetadataEntryList(mailbox, entries)
 }
 
 // WriteNotificationOverflow writes an untagged OK response with the
 // NOTIFICATIONOVERFLOW response code (RFC 5465 §5.8).
 //
-// A backend calls this from NotifyPoll when it is unable or unwilling to
-// keep delivering the requested notifications. Per the RFC the server then
-// behaves as if NOTIFY NONE had been received: the backend must clear its own
-// watch state and return nil from NotifyPoll after writing the overflow
-// response.
+// A backend calls this from NotifyPoll when it is unable or unwilling to keep
+// delivering the requested notifications. Per the RFC the server then behaves
+// as if NOTIFY NONE had been received: the backend must clear its own watch
+// state and return nil from NotifyPoll after writing the overflow response.
+//
+// The connection-level watch is dropped here, which also ends the suppression
+// of message events for the selected mailbox: the connection returns to the
+// pre-NOTIFY behaviour of RFC 5465 §3.1, where those events are reported while
+// a command is being processed. That is a deliberate departure from a literal
+// reading of "behave as if a NOTIFY NONE command had just been received" —
+// staying frozen would leave the updates accumulated so far undeliverable and
+// the client's sequence numbers permanently stale, with no way for the server
+// to recover on its own. The client has been told its notifications are off,
+// and it gets a consistent view instead of a frozen one.
 func (w *UpdateWriter) WriteNotificationOverflow() error {
-	return w.conn.writeStatusResp("", &imap.StatusResponse{
+	if err := w.conn.writeStatusResp("", &imap.StatusResponse{
 		Type: imap.StatusResponseTypeOK,
 		Code: imap.ResponseCodeNotificationOverflow,
 		Text: "Notifications disabled",
-	})
+	}); err != nil {
+		return err
+	}
+	w.conn.resetNotifySelectedEvents()
+	return nil
 }
 
 // FetchWriter returns a writer for unsolicited FETCH responses. It is used
 // by NOTIFY (RFC 5465 §5.2) to send the fetch attributes requested for
 // MessageNew events in the selected mailbox.
+//
+// The writer is configured from the MessageNew fetch-att list of the installed
+// watch, so BODY/BODYSTRUCTURE are emitted and the obsolete RFC822 item names
+// are reported the way the client spelled them.
 func (w *UpdateWriter) FetchWriter() *FetchWriter {
-	return &FetchWriter{conn: w.conn}
+	fw := &FetchWriter{conn: w.conn}
+	w.conn.notifyMutex.Lock()
+	if opts := w.conn.notifyFetchWriterOptions; opts != nil {
+		fw.options = *opts
+	}
+	w.conn.notifyMutex.Unlock()
+	return fw
 }
 
 // WriteOK writes an untagged OK response carrying only informational text

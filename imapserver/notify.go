@@ -62,12 +62,19 @@ func canonicalNotifyEvent(name string) imap.NotifyEvent {
 }
 
 func (c *Conn) handleNotify(tag string, dec *imapwire.Decoder) error {
+	// pendingFetchWriterOptions carries the MessageNew fetch-att writer options
+	// from the parser to the point where the new watch is installed.
+	var pendingFetchWriterOptions *fetchWriterOptions
+
 	var verb string
 	if !dec.ExpectSP() || !dec.ExpectAtom(&verb) {
 		return dec.Err()
 	}
 
-	var options *imap.NotifyOptions
+	var (
+		options  *imap.NotifyOptions
+		overflow bool // a size cap was exceeded; refuse once the command is fully parsed
+	)
 	switch strings.ToUpper(verb) {
 	case "NONE":
 		// options stays nil: disable all notifications
@@ -75,16 +82,20 @@ func (c *Conn) handleNotify(tag string, dec *imapwire.Decoder) error {
 		options = &imap.NotifyOptions{}
 		for dec.SP() {
 			if dec.Special('(') {
-				if len(options.Items) >= maxNotifyEventGroups {
-					return &imap.Error{
-						Type: imap.StatusResponseTypeNo,
-						Code: imap.ResponseCodeNotificationOverflow,
-						Text: "Too many NOTIFY event groups",
-					}
-				}
-				item, err := c.readNotifyEventGroup(dec)
+				// Parse every group, even past the cap: the command is
+				// syntactically valid (RFC 5465 §8 bounds neither event-groups
+				// nor many-mailboxes), so it must be consumed in full — a
+				// literal left unread would be parsed as the next command.
+				// Groups beyond the cap are discarded rather than stored, so
+				// the watch stays bounded, and the refusal is sent once the
+				// whole command has been read.
+				item, groupOverflow, err := c.readNotifyEventGroup(dec, &pendingFetchWriterOptions)
 				if err != nil {
 					return err
+				}
+				if groupOverflow || len(options.Items) >= maxNotifyEventGroups {
+					overflow = true
+					continue
 				}
 				options.Items = append(options.Items, *item)
 				continue
@@ -100,6 +111,18 @@ func (c *Conn) handleNotify(tag string, dec *imapwire.Decoder) error {
 				continue
 			}
 			return newClientBugError("Syntax error in NOTIFY command")
+		}
+		if overflow {
+			// RFC 5465 §3.1: the server MAY refuse a watch that would be
+			// prohibitively expensive with NO [NOTIFICATIONOVERFLOW].
+			if !dec.ExpectCRLF() {
+				return dec.Err()
+			}
+			return &imap.Error{
+				Type: imap.StatusResponseTypeNo,
+				Code: imap.ResponseCodeNotificationOverflow,
+				Text: "NOTIFY watch too large",
+			}
 		}
 		if len(options.Items) == 0 {
 			return newClientBugError("NOTIFY SET requires at least one event group")
@@ -160,8 +183,9 @@ func (c *Conn) handleNotify(tag string, dec *imapwire.Decoder) error {
 
 	// Record which message events the client wants for the selected mailbox, so
 	// that the per-command sync points stop reporting the ones it did not ask
-	// for (RFC 5465 section 3.1).
-	c.setNotifySelectedEvents(options)
+	// for (RFC 5465 section 3.1), together with the response-writer options of
+	// the MessageNew fetch-atts.
+	c.setNotifySelectedEvents(options, pendingFetchWriterOptions)
 
 	if options != nil {
 		c.startNotifyPump(session)
@@ -184,139 +208,150 @@ func (c *Conn) handleNotify(tag string, dec *imapwire.Decoder) error {
 // already been consumed:
 //
 //	event-group = "(" filter-mailboxes SP events ")"
-func (c *Conn) readNotifyEventGroup(dec *imapwire.Decoder) (*imap.NotifyItem, error) {
+//
+// The returned overflow flag reports that the group named more mailboxes than
+// maxNotifyMailboxesPerGroup. The group is still parsed to its end so the
+// command stream stays in sync; the caller turns the flag into a refusal.
+func (c *Conn) readNotifyEventGroup(dec *imapwire.Decoder, pendingFetchWriterOptions **fetchWriterOptions) (item *imap.NotifyItem, overflow bool, err error) {
 	var filter string
 	if !dec.ExpectAtom(&filter) {
-		return nil, dec.Err()
+		return nil, false, dec.Err()
 	}
 
-	var item imap.NotifyItem
+	var group imap.NotifyItem
 	switch strings.ToUpper(filter) {
 	case "SELECTED":
-		item.MailboxSpec = imap.NotifyMailboxSpecSelected
+		group.MailboxSpec = imap.NotifyMailboxSpecSelected
 	case "SELECTED-DELAYED":
-		item.MailboxSpec = imap.NotifyMailboxSpecSelectedDelayed
+		group.MailboxSpec = imap.NotifyMailboxSpecSelectedDelayed
 	case "PERSONAL":
-		item.MailboxSpec = imap.NotifyMailboxSpecPersonal
+		group.MailboxSpec = imap.NotifyMailboxSpecPersonal
 	case "INBOXES":
-		item.MailboxSpec = imap.NotifyMailboxSpecInboxes
+		group.MailboxSpec = imap.NotifyMailboxSpecInboxes
 	case "SUBSCRIBED":
-		item.MailboxSpec = imap.NotifyMailboxSpecSubscribed
+		group.MailboxSpec = imap.NotifyMailboxSpecSubscribed
 	case "SUBTREE", "MAILBOXES":
-		item.Subtree = strings.EqualFold(filter, "SUBTREE")
+		group.Subtree = strings.EqualFold(filter, "SUBTREE")
 		if !dec.ExpectSP() {
-			return nil, dec.Err()
+			return nil, false, dec.Err()
 		}
 		// one-or-more-mailbox = mailbox / "(" mailbox *(SP mailbox) ")"
 		isList, err := dec.List(func() error {
-			if len(item.Mailboxes) >= maxNotifyMailboxesPerGroup {
-				return newClientBugError("NOTIFY: too many mailboxes in one event group")
-			}
 			var name string
 			if !dec.ExpectMailbox(&name) {
 				return dec.Err()
 			}
-			item.Mailboxes = append(item.Mailboxes, name)
+			if len(group.Mailboxes) >= maxNotifyMailboxesPerGroup {
+				// Keep consuming the list, but stop growing the watch.
+				overflow = true
+				return nil
+			}
+			group.Mailboxes = append(group.Mailboxes, name)
 			return nil
 		})
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		if !isList {
 			var name string
 			if !dec.ExpectMailbox(&name) {
-				return nil, dec.Err()
+				return nil, false, dec.Err()
 			}
-			item.Mailboxes = []string{name}
+			group.Mailboxes = []string{name}
 		}
-		if len(item.Mailboxes) == 0 {
-			return nil, newClientBugError("NOTIFY: at least one mailbox is required")
+		if len(group.Mailboxes) == 0 {
+			return nil, false, newClientBugError("NOTIFY: at least one mailbox is required")
 		}
 	default:
-		return nil, newClientBugError("NOTIFY: unknown mailbox specifier")
+		return nil, false, newClientBugError("NOTIFY: unknown mailbox specifier")
 	}
 
 	// events = ("(" event *(SP event) ")") / "NONE"
 	if !dec.ExpectSP() {
-		return nil, dec.Err()
+		return nil, false, dec.Err()
 	}
 	if dec.Special('(') {
 		for {
 			var name string
 			if !dec.ExpectAtom(&name) {
-				return nil, dec.Err()
+				return nil, false, dec.Err()
 			}
 			event := canonicalNotifyEvent(name)
-			item.Events = append(item.Events, event)
+			group.Events = append(group.Events, event)
 			if !dec.SP() {
 				break
 			}
 			if dec.Special('(') {
 				// message-event = "MessageNew" [SP "(" fetch-att *(SP fetch-att) ")"]
 				if event != imap.NotifyEventMessageNew {
-					return nil, newClientBugError("NOTIFY: fetch attributes are only allowed after MessageNew")
+					return nil, false, newClientBugError("NOTIFY: fetch attributes are only allowed after MessageNew")
 				}
-				if item.MessageNewFetch != nil {
-					return nil, newClientBugError("NOTIFY: duplicate MessageNew fetch attributes")
+				if group.MessageNewFetch != nil {
+					return nil, false, newClientBugError("NOTIFY: duplicate MessageNew fetch attributes")
 				}
-				fetchOptions, err := readNotifyFetchAtts(c, dec)
+				fetchOptions, fetchWriterOpts, err := readNotifyFetchAtts(c, dec)
 				if err != nil {
-					return nil, err
+					return nil, false, err
 				}
-				item.MessageNewFetch = fetchOptions
+				group.MessageNewFetch = fetchOptions
+				// Remember how the client spelled the fetch-atts so the
+				// notification's FETCH response uses the same item names
+				// (RFC 5465 §5.2: "the information requested by the
+				// client"). Applied once the watch is installed.
+				*pendingFetchWriterOptions = fetchWriterOpts
 				if !dec.SP() {
 					break
 				}
 			}
 		}
 		if !dec.ExpectSpecial(')') {
-			return nil, dec.Err()
+			return nil, false, dec.Err()
 		}
 	} else {
 		var atom string
 		if !dec.ExpectAtom(&atom) {
-			return nil, dec.Err()
+			return nil, false, dec.Err()
 		}
 		if !strings.EqualFold(atom, "NONE") {
-			return nil, newClientBugError("NOTIFY: expected event list or NONE")
+			return nil, false, newClientBugError("NOTIFY: expected event list or NONE")
 		}
 	}
 
 	if !dec.ExpectSpecial(')') {
-		return nil, dec.Err()
+		return nil, false, dec.Err()
 	}
-	return &item, nil
+	return &group, overflow, nil
 }
 
 // readNotifyFetchAtts parses the fetch-att list of a MessageNew event; the
 // opening parenthesis has already been consumed.
-func readNotifyFetchAtts(c *Conn, dec *imapwire.Decoder) (*imap.FetchOptions, error) {
+func readNotifyFetchAtts(c *Conn, dec *imapwire.Decoder) (*imap.FetchOptions, *fetchWriterOptions, error) {
 	options := &imap.FetchOptions{}
-	writerOptions := fetchWriterOptions{obsolete: make(map[*imap.FetchItemBodySection]string)}
+	writerOptions := &fetchWriterOptions{obsolete: make(map[*imap.FetchItemBodySection]string)}
 	for {
 		attName, err := readFetchAttName(dec)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		switch attName {
 		case "ALL", "FAST", "FULL":
-			return nil, newClientBugError("NOTIFY: FETCH macros are not allowed in MessageNew fetch attributes")
+			return nil, nil, newClientBugError("NOTIFY: FETCH macros are not allowed in MessageNew fetch attributes")
 		}
-		if err := handleFetchAtt(c, dec, attName, options, &writerOptions); err != nil {
+		if err := handleFetchAtt(c, dec, attName, options, writerOptions); err != nil {
 			var imapErr *imap.Error
 			if errors.As(err, &imapErr) {
-				return nil, err
+				return nil, nil, err
 			}
-			return nil, newClientBugError(fmt.Sprintf("NOTIFY: %v", err))
+			return nil, nil, newClientBugError(fmt.Sprintf("NOTIFY: %v", err))
 		}
 		if !dec.SP() {
 			break
 		}
 	}
 	if !dec.ExpectSpecial(')') {
-		return nil, dec.Err()
+		return nil, nil, dec.Err()
 	}
-	return options, nil
+	return options, writerOptions, nil
 }
 
 // validateNotifyOptions enforces the structural rules of RFC 5465 sections 5
@@ -398,6 +433,33 @@ func (c *Conn) writeBadEvent(tag string, supported []imap.NotifyEvent) error {
 	}
 	enc.Text("Unsupported NOTIFY event")
 	return enc.CRLF()
+}
+
+// fenceNotifyPump stops the NOTIFY pump and reports whether one was running,
+// so the caller can restart it with restartNotifyPump once it is done. It is
+// used around changes of the selected mailbox, which the running watch refers
+// to (RFC 5465 section 6.1).
+func (c *Conn) fenceNotifyPump() bool {
+	running := c.notifyPumpRunning()
+	c.stopNotifyPump()
+	return running
+}
+
+// restartNotifyPump restarts a pump stopped by fenceNotifyPump. It is a no-op
+// when no pump was running, when the session no longer supports NOTIFY, or
+// when the connection is no longer authenticated.
+func (c *Conn) restartNotifyPump(running bool) {
+	if !running {
+		return
+	}
+	session, ok := c.session.(SessionNotify)
+	if !ok {
+		return
+	}
+	switch c.state {
+	case imap.ConnStateAuthenticated, imap.ConnStateSelected:
+		c.startNotifyPump(session)
+	}
 }
 
 func (c *Conn) notifyPumpRunning() bool {
