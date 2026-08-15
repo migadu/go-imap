@@ -191,6 +191,29 @@ func (c *Conn) enabledHas(cap imap.Cap) bool {
 	return c.enabled.Has(cap)
 }
 
+// isIMAP4rev2 reports whether this connection should be served IMAP4rev2
+// semantics, which is true in two cases and not one:
+//
+//   - the client sent ENABLE IMAP4rev2, or
+//   - the server does not advertise IMAP4rev1 at all, so there are no legacy
+//     clients to protect and every session is an IMAP4rev2 session whether or
+//     not it bothered to ENABLE anything.
+//
+// Note it deliberately does NOT read the ADVERTISED IMAP4rev2 capability: a
+// dual-stack server (IMAP4rev1 + IMAP4rev2) must keep sending the IMAP4rev1
+// wire form to clients that never enabled rev2.
+//
+// This was open-coded at four call sites in three different spellings before it
+// was a function, and a fifth writer got it wrong by checking only the enabled
+// half — which left a rev2-only server answering deprecated response forms.
+//
+// Callers already holding c.mutex must not use this (it locks): see
+// useQuotedUTF8, which inlines the same test for that reason.
+func (c *Conn) isIMAP4rev2() bool {
+	return c.enabledHas(imap.CapIMAP4rev2) ||
+		!c.server.options.caps().Has(imap.CapIMAP4rev1)
+}
+
 // Context returns the connection's context. It is cancelled when the
 // connection is torn down — by client disconnect, by the serve goroutine
 // exiting, or by server shutdown. Backends may use it to bound blocking work,
@@ -937,7 +960,11 @@ func (c *Conn) poll(cmd string) error {
 // IMAP4rev1 client that never enabled IMAP4rev2.
 //
 // A server that does not advertise IMAP4rev1 has no legacy clients to protect,
-// so UTF-8 applies unconditionally (mirrors the gating in WriteNumRecent).
+// so UTF-8 applies unconditionally.
+//
+// This is isIMAP4rev2() plus the UTF8=ACCEPT term, but it is spelled out rather
+// than calling that helper: this function takes c.mutex and reads c.enabled
+// directly, so calling the (locking) helper from inside it would deadlock.
 func (c *Conn) useQuotedUTF8() bool {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
@@ -1326,7 +1353,7 @@ func (w *UpdateWriter) WriteNumMessages(n uint32) error {
 
 // WriteNumRecent writes an RECENT response (not used in IMAP4rev2, will be ignored).
 func (w *UpdateWriter) WriteNumRecent(n uint32) error {
-	if w.conn.enabledHas(imap.CapIMAP4rev2) || !w.conn.server.options.caps().Has(imap.CapIMAP4rev1) {
+	if w.conn.isIMAP4rev2() {
 		return nil
 	}
 	return w.conn.writeObsoleteRecent(n)
