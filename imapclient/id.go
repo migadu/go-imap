@@ -112,21 +112,46 @@ func (c *Client) readID(dec *imapwire.Decoder) (*imap.IDData, error) {
 		return nil, dec.Err()
 	}
 
-	if dec.ExpectNIL() {
+	// The parameter is either NIL or a parenthesised key/value list (RFC 2971
+	// §3.1). Decide by looking at the next byte instead of attempting NIL and
+	// falling through on failure: Expect* records a decode error, and the decoder
+	// stops consuming input once one is recorded, so the probe would strand the
+	// list form with "expected atom, got \"(\"".
+	if !dec.NextByteIs('(') {
+		if !dec.ExpectNIL() {
+			return nil, dec.Err()
+		}
 		return &data, nil
 	}
 
 	currKey := ""
 	err := dec.ExpectList(func() error {
-		var keyOrValue string
-		if !dec.String(&keyOrValue) {
-			return fmt.Errorf("in id key-val list: %w", dec.Err())
-		}
-
+		// RFC 2971 §3.1: id_params_list is "(" string SP nstring
+		// *(SP string SP nstring) ")". The key is a string, but the value is an
+		// nstring: a server that declines to answer for a field sends NIL, which
+		// is an atom and so is not a string at all. Reading values with String
+		// rejected the whole response over one NIL. imapserver's own ID parser
+		// already makes this distinction.
 		if currKey == "" {
-			currKey = keyOrValue
+			var key string
+			if !dec.String(&key) {
+				// String records an error only on a malformed or refused literal;
+				// for anything else -- an atom, a stray ')' -- Err() is nil, and
+				// wrapping it would format as the useless "%!w(<nil>)".
+				if decErr := dec.Err(); decErr != nil {
+					return fmt.Errorf("in id key-val list: %w", decErr)
+				}
+				return fmt.Errorf("in id key-val list: expected a string key")
+			}
+			currKey = key
 			return nil
 		}
+
+		var value string
+		if !dec.ExpectNString(&value) {
+			return fmt.Errorf("in id key-val list: %w", dec.Err())
+		}
+		keyOrValue := value
 
 		lowerKey := strings.ToLower(currKey)
 		data.Raw[lowerKey] = keyOrValue
