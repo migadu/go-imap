@@ -223,9 +223,15 @@ func readMetadataResp(dec *imapwire.Decoder, opts *Options) (*metadataResp, erro
 			b := []byte(s)
 			value = &b
 		} else if dec.Atom(&s) {
-			// Handle unquoted atoms (should be rare, but valid per IMAP syntax)
-			b := []byte(s)
-			value = &b
+			// Handle unquoted atoms (should be rare, but valid per IMAP syntax).
+			// NIL is itself an atom, so it has to be recognised here: this branch
+			// shadows the ExpectNIL below, and without the check an absent value
+			// (RFC 5464 §4.2.1) arrived as the three-byte string "NIL", which a
+			// caller cannot tell from an entry whose value really is "NIL".
+			if s != "NIL" {
+				b := []byte(s)
+				value = &b
+			}
 		} else if !dec.ExpectNIL() {
 			return fmt.Errorf("invalid metadata value for %q: %w", name, dec.Err())
 		}

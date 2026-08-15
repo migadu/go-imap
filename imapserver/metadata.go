@@ -145,7 +145,11 @@ func (c *Conn) handleSetMetadata(dec *imapwire.Decoder) error {
 
 		var value *[]byte
 		var s string
-		if dec.String(&s) || dec.Literal(&s) {
+		// String is Quoted||Literal, so a second Literal call can only run once the
+		// first already failed -- either there was no literal at all, or one was
+		// refused and the decoder is poisoned. It never read a literal the first
+		// call missed; it only ever re-read from a stream left inside the payload.
+		if dec.String(&s) {
 			b := []byte(s)
 			value = &b
 		} else if !dec.ExpectNIL() {
