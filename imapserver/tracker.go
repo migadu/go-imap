@@ -359,3 +359,32 @@ func (t *SessionTracker) EncodeSeqNum(seqNum uint32) uint32 {
 	}
 	return seqNum
 }
+
+// EncodeNumMessages converts the number of messages in the mailbox from the
+// server view to the client view.
+//
+// This is the value "*" refers to in a sequence set: the largest sequence
+// number the client can currently name. It differs from the server's count in
+// both directions -- a message that has been appended but not yet announced is
+// not addressable, and a message whose expunge has not been dispatched yet
+// still is.
+func (t *SessionTracker) EncodeNumMessages() uint32 {
+	t.mutex.Lock()
+	defer t.mutex.Unlock()
+
+	// Undo each pending update, newest first, to recover the count as of the
+	// last one the client actually saw.
+	n := t.mailbox.numMessages
+	for i := len(t.queue) - 1; i >= 0; i-- {
+		update := &t.queue[i]
+		if update.numMessages != 0 {
+			// prevNumMessages is the count before this update, so an update
+			// that announced more than one new message is undone correctly.
+			n = update.prevNumMessages
+		}
+		if update.expunge != 0 {
+			n++
+		}
+	}
+	return n
+}
