@@ -59,10 +59,35 @@ type Decoder struct {
 	// to be available, or UTF8=ACCEPT to be enabled.
 	QuotedUTF8 bool
 
-	r         *bufio.Reader
-	side      ConnSide
-	err       error
-	literal   bool
+	r    *bufio.Reader
+	side ConnSide
+	err  error
+
+	// literal is set while a LiteralReader is open.
+	//
+	// pendingLiteral holds the still-unread octets of a NON-SYNCHRONIZING
+	// literal that was announced but abandoned — one whose size the caller
+	// refused, or one left behind by a failing command. Those octets are on the
+	// wire already and are part of the command being read (RFC 9051 §2.2.1), so
+	// DiscardLine skips them rather than letting the next command start inside
+	// them. Synchronizing literals are never recorded: the client is waiting
+	// for a continuation request that the failing command never sends, so
+	// nothing was transmitted and there is nothing to skip.
+	//
+	// The count is only trustworthy because abandoning a literal also sets the
+	// decoder error, which stops the parser from consuming any more of the
+	// payload behind DiscardLine's back.
+	literal        bool
+	pendingLiteral int64
+
+	// discarding is set while DiscardLine is skipping the rest of a failed
+	// command: it is the one reader allowed to run after an error.
+	discarding bool
+
+	// desynced records that the command stream could not be resynchronised:
+	// octets of the current command remain in the stream and cannot safely be
+	// skipped. The connection has to be torn down; see Desynchronized.
+	desynced  bool
 	crlf      bool
 	listDepth int
 	readBytes int64
@@ -107,6 +132,14 @@ func (dec *Decoder) returnErr(err error) bool {
 }
 
 func (dec *Decoder) readByte() (byte, bool) {
+	// Once the decode has failed, stop consuming input. Parsers routinely try
+	// one syntactic form after another, and without this a failed literal would
+	// send the next attempt straight into the literal's payload — reading data
+	// as syntax, or blocking on octets a client is waiting for a continuation
+	// request to send. Only DiscardLine reads past an error, to resynchronise.
+	if dec.err != nil && !dec.discarding {
+		return 0, false
+	}
 	if dec.MaxSize > 0 && dec.readBytes > dec.MaxSize {
 		return 0, dec.returnErr(fmt.Errorf("imapwire: max size exceeded"))
 	}
@@ -290,13 +323,76 @@ func (dec *Decoder) DiscardUntilByte(untilCh byte) {
 	}
 }
 
+// maxDiscardLiteralSize bounds how many octets of a non-synchronizing literal
+// DiscardLine drains while recovering from a command error. It is well above
+// the 4096-octet cap LITERAL- puts on non-synchronizing literals; a larger one
+// is refused rather than read, so recovery can never be turned into an
+// unbounded read.
+const maxDiscardLiteralSize = 64 << 10
+
+// DiscardLine skips the remainder of the current line, so that the next
+// command can be read from a clean position.
+//
+// The still-unread octets of a non-synchronizing literal announced by this line
+// are skipped too: they are part of the command being read (RFC 9051 §2.2.1),
+// and leaving them in the stream would make the next command start inside
+// client-supplied data. When they cannot be skipped — too many to read, or a
+// literal whose announcement was never parsed — the stream is marked
+// desynchronised instead of guessing; see Desynchronized.
 func (dec *Decoder) DiscardLine() {
+	dec.discarding = true
+	defer func() { dec.discarding = false }()
+
+	if n := dec.pendingLiteral; n > 0 {
+		dec.pendingLiteral = 0
+		if n > maxDiscardLiteralSize {
+			dec.desynced = true
+			return
+		}
+		if _, err := io.CopyN(io.Discard, dec.r, n); err != nil {
+			dec.returnErr(err)
+			dec.desynced = true
+			return
+		}
+		// The rest of the command follows the literal octets.
+		dec.crlf = false
+	}
+
 	if dec.crlf {
 		return
 	}
+
 	var text string
 	dec.Text(&text)
 	dec.CRLF()
+
+	// A line ending in a non-synchronizing literal announcement that the parser
+	// never reached: its octets follow, but their count was never validated by
+	// this decoder, so skipping them would be a guess. Refuse to resynchronise.
+	if dec.side == ConnSideServer && endsWithNonSyncLiteral(text) {
+		dec.desynced = true
+	}
+}
+
+// Desynchronized reports whether the decoder had to give up on resynchronising
+// the stream. The remaining input cannot be trusted to start at a command
+// boundary, so the connection must be terminated rather than kept in service.
+func (dec *Decoder) Desynchronized() bool {
+	return dec.desynced
+}
+
+// endsWithNonSyncLiteral reports whether text ends with a non-synchronizing
+// literal announcement such as "{42+}".
+func endsWithNonSyncLiteral(text string) bool {
+	if !strings.HasSuffix(text, "+}") {
+		return false
+	}
+	start := strings.LastIndexByte(text, '{')
+	if start < 0 {
+		return false
+	}
+	_, err := strconv.ParseInt(text[start+1:len(text)-2], 10, 64)
+	return err == nil
 }
 
 func (dec *Decoder) DiscardValue() bool {
@@ -671,8 +767,13 @@ func (dec *Decoder) Literal(ptr *string) bool {
 	const absoluteMaxBufferedLiteral = 4 * 1024 * 1024
 	if dec.CheckBufferedLiteralFunc != nil {
 		if err := dec.CheckBufferedLiteralFunc(lit.Size(), nonSync); err != nil {
+			// Fail the whole decode rather than returning a plain false:
+			// callers such as ExpectAString would otherwise fall through to
+			// another read and start consuming the literal's payload as IMAP
+			// syntax — which both corrupts the command and makes the
+			// pending-octet count DiscardLine relies on wrong.
 			lit.cancel(nil)
-			return false
+			return dec.returnErr(err)
 		}
 	} else if lit.Size() > absoluteMaxBufferedLiteral {
 		lit.cancel(nil)
@@ -711,9 +812,10 @@ func (dec *Decoder) LiteralReader() (lit *LiteralReader, nonSync, ok bool) {
 	}
 	dec.literal = true
 	lit = &LiteralReader{
-		dec:  dec,
-		size: size,
-		r:    newLimitReader(dec.r, size),
+		dec:     dec,
+		size:    size,
+		nonSync: nonSync,
+		r:       newLimitReader(dec.r, size),
 	}
 	return lit, nonSync, true
 }
@@ -727,9 +829,10 @@ func (dec *Decoder) ExpectLiteralReader() (lit *LiteralReader, nonSync bool, err
 }
 
 type LiteralReader struct {
-	dec  *Decoder
-	size int64
-	r    io.Reader
+	nonSync bool
+	dec     *Decoder
+	size    int64
+	r       io.Reader
 }
 
 func newLiteralReaderFromString(s string) *LiteralReader {
@@ -767,5 +870,21 @@ func (lit *LiteralReader) cancel(err error) {
 		lit.dec.returnErr(err)
 	}
 	lit.dec.literal = false
+	// A non-synchronizing literal's octets are already on the wire: remember
+	// what is left so DiscardLine can skip it instead of parsing it as the next
+	// command. A synchronizing literal was never sent — the continuation
+	// request that would have asked for it is not coming — so there is nothing
+	// to skip.
+	if n := lit.remaining(); n > 0 && lit.nonSync {
+		lit.dec.pendingLiteral += n
+	}
 	lit.dec = nil
+}
+
+// remaining reports how many octets of the literal have not been read yet.
+func (lit *LiteralReader) remaining() int64 {
+	if r, ok := lit.r.(*limitReader); ok {
+		return r.left
+	}
+	return 0
 }

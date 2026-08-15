@@ -23,7 +23,17 @@ func (c *Conn) supportsCondStore() bool {
 		sessionCaps := capSession.GetCapabilities()
 		return sessionCaps.Has(imap.CapCondStore) || sessionCaps.Has(imap.CapIMAP4rev2)
 	}
-	return c.enabledHas(imap.CapIMAP4rev2) || c.availableCapsSet().Has(imap.CapCondStore) || c.availableCapsSet().Has(imap.CapIMAP4rev2)
+	// Read the server's configured capabilities directly rather than
+	// availableCapsSet(), which is connection-state dependent and reads
+	// c.state/c.conn without synchronization. supportsCondStore is reached
+	// from the NOTIFY pump goroutine (via WriteMessageFlags and
+	// UpdateWriter.CondStoreEnabled) concurrently with command-goroutine state
+	// transitions; the configured CapSet is immutable after construction and
+	// CONDSTORE/IMAP4rev2 are backend-support capabilities that do not vary by
+	// state, so this is both race-free and equivalent in the authenticated/
+	// selected states where the pump runs. c.enabledHas already locks c.mutex.
+	serverCaps := c.server.options.caps()
+	return c.enabledHas(imap.CapIMAP4rev2) || serverCaps.Has(imap.CapCondStore) || serverCaps.Has(imap.CapIMAP4rev2)
 }
 
 // markCondStoreEnabled records that the client has issued a CONDSTORE-enabling

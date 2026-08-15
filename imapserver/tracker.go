@@ -150,17 +150,40 @@ type trackerUpdateFetch struct {
 type SessionTracker struct {
 	mailbox *MailboxTracker
 
+	// deliverMutex serializes Poll calls end-to-end (dequeue + network
+	// write), so a batch dequeued by one goroutine is fully written before
+	// another goroutine dequeues and writes the next. Without it, two
+	// concurrent flushers — e.g. the command loop and a NOTIFY pump — can
+	// dequeue batches under `mutex`, release it, and then interleave their
+	// writes, delivering EXPUNGE/EXISTS out of order and corrupting the
+	// client's sequence-number view. It is a separate lock from `mutex`
+	// (which only guards `queue`/`updates`) so queueUpdate never blocks on a
+	// slow network write.
+	deliverMutex sync.Mutex
+
 	mutex   sync.Mutex
 	queue   []trackerUpdate
 	updates chan<- struct{}
 }
 
 // Close unregisters the session.
+//
+// After Close, DecodeSeqNum/EncodeSeqNum return 0 rather than dereferencing the
+// released mailbox: a NOTIFY pump goroutine may still hold a reference to this
+// tracker and call them after a concurrent UNSELECT/SELECT closed it. The
+// t.mailbox field is cleared under t.mutex so those readers observe the change
+// race-free.
 func (t *SessionTracker) Close() {
-	t.mailbox.mutex.Lock()
-	delete(t.mailbox.sessions, t)
-	t.mailbox.mutex.Unlock()
+	t.mutex.Lock()
+	mailbox := t.mailbox
 	t.mailbox = nil
+	t.mutex.Unlock()
+
+	if mailbox != nil {
+		mailbox.mutex.Lock()
+		delete(mailbox.sessions, t)
+		mailbox.mutex.Unlock()
+	}
 }
 
 func (t *SessionTracker) queueUpdate(update *trackerUpdate) {
@@ -181,7 +204,39 @@ func (t *SessionTracker) queueUpdate(update *trackerUpdate) {
 }
 
 // Poll dequeues pending mailbox updates for this session.
+//
+// Poll is safe to call from multiple goroutines: calls are serialized so each
+// dequeued batch is written to the client atomically, preserving update
+// ordering (a NOTIFY pump and the command loop may both flush this tracker).
 func (t *SessionTracker) Poll(w *UpdateWriter, allowExpunge bool) error {
+	return t.PollWith(w, allowExpunge, nil)
+}
+
+// PollWith is Poll with a follow-up write that must not be interleaved with
+// another flush.
+//
+// after runs once the pending updates have been written, while the delivery
+// lock is still held. A NOTIFY backend uses it for the FETCH responses of the
+// MessageNew fetch-atts (RFC 5465 §5.2): their sequence numbers are computed
+// from the state Poll just delivered, so another goroutine flushing an EXPUNGE
+// in between would renumber the client's view and make those responses point
+// at the wrong messages. Encode the sequence numbers inside after, not before
+// the call.
+func (t *SessionTracker) PollWith(w *UpdateWriter, allowExpunge bool, after func() error) error {
+	t.deliverMutex.Lock()
+	defer t.deliverMutex.Unlock()
+
+	if err := t.poll(w, allowExpunge); err != nil {
+		return err
+	}
+	if after != nil {
+		return after()
+	}
+	return nil
+}
+
+// poll delivers pending updates. The delivery lock must be held.
+func (t *SessionTracker) poll(w *UpdateWriter, allowExpunge bool) error {
 	var updates []trackerUpdate
 	t.mutex.Lock()
 	if allowExpunge {
@@ -258,6 +313,25 @@ func (t *SessionTracker) Poll(w *UpdateWriter, allowExpunge bool) error {
 	return flushVanished()
 }
 
+// QueuedUpdates returns the number of updates waiting to be delivered to this
+// session.
+//
+// It grows without bound while the client's NOTIFY watch disables message
+// events for the selected mailbox (RFC 5465 section 3.1: NOTIFY NONE, or a
+// watch without a SELECTED specifier): the updates cannot be delivered, and
+// dropping them would desynchronise the client's sequence numbers. A backend
+// should therefore check it from SessionNotify.NotifyPoll — the per-command
+// Poll is not called while the suppression is in effect — and, past a limit
+// of its choosing, declare a notification overflow with
+// UpdateWriter.WriteNotificationOverflow, which tells the client its
+// notifications are off (RFC 5465 section 5.8) and lets the server resume
+// ordinary delivery, draining the queue.
+func (t *SessionTracker) QueuedUpdates() int {
+	t.mutex.Lock()
+	defer t.mutex.Unlock()
+	return len(t.queue)
+}
+
 // Idle continuously writes mailbox updates.
 //
 // When the stop channel is closed, it returns.
@@ -280,6 +354,14 @@ func (t *SessionTracker) Idle(w *UpdateWriter, stop <-chan struct{}) error {
 		t.updates = nil
 		t.mutex.Unlock()
 	}()
+
+	// Drain once now that the channel is registered. queueUpdate signals it
+	// with a non-blocking send, so an update queued before registration left
+	// no signal behind; without this poll it would wait for the next update to
+	// wake the loop. It also delivers whatever accumulated before IDLE began.
+	if err := t.Poll(w, true); err != nil {
+		return err
+	}
 
 	for {
 		select {
@@ -304,6 +386,10 @@ func (t *SessionTracker) DecodeSeqNum(seqNum uint32) uint32 {
 
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
+
+	if t.mailbox == nil {
+		return 0 // tracker closed (see Close)
+	}
 
 	for _, update := range t.queue {
 		if update.expunge == 0 {
@@ -334,6 +420,10 @@ func (t *SessionTracker) EncodeSeqNum(seqNum uint32) uint32 {
 
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
+
+	if t.mailbox == nil {
+		return 0 // tracker closed (see Close)
+	}
 
 	if seqNum > t.mailbox.numMessages {
 		return 0

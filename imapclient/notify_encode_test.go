@@ -145,7 +145,7 @@ func TestEncodeNotifyOptions(t *testing.T) {
 					},
 				},
 			},
-			expected: ` SET ((INBOX "Sent") (MessageNew MessageExpunge FlagChange))` + "\r\n",
+			expected: ` SET (MAILBOXES (INBOX "Sent") (MessageNew MessageExpunge FlagChange))` + "\r\n",
 		},
 		{
 			name: "StatusIndicator",
@@ -161,7 +161,7 @@ func TestEncodeNotifyOptions(t *testing.T) {
 					},
 				},
 			},
-			expected: " SET (STATUS) (SELECTED (MessageNew MessageExpunge))\r\n",
+			expected: " SET STATUS (SELECTED (MessageNew MessageExpunge))\r\n",
 		},
 		{
 			name: "MultipleItems",
@@ -222,7 +222,7 @@ func TestEncodeNotifyOptions(t *testing.T) {
 					},
 				},
 			},
-			expected: " SET (SELECTED)\r\n",
+			expected: " SET (SELECTED NONE)\r\n",
 		},
 		{
 			name: "ComplexMixed",
@@ -251,7 +251,26 @@ func TestEncodeNotifyOptions(t *testing.T) {
 					},
 				},
 			},
-			expected: ` SET (STATUS) (SELECTED (MessageNew MessageExpunge)) (SUBTREE (INBOX) (MessageNew)) (("Drafts" "Sent") (FlagChange))` + "\r\n",
+			expected: ` SET STATUS (SELECTED (MessageNew MessageExpunge)) (SUBTREE (INBOX) (MessageNew)) (MAILBOXES ("Drafts" "Sent") (FlagChange))` + "\r\n",
+		},
+		{
+			name: "MessageNewFetchAtts",
+			options: &imap.NotifyOptions{
+				Items: []imap.NotifyItem{
+					{
+						MailboxSpec: imap.NotifyMailboxSpecSelected,
+						Events: []imap.NotifyEvent{
+							imap.NotifyEventMessageNew,
+							imap.NotifyEventMessageExpunge,
+						},
+						MessageNewFetch: &imap.FetchOptions{
+							UID:   true,
+							Flags: true,
+						},
+					},
+				},
+			},
+			expected: " SET (SELECTED (MessageNew (UID FLAGS) MessageExpunge))\r\n",
 		},
 		{
 			name: "MailboxWithSpecialChars",
@@ -265,7 +284,7 @@ func TestEncodeNotifyOptions(t *testing.T) {
 					},
 				},
 			},
-			expected: ` SET ((INBOX "Foo Bar" "Test&-Mailbox") (MessageNew))` + "\r\n",
+			expected: ` SET (MAILBOXES (INBOX "Foo Bar" "Test&-Mailbox") (MessageNew))` + "\r\n",
 		},
 	}
 

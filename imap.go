@@ -59,6 +59,12 @@ const (
 	MailboxAttrSubscribed    MailboxAttr = "\\Subscribed"
 	MailboxAttrRemote        MailboxAttr = "\\Remote"
 
+	// MailboxAttrNoAccess reports that the client can LIST the mailbox but
+	// lacks a right required to monitor it with NOTIFY (RFC 5465 sections 3.1
+	// and 5.9). Deciding when it applies is up to the backend, which owns the
+	// access-control model.
+	MailboxAttrNoAccess MailboxAttr = "\\NoAccess"
+
 	// Role (aka. "special-use") attributes
 	MailboxAttrAll       MailboxAttr = "\\All"
 	MailboxAttrArchive   MailboxAttr = "\\Archive"

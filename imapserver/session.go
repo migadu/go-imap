@@ -71,7 +71,26 @@ type Session interface {
 	List(ctx context.Context, w *ListWriter, ref string, patterns []string, options *imap.ListOptions) error
 	Status(ctx context.Context, mailbox string, options *imap.StatusOptions) (*imap.StatusData, error)
 	Append(ctx context.Context, mailbox string, r imap.LiteralReader, options *imap.AppendOptions) (*imap.AppendData, error)
+
+	// Poll delivers pending updates for the selected mailbox at a command sync
+	// point. Pending updates must stay queued when they cannot be delivered, so
+	// that the client's sequence-number view stays consistent.
+	//
+	// With the NOTIFY extension (RFC 5465) in use, the library does not call
+	// Poll at all when the client's watch disables message events for the
+	// selected mailbox (a watch without a SELECTED specifier, or NOTIFY NONE);
+	// see SessionNotify for the events the backend itself must filter, and
+	// SessionNotify.NotifyPoll for how the backend keeps the queue that builds
+	// up behind such a watch bounded.
 	Poll(ctx context.Context, w *UpdateWriter, allowExpunge bool) error
+
+	// Idle continuously delivers updates until stop is closed.
+	//
+	// A backend implementing SessionNotify must honor the installed watch here
+	// as well: RFC 5465 section 4 requires IDLE to deliver exactly the events
+	// the client requested with NOTIFY. The usual implementation lets the
+	// NotifyPoll pump be the only source of updates while a watch is installed,
+	// and simply waits for stop.
 	Idle(ctx context.Context, w *UpdateWriter, stop <-chan struct{}) error
 
 	// Selected state
@@ -167,6 +186,78 @@ type SessionAdditionalCaps interface {
 	// AdditionalCapabilities returns extra capability tokens to advertise
 	// verbatim. They are appended (de-duplicated) to the standard set.
 	AdditionalCapabilities() []imap.Cap
+}
+
+// SessionNotify is an IMAP session which supports the NOTIFY extension
+// (RFC 5465).
+//
+// The connection advertises the NOTIFY capability only when the session
+// implements this interface (and the server is configured with
+// imap.CapNotify).
+type SessionNotify interface {
+	Session
+
+	// SetNotify installs, replaces or clears the connection's notification
+	// watch. It is invoked synchronously on the connection's command
+	// goroutine while no NotifyPoll call is running.
+	//
+	// options is nil for NOTIFY NONE, otherwise it describes the requested
+	// watch. The options have already been checked against the structural
+	// rules of RFC 5465 (event pairing, single SELECTED group, fetch-atts
+	// placement); the backend is responsible for rejecting events it does
+	// not support by returning *UnsupportedNotifyEventError, which the
+	// server translates into a tagged NO with the BADEVENT response code.
+	//
+	// The per-mailbox access checks of RFC 5465 section 3.1 are also the
+	// backend's: a named mailbox that does not exist, or that the user cannot
+	// LIST, must be ignored silently, and one the user can LIST but lacks the
+	// rights to monitor must be reported with an untagged LIST carrying
+	// imap.MailboxAttrNoAccess (written with UpdateWriter.WriteList). Section
+	// 5.9 extends this to later changes: monitoring stops when access is lost
+	// and resumes when it is granted again.
+	//
+	// If options.Status is set, the implementation must write the initial
+	// STATUS responses for matching non-selected mailboxes to w before
+	// returning, so that they precede NOTIFY's tagged OK (RFC 5465
+	// section 3.1).
+	//
+	// On error, the previously installed watch (if any) must be left in
+	// effect.
+	SetNotify(ctx context.Context, options *imap.NotifyOptions, w *UpdateWriter) error
+
+	// NotifyPoll delivers notifications for the watch installed by
+	// SetNotify, writing to w until stop is closed or ctx is cancelled. It
+	// runs on a dedicated goroutine, concurrently with command processing on
+	// the connection; individual responses are serialized with command
+	// output by the library.
+	//
+	// Only the message events requested with the SELECTED/SELECTED-DELAYED
+	// specifier may be reported for the selected mailbox; omitting that
+	// specifier "is the same as specifying SELECTED NONE" (RFC 5465 section
+	// 3.1). The library enforces this for the per-command sync points (it
+	// skips Session.Poll, and drops unrequested flag updates), but the
+	// backend must not push such updates from NotifyPoll or Idle either.
+	//
+	// EXPUNGE/VANISHED updates for the selected mailbox must only be
+	// delivered while w.ExpungeAllowed() reports true (and, with
+	// SELECTED-DELAYED, only at the sync points of RFC 5465 section 6.1.2 —
+	// most backends simply leave delayed expunges queued for the regular
+	// per-command Poll).
+	//
+	// NotifyPoll is started after every successful NOTIFY command, NOTIFY NONE
+	// included. While message events for the selected mailbox are suppressed
+	// — by NOTIFY NONE or by a watch without a SELECTED specifier — its
+	// updates cannot be delivered and stay queued (SessionTracker.QueuedUpdates
+	// for a tracker-based backend), and no per-command Poll gives the backend
+	// a look at that queue; NotifyPoll is where a backend bounds it, by
+	// declaring a notification overflow with w.WriteNotificationOverflow once
+	// the queue grows past a limit of its choosing, and returning nil. A
+	// backend with nothing left to do — e.g. after that overflow — may return
+	// nil promptly: the connection stays up. The library may still invoke
+	// NotifyPoll again (it restarts the pump around every change of the
+	// selected mailbox), so the backend must keep returning promptly until a
+	// new watch is installed with SetNotify.
+	NotifyPoll(ctx context.Context, w *UpdateWriter, stop <-chan struct{}) error
 }
 
 // SessionMetadata is an IMAP session which supports the METADATA extension (RFC 5464).

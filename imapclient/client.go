@@ -1435,7 +1435,25 @@ type UnilateralDataMailbox struct {
 type UnilateralDataHandler struct {
 	Expunge func(seqNum uint32)
 	Mailbox func(data *UnilateralDataMailbox)
-	Fetch   func(msg *FetchMessageData)
+
+	// Fetch is called for an unsolicited FETCH response, such as the flag
+	// update a NOTIFY FlagChange event produces for the selected mailbox
+	// (RFC 5465 §5.1).
+	//
+	// One case is not routed here: a FETCH command is in flight and the
+	// notification concerns a message inside its set. Nothing distinguishes
+	// the two at the point the response must be attributed — the data items
+	// have not been read yet, and FLAGS legitimately accompany a command's own
+	// data (a FETCH that implicitly sets \Seen reports the new flags the same
+	// way) — so the notification is attributed to the command. The cost is
+	// real: that message's buffer then holds the notification's items instead
+	// of the requested ones, and the command's own response for it, arriving
+	// afterwards, is treated as unsolicited and reaches this handler instead.
+	// A client that runs FETCH commands while watching FlagChange on the
+	// selected mailbox should therefore treat a message buffer that lacks a
+	// requested item as incomplete and re-fetch it, or keep FlagChange out of
+	// the SELECTED specifier of its watch.
+	Fetch func(msg *FetchMessageData)
 
 	// Requires ENABLE QRESYNC.
 	Vanished func(data *imap.VanishedData)
@@ -1447,12 +1465,25 @@ type UnilateralDataHandler struct {
 	//
 	// Used with NOTIFY MailboxName events (RFC 5465) to detect mailbox
 	// creation, deletion, or renaming, and for subscription changes.
+	//
+	// A LIST command in flight absorbs the unsolicited LIST responses whose
+	// mailbox its reference and pattern match: those reach the command's
+	// result instead of this handler (the two are indistinguishable on the
+	// wire). An application that needs every notification should avoid running
+	// LIST while it depends on this handler, or reconcile the command's own
+	// results against the changes it expected to be notified of.
 	List func(data *imap.ListData)
 
 	// Called when the server sends an unsolicited STATUS response.
 	//
 	// Commonly used with NOTIFY to receive mailbox status updates
 	// for non-selected mailboxes (RFC 5465).
+	//
+	// A STATUS command in flight absorbs the unsolicited STATUS responses for
+	// the mailbox it asked about: they are merged into the command's result
+	// and do not reach this handler. An application that needs every
+	// notification should avoid running STATUS for a watched mailbox while it
+	// depends on this handler.
 	Status func(data *imap.StatusData)
 
 	// Called when the server sends NOTIFICATIONOVERFLOW (RFC 5465).

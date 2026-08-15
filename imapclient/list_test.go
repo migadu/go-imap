@@ -362,3 +362,46 @@ func TestListReturnMetadata(t *testing.T) {
 		t.Fatalf("List() did not return all metadata")
 	}
 }
+
+// TestListMatchesOwnResponses checks the forms whose LIST responses must be
+// attributed to the command rather than treated as unsolicited: a
+// case-insensitive INBOX, a non-empty reference, and the empty mailbox name of
+// RFC 9051 section 6.3.9.
+func TestListMatchesOwnResponses(t *testing.T) {
+	client, server := newClientServerPair(t, imap.ConnStateAuthenticated)
+	defer client.Close()
+	defer server.Close()
+
+	if err := client.Create("INBOX/Sub", nil).Wait(); err != nil {
+		t.Fatalf("Create() = %v", err)
+	}
+	if err := client.Create("inboxfoo", nil).Wait(); err != nil {
+		t.Fatalf("Create() = %v", err)
+	}
+
+	for _, tc := range []struct {
+		name    string
+		ref     string
+		pattern string
+		want    int
+	}{
+		{name: "LowercaseInboxPattern", ref: "", pattern: "inbox", want: 1},
+		{name: "UppercaseInboxPattern", ref: "", pattern: "INBOX", want: 1},
+		{name: "LowercaseInboxRef", ref: "inbox", pattern: "%", want: 1},
+		{name: "UppercaseInboxRef", ref: "INBOX", pattern: "%", want: 1},
+		{name: "EmptyMailboxName", ref: "INBOX", pattern: "", want: 1},
+		// Only a whole "INBOX" is canonicalized, so a mailbox that merely
+		// starts with those letters must not be rewritten.
+		{name: "InboxPrefixedName", ref: "", pattern: "inboxfoo", want: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mailboxes, err := client.List(tc.ref, tc.pattern, nil).Collect()
+			if err != nil {
+				t.Fatalf("List(%q, %q) = %v", tc.ref, tc.pattern, err)
+			}
+			if len(mailboxes) != tc.want {
+				t.Errorf("List(%q, %q) returned %v mailboxes, want %v", tc.ref, tc.pattern, len(mailboxes), tc.want)
+			}
+		})
+	}
+}

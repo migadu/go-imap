@@ -140,6 +140,7 @@ func canonInit() {
 		imap.MailboxAttrUnmarked,
 		imap.MailboxAttrSubscribed,
 		imap.MailboxAttrRemote,
+		imap.MailboxAttrNoAccess,
 		imap.MailboxAttrAll,
 		imap.MailboxAttrArchive,
 		imap.MailboxAttrDrafts,

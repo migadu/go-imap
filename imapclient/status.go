@@ -61,6 +61,11 @@ func (c *Client) handleStatus() error {
 	cmd := c.findPendingCmdFunc(func(cmd command) bool {
 		switch cmd := cmd.(type) {
 		case *StatusCommand:
+			// A NOTIFY notification for this mailbox (RFC 5465 §5.1-§5.3) can
+			// arrive while the command is in flight, and arrival order does not
+			// say which is which. Claim every STATUS response for the mailbox
+			// and merge them: the command then reports at least the items it
+			// asked for, whichever response carried them.
 			return cmd.mailbox == data.Mailbox
 		case *ListCommand:
 			return cmd.returnStatus && cmd.pendingData != nil && cmd.pendingData.Mailbox == data.Mailbox
@@ -77,7 +82,8 @@ func (c *Client) handleStatus() error {
 	}
 	switch cmd := cmd.(type) {
 	case *StatusCommand:
-		cmd.data = *data
+		cmd.received = true
+		mergeStatusData(&cmd.data, data)
 	case *ListCommand:
 		cmd.pendingData.Status = data
 		cmd.mailboxes <- cmd.pendingData
@@ -90,8 +96,43 @@ func (c *Client) handleStatus() error {
 // StatusCommand is a STATUS command.
 type StatusCommand struct {
 	commandBase
-	mailbox string
-	data    imap.StatusData
+	mailbox  string
+	received bool // a STATUS response has been attributed to this command
+	data     imap.StatusData
+}
+
+// mergeStatusData copies the items src reports into dst, keeping items dst
+// already has. STATUS responses for one mailbox may be split across several
+// responses, and an unsolicited one carries only what its event requires.
+func mergeStatusData(dst, src *imap.StatusData) {
+	dst.Mailbox = src.Mailbox
+	if src.NumMessages != nil {
+		dst.NumMessages = src.NumMessages
+	}
+	if src.UIDNext != 0 {
+		dst.UIDNext = src.UIDNext
+	}
+	if src.UIDValidity != 0 {
+		dst.UIDValidity = src.UIDValidity
+	}
+	if src.NumUnseen != nil {
+		dst.NumUnseen = src.NumUnseen
+	}
+	if src.NumDeleted != nil {
+		dst.NumDeleted = src.NumDeleted
+	}
+	if src.Size != nil {
+		dst.Size = src.Size
+	}
+	if src.AppendLimit != nil {
+		dst.AppendLimit = src.AppendLimit
+	}
+	if src.DeletedStorage != nil {
+		dst.DeletedStorage = src.DeletedStorage
+	}
+	if src.HighestModSeq != 0 {
+		dst.HighestModSeq = src.HighestModSeq
+	}
 }
 
 func (cmd *StatusCommand) Wait() (*imap.StatusData, error) {

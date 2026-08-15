@@ -52,6 +52,10 @@ const (
 	// APPENDLIMIT
 	ResponseCodeTooBig ResponseCode = "TOOBIG"
 
+	// NOTIFY (RFC 5465)
+	ResponseCodeNotificationOverflow ResponseCode = "NOTIFICATIONOVERFLOW"
+	ResponseCodeBadEvent             ResponseCode = "BADEVENT"
+
 	// CONDSTORE
 	ResponseCodeModified ResponseCode = "MODIFIED"
 )

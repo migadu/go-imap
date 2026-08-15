@@ -136,6 +136,12 @@ func (c *Conn) availableCaps() []imap.Cap {
 			caps = append(caps, imap.CapUnauthenticate)
 		}
 
+		// NOTIFY requires an optional session interface; advertise it only
+		// when the session implements it.
+		if _, ok := c.session.(SessionNotify); ok && available.Has(imap.CapNotify) {
+			caps = append(caps, imap.CapNotify)
+		}
+
 		// METADATA capability
 		if _, ok := c.session.(SessionMetadata); ok && available.Has(imap.CapMetadata) {
 			caps = append(caps, imap.CapMetadata)

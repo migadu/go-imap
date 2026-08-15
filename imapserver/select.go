@@ -102,6 +102,16 @@ func (c *Conn) handleSelect(tag string, dec *imapwire.Decoder, readOnly bool) er
 		return err
 	}
 
+	// The selected mailbox is about to change: no NotifyPoll delivery may be in
+	// flight across the switch, or an update queued for the old mailbox would
+	// reach the client while the new one is selected — an EXISTS or EXPUNGE
+	// that then means something entirely different (RFC 5465 §6.1: the SELECTED
+	// specifiers refer to "the mailbox that was selected using either SELECT or
+	// EXAMINE"). The pump is restarted once the whole SELECT response has been
+	// written: this defer is registered before the response encoder is opened,
+	// so it runs after the encoder is closed.
+	defer c.restartNotifyPump(c.fenceNotifyPump())
+
 	if c.state == imap.ConnStateSelected {
 		if err := c.session.Unselect(c.ctx); err != nil {
 			return err
@@ -158,7 +168,9 @@ func (c *Conn) handleSelect(tag string, dec *imapwire.Decoder, readOnly bool) er
 	writeFlags(enc.Encoder, data.Flags)
 	writePermanentFlags(enc.Encoder, data.PermanentFlags)
 	if data.List != nil {
-		if err := c.writeList(data.List, nil); err != nil {
+		// Write into the encoder this function already holds: opening a second
+		// one would deadlock on the non-reentrant encoder mutex.
+		if err := writeListData(enc.Encoder, data.List, nil, false); err != nil {
 			return err
 		}
 	}
@@ -207,6 +219,10 @@ func (c *Conn) handleUnselect(dec *imapwire.Decoder, expunge bool) error {
 	if err := c.checkState(imap.ConnStateSelected); err != nil {
 		return err
 	}
+
+	// Same fence as SELECT: nothing may be delivered for the mailbox being
+	// closed while it is being closed.
+	defer c.restartNotifyPump(c.fenceNotifyPump())
 
 	// RFC 3501 §6.4.2: "No messages are removed, and no error is given, if the
 	// mailbox is selected by an EXAMINE command or is otherwise selected
