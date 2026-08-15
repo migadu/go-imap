@@ -317,11 +317,13 @@ func (t *SessionTracker) poll(w *UpdateWriter, allowExpunge bool) error {
 // session.
 //
 // It grows without bound while the client's NOTIFY watch disables message
-// events for the selected mailbox (RFC 5465 section 3.1): the updates cannot be
-// delivered, and dropping them would desynchronise the client's sequence
-// numbers. A backend watching a large mailbox should therefore check it and,
-// past a limit of its choosing, declare a notification overflow with
-// UpdateWriter.WriteNotificationOverflow — which tells the client its
+// events for the selected mailbox (RFC 5465 section 3.1: NOTIFY NONE, or a
+// watch without a SELECTED specifier): the updates cannot be delivered, and
+// dropping them would desynchronise the client's sequence numbers. A backend
+// should therefore check it from SessionNotify.NotifyPoll — the per-command
+// Poll is not called while the suppression is in effect — and, past a limit
+// of its choosing, declare a notification overflow with
+// UpdateWriter.WriteNotificationOverflow, which tells the client its
 // notifications are off (RFC 5465 section 5.8) and lets the server resume
 // ordinary delivery, draining the queue.
 func (t *SessionTracker) QueuedUpdates() int {
@@ -352,6 +354,14 @@ func (t *SessionTracker) Idle(w *UpdateWriter, stop <-chan struct{}) error {
 		t.updates = nil
 		t.mutex.Unlock()
 	}()
+
+	// Drain once now that the channel is registered. queueUpdate signals it
+	// with a non-blocking send, so an update queued before registration left
+	// no signal behind; without this poll it would wait for the next update to
+	// wake the loop. It also delivers whatever accumulated before IDLE began.
+	if err := t.Poll(w, true); err != nil {
+		return err
+	}
 
 	for {
 		select {

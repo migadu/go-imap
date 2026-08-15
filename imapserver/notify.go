@@ -187,9 +187,12 @@ func (c *Conn) handleNotify(tag string, dec *imapwire.Decoder) error {
 	// the MessageNew fetch-atts.
 	c.setNotifySelectedEvents(options, pendingFetchWriterOptions)
 
-	if options != nil {
-		c.startNotifyPump(session)
-	}
+	// The pump runs for NOTIFY NONE as well. Nothing is delivered then, but the
+	// updates of the selected mailbox keep queuing behind the suppression, and
+	// the per-command sync point that would let the backend see the queue is
+	// skipped (see poll) — so NotifyPoll is the backend's only opportunity to
+	// bound it and declare a notification overflow (SessionTracker.QueuedUpdates).
+	c.startNotifyPump(session)
 
 	// A successful NOTIFY SET implies an implicit NOOP (RFC 5465 section
 	// 3.1): flush pending updates for the selected mailbox before the tagged

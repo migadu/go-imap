@@ -78,8 +78,10 @@ type Session interface {
 	//
 	// With the NOTIFY extension (RFC 5465) in use, the library does not call
 	// Poll at all when the client's watch disables message events for the
-	// selected mailbox; see SessionNotify for the events the backend itself
-	// must filter.
+	// selected mailbox (a watch without a SELECTED specifier, or NOTIFY NONE);
+	// see SessionNotify for the events the backend itself must filter, and
+	// SessionNotify.NotifyPoll for how the backend keeps the queue that builds
+	// up behind such a watch bounded.
 	Poll(ctx context.Context, w *UpdateWriter, allowExpunge bool) error
 
 	// Idle continuously delivers updates until stop is closed.
@@ -242,8 +244,19 @@ type SessionNotify interface {
 	// most backends simply leave delayed expunges queued for the regular
 	// per-command Poll).
 	//
-	// If no watch is currently installed (e.g. it was dropped after a
-	// notification overflow), NotifyPoll returns nil promptly.
+	// NotifyPoll is started after every successful NOTIFY command, NOTIFY NONE
+	// included. While message events for the selected mailbox are suppressed
+	// — by NOTIFY NONE or by a watch without a SELECTED specifier — its
+	// updates cannot be delivered and stay queued (SessionTracker.QueuedUpdates
+	// for a tracker-based backend), and no per-command Poll gives the backend
+	// a look at that queue; NotifyPoll is where a backend bounds it, by
+	// declaring a notification overflow with w.WriteNotificationOverflow once
+	// the queue grows past a limit of its choosing, and returning nil. A
+	// backend with nothing left to do — e.g. after that overflow — may return
+	// nil promptly: the connection stays up. The library may still invoke
+	// NotifyPoll again (it restarts the pump around every change of the
+	// selected mailbox), so the backend must keep returning promptly until a
+	// new watch is installed with SetNotify.
 	NotifyPoll(ctx context.Context, w *UpdateWriter, stop <-chan struct{}) error
 }
 

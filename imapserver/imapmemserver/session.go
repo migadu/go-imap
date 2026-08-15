@@ -41,16 +41,21 @@ type UserSession struct {
 	notifyMutex sync.Mutex
 	notifyWatch *notifyWatch
 
-	// notifyUsed records that the client issued NOTIFY on this session. It
-	// stays set after NOTIFY NONE: that command asks for no events at all
-	// (RFC 5465 section 3.1), so IDLE must not fall back to pushing the
-	// selected mailbox's updates either.
-	notifyUsed bool
+	// notifyOff is non-nil while NOTIFY governs delivery on this session, from
+	// the first NOTIFY command on. It stays so after NOTIFY NONE: that command
+	// asks for no events at all (RFC 5465 section 3.1), so IDLE must not fall
+	// back to pushing the selected mailbox's updates either. It is closed and
+	// cleared by a notification overflow, which returns the connection to
+	// pre-NOTIFY delivery (see checkNotifyOverflow); an IDLE waiting on it
+	// then takes over.
+	notifyOff chan struct{}
 
-	// notifyEvents receives the change events of the user while a watch is
-	// installed. It belongs to the session rather than to the NotifyPoll call,
-	// so events raised while the pump is stopped (the library fences it around
-	// every change of the selected mailbox) are queued instead of lost.
+	// notifyEvents receives the change events of the user while NOTIFY is in
+	// use — with a watch installed or after NOTIFY NONE, when it only wakes
+	// the pump to bound the queue of the selected mailbox. It belongs to the
+	// session rather than to the NotifyPoll call, so events raised while the
+	// pump is stopped (the library fences it around every change of the
+	// selected mailbox) are queued instead of lost.
 	notifyEvents chan memNotifyEvent
 }
 
@@ -294,9 +299,9 @@ func (sess *UserSession) Poll(ctx context.Context, w *imapserver.UpdateWriter, a
 
 func (sess *UserSession) Idle(ctx context.Context, w *imapserver.UpdateWriter, stop <-chan struct{}) error {
 	sess.notifyMutex.Lock()
-	notifyUsed := sess.notifyUsed
+	notifyOff := sess.notifyOff
 	sess.notifyMutex.Unlock()
-	if notifyUsed {
+	if notifyOff != nil {
 		// Once NOTIFY has been used, it is the single event source for this
 		// connection: the pump delivers according to the client's filter, and
 		// IDLE only keeps the connection open. Delivering via tracker.Idle
@@ -305,9 +310,16 @@ func (sess *UserSession) Idle(ctx context.Context, w *imapserver.UpdateWriter, s
 		// must not push selected-mailbox message events.
 		select {
 		case <-stop:
+			return nil
 		case <-ctx.Done():
+			return nil
+		case <-notifyOff:
+			// A notification overflow ended NOTIFY mid-IDLE: the pump is gone
+			// and delivery is back to the pre-NOTIFY rules, under which IDLE
+			// pushes the selected mailbox's updates. Fall through to
+			// tracker.Idle, which drains the ones accumulated behind the watch
+			// on entry and then carries on as usual.
 		}
-		return nil
 	}
 
 	if sess.mailbox == nil {

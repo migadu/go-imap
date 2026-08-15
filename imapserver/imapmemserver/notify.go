@@ -173,15 +173,21 @@ var _ imapserver.SessionNotify = (*UserSession)(nil)
 
 // SetNotify implements imapserver.SessionNotify.
 func (sess *UserSession) SetNotify(ctx context.Context, options *imap.NotifyOptions, w *imapserver.UpdateWriter) error {
-	sess.notifyMutex.Lock()
-	sess.notifyUsed = true
-	sess.notifyMutex.Unlock()
-
 	if options == nil {
-		sess.stopNotifyEvents()
+		// RFC 5465 section 3.1: no events at all. The watch goes, but the
+		// event channel stays registered: the selected mailbox's updates keep
+		// queuing behind the suppression, and NotifyPoll — which the library
+		// runs for NOTIFY NONE too — needs the wake-ups to notice when that
+		// queue must be cut short (checkNotifyOverflow).
+		sess.notifyMutex.Lock()
+		sess.notifyWatch = nil
+		sess.startNotifyLocked()
+		sess.notifyMutex.Unlock()
 		return nil
 	}
 
+	// A rejected watch leaves the previous state in effect, the pre-NOTIFY one
+	// included, so nothing is touched before the events have been checked.
 	for _, item := range options.Items {
 		for _, ev := range item.Events {
 			switch ev {
@@ -248,13 +254,23 @@ func (sess *UserSession) SetNotify(ctx context.Context, options *imap.NotifyOpti
 	// Start capturing events before the watch goes live, so nothing raised
 	// between here and the first NotifyPoll is missed.
 	sess.notifyMutex.Lock()
+	sess.startNotifyLocked()
+	sess.notifyWatch = watch
+	sess.notifyMutex.Unlock()
+	return nil
+}
+
+// startNotifyLocked puts the session under NOTIFY's delivery rules (see
+// notifyOff) and registers its event channel with the user, unless both are
+// already the case. notifyMutex must be held.
+func (sess *UserSession) startNotifyLocked() {
+	if sess.notifyOff == nil {
+		sess.notifyOff = make(chan struct{})
+	}
 	if sess.notifyEvents == nil {
 		sess.notifyEvents = make(chan memNotifyEvent, 256)
 		sess.user.notify.register(sess.notifyEvents, sess)
 	}
-	sess.notifyWatch = watch
-	sess.notifyMutex.Unlock()
-	return nil
 }
 
 // stopNotifyEvents drops the watch and stops capturing events for it.
@@ -271,17 +287,16 @@ func (sess *UserSession) stopNotifyEvents() {
 }
 
 // NotifyPoll implements imapserver.SessionNotify.
+//
+// It runs after NOTIFY NONE as well, with no watch: then it delivers nothing
+// and only keeps the selected mailbox's queue of suppressed updates within
+// bounds (checkNotifyOverflow).
 func (sess *UserSession) NotifyPoll(ctx context.Context, w *imapserver.UpdateWriter, stop <-chan struct{}) error {
-	sess.notifyMutex.Lock()
-	watch := sess.notifyWatch
-	sess.notifyMutex.Unlock()
-	if watch == nil {
-		return nil
-	}
-
 	// The channel is registered by SetNotify and outlives this call: the
 	// library stops and restarts the pump around every change of the selected
-	// mailbox, and events raised in that window must be queued, not lost.
+	// mailbox, and events raised in that window must be queued, not lost. It
+	// is nil once NOTIFY is over — after a notification overflow, or when
+	// NOTIFY was never used on this session.
 	sess.notifyMutex.Lock()
 	ch := sess.notifyEvents
 	sess.notifyMutex.Unlock()
@@ -316,6 +331,10 @@ func (sess *UserSession) NotifyPoll(ctx context.Context, w *imapserver.UpdateWri
 // checkNotifyOverflow declares a notification overflow when the selected
 // mailbox has accumulated more undeliverable updates than the server is willing
 // to hold (RFC 5465 section 5.8). It reports whether the watch was dropped.
+//
+// The library then returns the connection to pre-NOTIFY delivery, so this
+// session does the same: the watch and the event channel go, and notifyOff is
+// closed so that an IDLE in progress resumes pushing updates.
 func (sess *UserSession) checkNotifyOverflow(w *imapserver.UpdateWriter) (bool, error) {
 	sess.notifyMutex.Lock()
 	mailbox := sess.mailbox
@@ -328,6 +347,13 @@ func (sess *UserSession) checkNotifyOverflow(w *imapserver.UpdateWriter) (bool, 
 		return false, err
 	}
 	sess.stopNotifyEvents()
+
+	sess.notifyMutex.Lock()
+	if sess.notifyOff != nil {
+		close(sess.notifyOff)
+		sess.notifyOff = nil
+	}
+	sess.notifyMutex.Unlock()
 	return true, nil
 }
 

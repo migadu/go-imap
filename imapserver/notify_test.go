@@ -1232,3 +1232,173 @@ func TestNotifyNoneSilencesIdle(t *testing.T) {
 	}
 	watcher.conn.Write([]byte("DONE\r\n"))
 }
+
+// TestNotifyNoneBoundsSuppressedQueue verifies that the updates a NOTIFY NONE
+// client's selected mailbox accumulates — undeliverable while the suppression
+// lasts, and never looked at by a per-command Poll — are still bounded: the
+// backend declares a notification overflow (RFC 5465 section 5.8) from the
+// pump the library keeps running for NOTIFY NONE, and delivery resumes.
+func TestNotifyNoneBoundsSuppressedQueue(t *testing.T) {
+	addr, _, closer := newNotifyTestServer(t)
+	defer closer()
+
+	watcher := dialNotifyTest(t, addr)
+	defer watcher.close()
+	watcher.login(t)
+	watcher.cmd("CREATE INBOX")
+	watcher.cmd("SELECT INBOX")
+	if resp := watcher.cmd("NOTIFY NONE"); !strings.Contains(resp, "OK") {
+		t.Fatalf("NOTIFY NONE failed: %q", resp)
+	}
+
+	other := dialNotifyTest(t, addr)
+	defer other.close()
+	other.login(t)
+
+	var overflowed bool
+	for i := 0; i < 1200 && !overflowed; i++ {
+		other.appendMessage(t, "INBOX")
+		for {
+			line, err := watcher.readLine(5 * time.Millisecond)
+			if err != nil {
+				break
+			}
+			if strings.Contains(line, "NOTIFICATIONOVERFLOW") {
+				overflowed = true
+				break
+			}
+			t.Errorf("NOTIFY NONE client received %q before the overflow", line)
+		}
+	}
+	if !overflowed {
+		t.Fatal("expected an OK [NOTIFICATIONOVERFLOW] once the frozen view grew past the limit")
+	}
+
+	resp := watcher.cmd("NOOP")
+	if !strings.Contains(resp, "EXISTS") {
+		t.Errorf("expected the accumulated updates to be delivered after the overflow, got %q", resp)
+	}
+}
+
+// TestNotifyOverflowDuringIdle verifies that a notification overflow declared
+// while the client is idling puts IDLE back in charge of delivery: with the
+// watch gone the connection is under the pre-NOTIFY rules, and IDLE pushes the
+// updates that had accumulated, then the new ones, without waiting for DONE.
+func TestNotifyOverflowDuringIdle(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		notify string
+	}{
+		{name: "NotifyNone", notify: "NOTIFY NONE"},
+		{name: "SelectedOmitted", notify: "NOTIFY SET (PERSONAL (MailboxName))"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			addr, _, closer := newNotifyTestServer(t)
+			defer closer()
+
+			watcher := dialNotifyTest(t, addr)
+			defer watcher.close()
+			watcher.login(t)
+			watcher.cmd("CREATE INBOX")
+			watcher.cmd("SELECT INBOX")
+			if resp := watcher.cmd("%s", tc.notify); !strings.Contains(resp, "OK") {
+				t.Fatalf("%s failed: %q", tc.notify, resp)
+			}
+
+			if _, err := watcher.conn.Write([]byte("T90 IDLE\r\n")); err != nil {
+				t.Fatalf("write IDLE: %v", err)
+			}
+			if line, err := watcher.readLine(5 * time.Second); err != nil || !strings.HasPrefix(line, "+") {
+				t.Fatalf("expected a continuation request for IDLE, got %q (%v)", line, err)
+			}
+
+			other := dialNotifyTest(t, addr)
+			defer other.close()
+			other.login(t)
+			for i := 0; i < 1100; i++ {
+				other.appendMessage(t, "INBOX")
+			}
+
+			// The overflow comes first, then IDLE flushes the frozen updates.
+			var sawOverflow, sawExists bool
+			for !sawExists {
+				line, err := watcher.readLine(5 * time.Second)
+				if err != nil {
+					t.Fatalf("waiting for IDLE to resume delivery (overflow seen: %v): %v", sawOverflow, err)
+				}
+				switch {
+				case strings.Contains(line, "NOTIFICATIONOVERFLOW"):
+					sawOverflow = true
+				case strings.Contains(line, "EXISTS"):
+					if !sawOverflow {
+						t.Fatalf("EXISTS pushed before the overflow: %q", line)
+					}
+					sawExists = true
+				}
+			}
+
+			// And it keeps delivering: a new message is pushed at once.
+			other.appendMessage(t, "INBOX")
+			for {
+				line, err := watcher.readLine(5 * time.Second)
+				if err != nil {
+					t.Fatalf("expected IDLE to push the next EXISTS: %v", err)
+				}
+				if strings.Contains(line, "1101 EXISTS") {
+					break
+				}
+			}
+
+			watcher.conn.Write([]byte("DONE\r\n"))
+			for {
+				line, err := watcher.readLine(5 * time.Second)
+				if err != nil {
+					t.Fatalf("waiting for IDLE completion: %v", err)
+				}
+				if strings.HasPrefix(line, "T90 ") {
+					if !strings.Contains(line, "OK") {
+						t.Fatalf("IDLE failed: %q", line)
+					}
+					break
+				}
+			}
+		})
+	}
+}
+
+// TestNotifyRejectedFirstWatchLeavesDefaultDelivery verifies that a NOTIFY SET
+// refused with BADEVENT changes nothing (RFC 5465 section 3.1: the effect of a
+// NOTIFY command lasts until the next successful one): if it was the first
+// NOTIFY, the connection is still under the pre-NOTIFY rules and IDLE keeps
+// pushing the selected mailbox's updates.
+func TestNotifyRejectedFirstWatchLeavesDefaultDelivery(t *testing.T) {
+	addr, _, closer := newNotifyTestServer(t)
+	defer closer()
+
+	watcher := dialNotifyTest(t, addr)
+	defer watcher.close()
+	watcher.login(t)
+	watcher.cmd("CREATE INBOX")
+	watcher.cmd("SELECT INBOX")
+	if resp := watcher.cmd("NOTIFY SET (SELECTED (MessageNew MessageExpunge AnnotationChange))"); !strings.Contains(resp, "NO [BADEVENT") {
+		t.Fatalf("expected the watch to be refused with BADEVENT, got %q", resp)
+	}
+
+	if _, err := watcher.conn.Write([]byte("T90 IDLE\r\n")); err != nil {
+		t.Fatalf("write IDLE: %v", err)
+	}
+	if line, err := watcher.readLine(5 * time.Second); err != nil || !strings.HasPrefix(line, "+") {
+		t.Fatalf("expected a continuation request for IDLE, got %q (%v)", line, err)
+	}
+
+	other := dialNotifyTest(t, addr)
+	defer other.close()
+	other.login(t)
+	other.appendMessage(t, "INBOX")
+
+	line, err := watcher.readLine(5 * time.Second)
+	if err != nil || !strings.Contains(line, "1 EXISTS") {
+		t.Fatalf("expected IDLE to push EXISTS after a refused NOTIFY, got %q (%v)", line, err)
+	}
+	watcher.conn.Write([]byte("DONE\r\n"))
+}
