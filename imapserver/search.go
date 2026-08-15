@@ -95,8 +95,33 @@ func (c *Conn) handleSearch(tag string, dec *imapwire.Decoder, numKind NumKind) 
 		supportsESEARCH = c.availableCapsSet().Has(imap.CapESearch) || c.availableCapsSet().Has(imap.CapIMAP4rev2)
 	}
 
-	// Use ESEARCH format only if session supports it AND client used extended syntax
-	if supportsESEARCH && extended {
+	// Use the ESEARCH format when the session supports it AND either the client
+	// used the extended syntax (RFC 4731) or it has enabled IMAP4rev2.
+	//
+	// The IMAP4rev2 half is not an extension of RFC 4731 but a requirement of
+	// RFC 9051: §6.4.4 gives SEARCH exactly one untagged response, ESEARCH, and
+	// says "if no result option is specified or empty list of options is
+	// specified as '()', ALL is assumed"; §7.3.4 describes ESEARCH as the
+	// response to "a SEARCH or UID SEARCH command", not to an extended one; and
+	// Appendix E item 4 records the change as "SEARCH command now requires to
+	// return the ESEARCH response (SEARCH response is now deprecated)". So a
+	// plain `SEARCH ALL` on a rev2 session must be answered
+	// `* ESEARCH (TAG "…") ALL 1:3`, and answering `* SEARCH 1 2 3` leaves a
+	// rev2-only client with no results at all — §6.4.4 tells it to ignore
+	// SEARCH responses, so the mismatch is silent rather than a parse error.
+	//
+	// handleSort already applies exactly this rule to its own response form
+	// (sort.go: `c.enabledHas(imap.CapIMAP4rev2) || extended`). This brings the
+	// command rev2 actually specifies into line with the extension that copied
+	// it.
+	//
+	// Gating on the ENABLED set, never the advertised one, is what keeps this
+	// invisible to IMAP4rev1 clients: a server may advertise IMAP4rev2 alongside
+	// IMAP4rev1, and a client that never sent ENABLE keeps receiving the rev1
+	// wire form it knows how to parse. supportsESEARCH is kept as the outer
+	// guard so the response form can never outrun what the session reports it
+	// can do via SessionCapabilities.
+	if supportsESEARCH && (extended || c.enabledHas(imap.CapIMAP4rev2)) {
 		return c.writeESearch(tag, data, &options, numKind)
 	} else {
 		return c.writeSearch(data.All, data.ModSeq)
