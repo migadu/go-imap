@@ -21,7 +21,7 @@ func (c *Conn) handleUIDExpunge(dec *imapwire.Decoder) error {
 }
 
 func (c *Conn) expunge(uids *imap.UIDSet) error {
-	if err := c.checkState(imap.ConnStateSelected); err != nil {
+	if err := c.checkWritableMailbox(); err != nil {
 		return err
 	}
 	w := &ExpungeWriter{conn: c}

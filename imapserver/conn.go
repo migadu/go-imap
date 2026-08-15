@@ -490,6 +490,17 @@ func (c *Conn) readCommand(dec *imapwire.Decoder) (err error) {
 	)
 	if errors.As(err, &imapErr) {
 		resp = (*imap.StatusResponse)(imapErr)
+		// An OK-typed error is a successful completion that carries a response
+		// code (e.g. MODIFIED from a conditional STORE, RFC 7162 §3.1.3), not a
+		// failure. Flush pending mailbox updates before the tagged line, as the
+		// nil-error path below does — for MODIFIED in particular the pending
+		// unsolicited FETCH is often the very flag change that made the STORE
+		// fail its precondition.
+		if imapErr.Type == imap.StatusResponseTypeOK {
+			if err := c.poll(name); err != nil {
+				return err
+			}
+		}
 	} else if errors.As(err, &decErr) {
 		resp = &imap.StatusResponse{
 			Type: imap.StatusResponseTypeBad,
@@ -665,6 +676,28 @@ func (c *Conn) checkState(state imap.ConnState) error {
 	}
 	if c.state != state {
 		return newClientBugError(fmt.Sprintf("This command is only valid in the %s state", state))
+	}
+	return nil
+}
+
+// checkWritableMailbox rejects a command that would change the selected
+// mailbox when it was selected read-only.
+//
+// RFC 9051 §6.3.2: EXAMINE selects a mailbox read-only, and "no changes to the
+// permanent state of the mailbox, including per-user state, are permitted".
+// Enforcing it here rather than in the session keeps the backend out of a
+// decision it cannot make correctly: it is not told whether an Expunge call
+// came from the client or from the implicit expunge on CLOSE, which RFC 3501
+// §6.4.2 requires to be silently skipped instead.
+func (c *Conn) checkWritableMailbox() error {
+	if err := c.checkState(imap.ConnStateSelected); err != nil {
+		return err
+	}
+	if c.selectedReadOnly {
+		return &imap.Error{
+			Type: imap.StatusResponseTypeNo,
+			Text: "Mailbox is read-only",
+		}
 	}
 	return nil
 }
@@ -1175,13 +1208,9 @@ func (w *UpdateWriter) WriteMessageFlags(seqNum uint32, uid imap.UID, flags []im
 		respWriter.WriteUID(uid)
 	}
 	respWriter.WriteFlags(flags)
-	// RFC 7162 §3.2: only CONDSTORE-aware clients may receive MODSEQ in an
-	// unsolicited FETCH. supportsCondStore() alone is the advertised capability,
-	// which is always on for capable clients; a client that never issued a
-	// CONDSTORE-enabling command (e.g. mbsync/isync) must not be sent MODSEQ, or it
-	// treats the FETCH as malformed. Also require supportsCondStore() so a
-	// capability filter can still suppress it mid-connection.
-	if modSeq != 0 && w.conn.supportsCondStore() && w.conn.CondStoreEnabled() {
+	// WriteModSeq itself drops the item for sessions that are not
+	// CONDSTORE-aware (RFC 7162 §3.2); only the zero value is guarded here.
+	if modSeq != 0 {
 		respWriter.WriteModSeq(modSeq)
 	}
 	return respWriter.Close()

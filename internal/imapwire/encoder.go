@@ -107,6 +107,34 @@ func (enc *Encoder) String(s string) *Encoder {
 	return enc.Quoted(s)
 }
 
+// AString writes an astring, preferring the bare atom form when the value
+// allows it.
+//
+// Both forms are valid, but the atom form is what every widely deployed client
+// emits, so it is the better-tested path through a server's parser. Values that
+// are not valid atoms fall back to String.
+func (enc *Encoder) AString(s string) *Encoder {
+	if isAtom(s) {
+		return enc.Atom(s)
+	}
+	return enc.String(s)
+}
+
+// isAtom reports whether s can be written as a bare atom. ']' is excluded --
+// astring-char admits it but atom-char does not, so such values take the
+// quoted path.
+func isAtom(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if !IsAtomChar(s[i]) {
+			return false
+		}
+	}
+	return true
+}
+
 func (enc *Encoder) validQuoted(s string) bool {
 	if len(s) > 4096 {
 		return false

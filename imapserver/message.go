@@ -23,10 +23,11 @@ func ExtractBodySection(r io.Reader, item *imap.FetchItemBodySection) []byte {
 	)
 
 	br := bufio.NewReader(r)
-	header, err := textproto.ReadHeader(br)
-	if err != nil {
-		return nil
-	}
+	// Tolerate a malformed header block (use the partial header and keep reading
+	// the body) exactly as ExtractBodyStructure does. Otherwise BODY[n] returns
+	// nothing for a message whose BODYSTRUCTURE the same parser happily produces —
+	// an internal inconsistency clients see as an advertised part that fetches empty.
+	header, _ = textproto.ReadHeader(br)
 	body = br
 
 	parentMediaType, header, body := findMessagePart(header, body, item.Part)
@@ -75,9 +76,12 @@ func ExtractBodySection(r io.Reader, item *imap.FetchItemBodySection) []byte {
 
 	switch item.Specifier {
 	case imap.PartSpecifierNone, imap.PartSpecifierText:
-		if _, err := io.Copy(&buf, body); err != nil {
-			return nil
-		}
+		// A truncated or malformed part body makes the multipart reader return
+		// io.ErrUnexpectedEOF; keep the bytes already read rather than discarding
+		// the whole section, so BODY[n] stays consistent with the size
+		// ExtractBodyStructure reports (it derives that size with io.ReadAll,
+		// which discards the identical error).
+		_, _ = io.Copy(&buf, body)
 	}
 
 	return extractPartial(buf.Bytes(), item.Partial)
@@ -166,10 +170,9 @@ func ExtractBinarySection(r io.Reader, item *imap.FetchItemBinarySection) []byte
 	)
 
 	br := bufio.NewReader(r)
-	header, err := textproto.ReadHeader(br)
-	if err != nil {
-		return nil
-	}
+	// Tolerate a malformed header block, matching ExtractBodySection and the
+	// lenient ExtractBodyStructure the BODYSTRUCTURE is derived from.
+	header, _ = textproto.ReadHeader(br)
 	body = br
 
 	_, header, body = findMessagePart(header, body, item.Part)
@@ -177,10 +180,10 @@ func ExtractBinarySection(r io.Reader, item *imap.FetchItemBinarySection) []byte
 		return nil
 	}
 
-	part, err := gomessage.New(gomessage.Header{Header: header}, body)
-	if err != nil {
-		return nil
-	}
+	// gomessage.New returns a usable *Entity even alongside a non-fatal
+	// UnknownEncoding / UnknownCharset error (the body is left identity-decoded);
+	// serve it rather than discarding a part the BODYSTRUCTURE advertises.
+	part, _ := gomessage.New(gomessage.Header{Header: header}, body)
 
 	// Write the requested data to a buffer
 	var buf bytes.Buffer
@@ -191,9 +194,8 @@ func ExtractBinarySection(r io.Reader, item *imap.FetchItemBinarySection) []byte
 		}
 	}
 
-	if _, err := io.Copy(&buf, part.Body); err != nil {
-		return nil
-	}
+	// Keep the bytes read; a truncated or malformed part yields io.ErrUnexpectedEOF.
+	_, _ = io.Copy(&buf, part.Body)
 
 	return extractPartial(buf.Bytes(), item.Partial)
 }

@@ -97,6 +97,14 @@ type Session interface {
 	Search(ctx context.Context, kind NumKind, criteria *imap.SearchCriteria, options *imap.SearchOptions) (*imap.SearchData, error)
 	Sort(ctx context.Context, kind NumKind, sortCriteria []imap.SortCriterion, charset string, searchCriteria *imap.SearchCriteria, options *imap.SortOptions) (*imap.SortData, error)
 	Fetch(ctx context.Context, w *FetchWriter, numSet imap.NumSet, options *imap.FetchOptions) error
+	// Store alters message flags. A conditional store (options.Conditional)
+	// that leaves messages untouched because they failed the UNCHANGEDSINCE
+	// precondition reports them by returning an *imap.Error whose Type is
+	// StatusResponseTypeOK (or StatusResponseTypeNo for expunged messages) and
+	// whose Code carries the failed set — see imap.ModifiedResponseCode. Such
+	// an error is a successful completion, not a failure: wrappers must
+	// forward it unmodified (or wrap with %w), or the tagged OK [MODIFIED]
+	// line becomes an internal server error.
 	Store(ctx context.Context, w *FetchWriter, numSet imap.NumSet, flags *imap.StoreFlags, options *imap.StoreOptions) error
 	Copy(ctx context.Context, numSet imap.NumSet, dest string) (*imap.CopyData, error)
 }

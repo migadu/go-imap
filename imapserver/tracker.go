@@ -80,8 +80,14 @@ func (t *MailboxTracker) queueUpdate(update *trackerUpdate, source *SessionTrack
 // QueueExpunge queues a new EXPUNGE update.
 //
 // uid is the UID of the expunged message. It is used to emit a VANISHED response
-// (RFC 7162 §3.2.10) instead of EXPUNGE for QRESYNC-enabled sessions; pass 0 when
-// no UID is available (such sessions then fall back to EXPUNGE).
+// (RFC 7162 §3.2.10) instead of EXPUNGE for QRESYNC-enabled sessions.
+//
+// Passing a non-zero uid is part of the contract for QRESYNC support: a zero uid
+// silently degrades the update to a classic EXPUNGE for every session, including
+// QRESYNC-enabled ones (see Poll). Nothing reports that downgrade — the command
+// still succeeds — so a backend that has the UID at hand and passes 0 anyway
+// leaves QRESYNC clients resynchronizing off sequence numbers. Pass 0 only when
+// no UID is genuinely available.
 //
 // It returns an error (rather than panicking) if seqNum is 0 or out of range, so
 // a backend bug cannot crash the calling goroutine.
@@ -432,4 +438,33 @@ func (t *SessionTracker) EncodeSeqNum(seqNum uint32) uint32 {
 		}
 	}
 	return seqNum
+}
+
+// EncodeNumMessages converts the number of messages in the mailbox from the
+// server view to the client view.
+//
+// This is the value "*" refers to in a sequence set: the largest sequence
+// number the client can currently name. It differs from the server's count in
+// both directions -- a message that has been appended but not yet announced is
+// not addressable, and a message whose expunge has not been dispatched yet
+// still is.
+func (t *SessionTracker) EncodeNumMessages() uint32 {
+	t.mutex.Lock()
+	defer t.mutex.Unlock()
+
+	// Undo each pending update, newest first, to recover the count as of the
+	// last one the client actually saw.
+	n := t.mailbox.numMessages
+	for i := len(t.queue) - 1; i >= 0; i-- {
+		update := &t.queue[i]
+		if update.numMessages != 0 {
+			// prevNumMessages is the count before this update, so an update
+			// that announced more than one new message is undone correctly.
+			n = update.prevNumMessages
+		}
+		if update.expunge != 0 {
+			n++
+		}
+	}
+	return n
 }

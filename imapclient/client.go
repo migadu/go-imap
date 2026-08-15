@@ -90,6 +90,45 @@ type Options struct {
 	// buffer in memory (e.g., for FetchMessageBuffer.Collect). Larger
 	// literals must be consumed via the streaming API. Default 64 MiB.
 	MaxLiteralSize int64
+	// ResponseTimeout bounds how long to wait for a response while a command
+	// is in flight, including the wait for its first byte. This is the window
+	// in which an unresponsive server is detected. If zero, 30 seconds is used.
+	//
+	// It does not apply while IDLE is running, where silence is expected and
+	// the much longer idle timeout governs instead.
+	//
+	// Lower it to notice a dead peer sooner; raise it for servers that are slow
+	// to answer expensive commands. There is deliberately no value meaning "no
+	// timeout": a client that never gives up is the bug this bounds.
+	ResponseTimeout time.Duration
+	// LiteralReadTimeout bounds how long to wait while reading a literal, i.e.
+	// a message body or other large payload. If zero, 5 minutes is used.
+	//
+	// Raise it when fetching large messages over slow links. As with
+	// ResponseTimeout, there is no value meaning "no timeout".
+	LiteralReadTimeout time.Duration
+}
+
+// responseTimeout returns ResponseTimeout, or the default if it is unset.
+//
+// Zero means "use the default" rather than "no timeout", so that an Options
+// value written before these fields existed keeps its deadlines. setReadTimeout
+// clears the deadline entirely for a non-positive duration, so passing the raw
+// field through would silently leave such callers waiting forever.
+func (options *Options) responseTimeout() time.Duration {
+	if options.ResponseTimeout <= 0 {
+		return respReadTimeout
+	}
+	return options.ResponseTimeout
+}
+
+// literalTimeout returns LiteralReadTimeout, or the default if it is unset.
+// See responseTimeout for why zero means the default.
+func (options *Options) literalTimeout() time.Duration {
+	if options.LiteralReadTimeout <= 0 {
+		return literalReadTimeout
+	}
+	return options.LiteralReadTimeout
 }
 
 func (options *Options) wrapReadWriter(rw io.ReadWriter) io.ReadWriter {
@@ -182,6 +221,11 @@ type Client struct {
 	pendingCmds []command
 	contReqs    []continuationRequest
 	closed      bool
+	// awaitingResp is true while the read goroutine is parked waiting for the
+	// first byte of the next response. Only then may another goroutine retune
+	// the read deadline: once a response is being decoded the deadline belongs
+	// to the reader, which lengthens it for literals.
+	awaitingResp bool
 }
 
 // New creates a new IMAP client.
@@ -309,6 +353,46 @@ func DialStartTLS(address string, options *Options) (*Client, error) {
 	newOptions := *options
 	newOptions.TLSConfig = tlsConfig
 	return NewStartTLS(conn, &newOptions)
+}
+
+// readTimeoutLocked returns how long to wait for the first byte of the next
+// response. A command in flight means the server owes us a reply, so the
+// response timeout applies. With nothing pending, or with IDLE running -- where
+// silence is expected and may last for many minutes -- the idle timeout does.
+//
+// c.mutex must be held.
+func (c *Client) readTimeoutLocked() time.Duration {
+	var pending bool
+	for _, cmd := range c.pendingCmds {
+		if _, ok := cmd.(*idleCommand); ok {
+			return idleReadTimeout
+		}
+		pending = true
+	}
+	if pending {
+		return c.options.responseTimeout()
+	}
+	return idleReadTimeout
+}
+
+// beginAwaitResponse arms the read deadline for a wait on the next response and
+// marks the reader as parked, so beginCommand may shorten the deadline if a
+// command is sent while we are blocked.
+func (c *Client) beginAwaitResponse() {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	c.awaitingResp = true
+	c.setReadTimeout(c.readTimeoutLocked())
+}
+
+// endAwaitResponse marks the reader as no longer parked. From here until the
+// next beginAwaitResponse the deadline is the reader's alone: readResponse and
+// the literal readers move it around, and a concurrent beginCommand must not
+// cut a literal short.
+func (c *Client) endAwaitResponse() {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	c.awaitingResp = false
 }
 
 func (c *Client) setReadTimeout(dur time.Duration) {
@@ -462,6 +546,12 @@ func (c *Client) beginCommand(name string, cmd command) *commandEncoder {
 	}
 
 	c.pendingCmds = append(c.pendingCmds, cmd)
+	// The read goroutine may already be parked waiting for the next response,
+	// in which case it armed its deadline before this command existed. Retune
+	// it now: SetReadDeadline applies to a read that is already blocked.
+	if c.awaitingResp {
+		c.setReadTimeout(c.readTimeoutLocked())
+	}
 	quotedUTF8 := c.useQuotedUTF8Locked()
 	literalMinus := c.caps.Has(imap.CapLiteralMinus)
 	literalPlus := c.caps.Has(imap.CapLiteralPlus)
@@ -634,12 +724,20 @@ func (c *Client) read() {
 		c.closeWithError(cmdErr)
 	}()
 
-	c.setReadTimeout(respReadTimeout) // We're waiting for the greeting
+	c.setReadTimeout(c.options.responseTimeout()) // We're waiting for the greeting
 	for {
+		// Arm the deadline for the wait that is about to happen. dec.EOF blocks
+		// until the first byte of the next response arrives, so this is where a
+		// server that has gone silent must be caught.
+		c.beginAwaitResponse()
+
 		// Ignore net.ErrClosed here, because we also call conn.Close in c.Close
 		if c.dec.EOF() || errors.Is(c.dec.Err(), net.ErrClosed) || errors.Is(c.dec.Err(), io.ErrClosedPipe) {
+			c.endAwaitResponse()
 			break
 		}
+		c.endAwaitResponse()
+
 		if err := c.readResponse(); err != nil {
 			c.decErr = err
 			break
@@ -651,8 +749,9 @@ func (c *Client) read() {
 }
 
 func (c *Client) readResponse() error {
-	c.setReadTimeout(respReadTimeout)
-	defer c.setReadTimeout(idleReadTimeout)
+	// The read loop re-arms the deadline for the next wait, so there is nothing
+	// to restore on the way out.
+	c.setReadTimeout(c.options.responseTimeout())
 
 	// Apply the MaxSize budget per response rather than cumulatively.
 	c.dec.ResetCount()
@@ -749,6 +848,9 @@ func (c *Client) readResponseTagged(tag, typ string) (startTLS *startTLSCommand,
 	hasSP := c.dec.SP()
 
 	var code string
+	// See the matching comment in readResponseData: a code we cannot parse is
+	// skipped like one we do not recognise, rather than failing the connection.
+	var malformedCode bool
 	if hasSP && c.dec.Special('[') { // resp-text-code
 		if !c.dec.ExpectAtom(&code) {
 			return nil, fmt.Errorf("in resp-text-code: %w", c.dec.Err())
@@ -781,13 +883,14 @@ func (c *Client) readResponseTagged(tag, typ string) (startTLS *startTLSCommand,
 		case "APPENDUID":
 			var (
 				uidValidity uint32
-				uid         imap.UID
+				uidNum      uint32
 			)
-			if !c.dec.ExpectSP() || !c.dec.ExpectNumber(&uidValidity) || !c.dec.ExpectSP() || !c.dec.ExpectUID(&uid) {
-				return nil, fmt.Errorf("in resp-code-apnd: %w", c.dec.Err())
+			if !c.dec.SP() || !c.dec.Number(&uidValidity) || !c.dec.SP() || !c.dec.Number(&uidNum) {
+				malformedCode = true
+				break
 			}
 			if cmd, ok := cmd.(*AppendCommand); ok {
-				cmd.data.UID = uid
+				cmd.data.UID = imap.UID(uidNum)
 				cmd.data.UIDValidity = uidValidity
 			}
 		case "COPYUID":
@@ -833,6 +936,10 @@ func (c *Client) readResponseTagged(tag, typ string) (startTLS *startTLSCommand,
 			if c.dec.SP() {
 				c.dec.DiscardUntilByte(']')
 			}
+		}
+		if malformedCode {
+			c.dec.DiscardUntilByte(']')
+			code = ""
 		}
 		if !c.dec.ExpectSpecial(']') {
 			return nil, fmt.Errorf("in resp-text: %w", c.dec.Err())
@@ -898,6 +1005,16 @@ func (c *Client) readResponseData(typ string) error {
 		hasSP := c.dec.SP()
 
 		var code string
+		// malformedCode is set when a code we recognise carries an argument we
+		// cannot parse. Rather than failing the connection over advisory
+		// metadata, we skip the code exactly as we skip an unknown one: RFC 9051
+		// Section 7.1 already requires clients to ignore codes they do not
+		// recognise, and a code that will not parse is no more usable than one
+		// we have never heard of. Servers do get this wrong -- dynadot sends a
+		// millisecond timestamp as UIDVALIDITY, which does not fit the 32 bits
+		// RFC 9051 gives it, and that alone made the server unusable.
+		// See https://github.com/emersion/go-imap/issues/612
+		var malformedCode bool
 		if hasSP && c.dec.Special('[') { // resp-text-code
 			if !c.dec.ExpectAtom(&code) {
 				return fmt.Errorf("in resp-text-code: %w", c.dec.Err())
@@ -931,17 +1048,19 @@ func (c *Client) readResponseData(typ string) error {
 					handler(&UnilateralDataMailbox{PermanentFlags: flags})
 				}
 			case "UIDNEXT":
-				var uidNext imap.UID
-				if !c.dec.ExpectSP() || !c.dec.ExpectUID(&uidNext) {
-					return c.dec.Err()
+				var num uint32
+				if !c.dec.SP() || !c.dec.Number(&num) {
+					malformedCode = true
+					break
 				}
 				if cmd := findPendingCmdByType[*SelectCommand](c); cmd != nil {
-					cmd.data.UIDNext = uidNext
+					cmd.data.UIDNext = imap.UID(num)
 				}
 			case "UIDVALIDITY":
 				var uidValidity uint32
-				if !c.dec.ExpectSP() || !c.dec.ExpectNumber(&uidValidity) {
-					return c.dec.Err()
+				if !c.dec.SP() || !c.dec.Number(&uidValidity) {
+					malformedCode = true
+					break
 				}
 				if cmd := findPendingCmdByType[*SelectCommand](c); cmd != nil {
 					cmd.data.UIDValidity = uidValidity
@@ -961,8 +1080,9 @@ func (c *Client) readResponseData(typ string) error {
 				}
 			case "HIGHESTMODSEQ":
 				var modSeq uint64
-				if !c.dec.ExpectSP() || !c.dec.ExpectModSeq(&modSeq) {
-					return c.dec.Err()
+				if !c.dec.SP() || !c.dec.ModSeq(&modSeq) {
+					malformedCode = true
+					break
 				}
 				if cmd := findPendingCmdByType[*SelectCommand](c); cmd != nil {
 					cmd.data.HighestModSeq = modSeq
@@ -977,6 +1097,12 @@ func (c *Client) readResponseData(typ string) error {
 				if c.dec.SP() {
 					c.dec.DiscardUntilByte(']')
 				}
+			}
+			if malformedCode {
+				// Drop whatever is left of the code and forget its name, so it
+				// is reported the same as any code we do not act on.
+				c.dec.DiscardUntilByte(']')
+				code = ""
 			}
 			if !c.dec.ExpectSpecial(']') {
 				return fmt.Errorf("in resp-text: %w", c.dec.Err())

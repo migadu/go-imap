@@ -160,7 +160,12 @@ func writeFetchItemBodySection(enc *imapwire.Encoder, item *imap.FetchItemBodySe
 
 		if len(headerList) > 0 {
 			enc.SP().List(len(headerList), func(i int) {
-				enc.String(headerList[i])
+				// header-fld-name is an astring, so a quoted name is legal, but
+				// some servers only handle the atom form: mailo.com answers
+				// BODY[HEADER.FIELDS ("Message-ID")] with an empty body while
+				// answering the unquoted form correctly.
+				// See https://github.com/emersion/go-imap/pull/589
+				enc.AString(headerList[i])
 			})
 		}
 	}
@@ -927,12 +932,12 @@ func (c *Client) handleFetch(seqNum uint32) error {
 		}
 
 		if done != nil {
-			c.setReadTimeout(literalReadTimeout)
+			c.setReadTimeout(c.options.literalTimeout())
 		}
 		items <- item
 		if done != nil {
 			<-done
-			c.setReadTimeout(respReadTimeout)
+			c.setReadTimeout(c.options.responseTimeout())
 		}
 		return nil
 	})
@@ -1036,7 +1041,27 @@ func parseMsgIDList(s string) ([]string, error) {
 	return h.MsgIDList("In-Reply-To")
 }
 
+// maxBodyStructureDepth bounds how deeply a BODYSTRUCTURE may nest.
+//
+// A body nests two ways -- a multipart holds bodies, and a message/rfc822 part
+// holds one more -- and neither goes through Decoder.List, so the decoder's own
+// maxListDepth never sees them. Without a bound here a server can nest as
+// deeply as maxResponseSize allows, which is millions of levels, and because
+// each level wraps the error below it the failure alone is quadratic.
+//
+// Real messages nest in single digits. This matches maxListDepth, which bounds
+// the equivalent recursion everywhere else in the decoder.
+// See https://github.com/emersion/go-imap/issues/574
+const maxBodyStructureDepth = 1000
+
 func readBody(dec *imapwire.Decoder, options *Options) (imap.BodyStructure, error) {
+	return readBodyDepth(dec, options, 0)
+}
+
+func readBodyDepth(dec *imapwire.Decoder, options *Options, depth int) (imap.BodyStructure, error) {
+	if depth > maxBodyStructureDepth {
+		return nil, fmt.Errorf("body structure nesting too deep (over %v levels)", maxBodyStructureDepth)
+	}
 	if !dec.ExpectSpecial('(') {
 		return nil, dec.Err()
 	}
@@ -1048,11 +1073,29 @@ func readBody(dec *imapwire.Decoder, options *Options) (imap.BodyStructure, erro
 		err       error
 	)
 	if dec.String(&mediaType) {
-		token = "body-type-1part"
-		bs, err = readBodyType1part(dec, mediaType, options)
+		// A body opening with a string is body-type-1part, whose media type is
+		// followed by a media subtype -- also a string.
+		//
+		// Except when it is a multipart that lost all of its children. RFC 9051
+		// requires at least one ("1*body SP media-subtype [SP body-ext-mpart]"),
+		// but servers do emit an empty alternative as ("ALTERNATIVE" (params)
+		// ...), where the leading string is the subtype and what follows is the
+		// extension data. Tell them apart by whether a string comes next: it
+		// always does in a conformant 1part, and never in this shape.
+		// See https://github.com/emersion/go-imap/issues/701
+		hasSP := dec.SP()
+
+		var subtype string
+		if hasSP && dec.String(&subtype) {
+			token = "body-type-1part"
+			bs, err = readBodyType1part(dec, mediaType, subtype, options, depth)
+		} else {
+			token = "body-type-mpart"
+			bs, err = readChildlessBodyTypeMpart(dec, mediaType, hasSP, options)
+		}
 	} else {
 		token = "body-type-mpart"
-		bs, err = readBodyTypeMpart(dec, options)
+		bs, err = readBodyTypeMpart(dec, options, depth)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("in %v: %w", token, err)
@@ -1071,10 +1114,13 @@ func readBody(dec *imapwire.Decoder, options *Options) (imap.BodyStructure, erro
 	return bs, nil
 }
 
-func readBodyType1part(dec *imapwire.Decoder, typ string, options *Options) (*imap.BodyStructureSinglePart, error) {
-	bs := imap.BodyStructureSinglePart{Type: typ}
+// readBodyType1part reads a body-type-1part whose media type and subtype have
+// already been consumed by readBody, which needs them to tell a single part
+// from a childless multipart.
+func readBodyType1part(dec *imapwire.Decoder, typ, subtype string, options *Options, depth int) (*imap.BodyStructureSinglePart, error) {
+	bs := imap.BodyStructureSinglePart{Type: typ, Subtype: subtype}
 
-	if !dec.ExpectSP() || !dec.ExpectString(&bs.Subtype) || !dec.ExpectSP() {
+	if !dec.ExpectSP() {
 		return nil, dec.Err()
 	}
 	var err error
@@ -1084,7 +1130,7 @@ func readBodyType1part(dec *imapwire.Decoder, typ string, options *Options) (*im
 	}
 
 	var description string
-	if !dec.ExpectSP() || !dec.ExpectNString(&bs.ID) || !dec.ExpectSP() || !dec.ExpectNString(&description) || !dec.ExpectSP() || !dec.ExpectNString(&bs.Encoding) || !dec.ExpectSP() || !dec.ExpectBodyFldOctets(&bs.Size) {
+	if !dec.ExpectSP() || !dec.ExpectNString(&bs.ID) || !dec.ExpectSP() || !dec.ExpectNStringAllowStrayQuotes(&description) || !dec.ExpectSP() || !dec.ExpectNString(&bs.Encoding) || !dec.ExpectSP() || !dec.ExpectBodyFldOctets(&bs.Size) {
 		return nil, dec.Err()
 	}
 
@@ -1104,7 +1150,14 @@ func readBodyType1part(dec *imapwire.Decoder, typ string, options *Options) (*im
 		return &bs, nil
 	}
 
-	if strings.EqualFold(bs.Type, "message") && (strings.EqualFold(bs.Subtype, "rfc822") || strings.EqualFold(bs.Subtype, "global")) {
+	// message/rfc822 is body-type-msg in both revisions, so the envelope, the
+	// nested body structure and the line count always follow. message/global
+	// (RFC 6532) is body-type-msg only in RFC 9051: an IMAP4rev1 server emits
+	// it as a body-type-basic and goes straight to the extension data. Decide
+	// by what actually follows -- an envelope is a parenthesized list, so a '('
+	// means the fields are there and anything else means they are not.
+	// See https://github.com/emersion/go-imap/issues/741
+	if strings.EqualFold(bs.Type, "message") && (strings.EqualFold(bs.Subtype, "rfc822") || strings.EqualFold(bs.Subtype, "global") && dec.NextByteIs('(')) {
 		var msg imap.BodyStructureMessageRFC822
 
 		msg.Envelope, err = readEnvelope(dec, options)
@@ -1116,7 +1169,7 @@ func readBodyType1part(dec *imapwire.Decoder, typ string, options *Options) (*im
 			return nil, dec.Err()
 		}
 
-		msg.BodyStructure, err = readBody(dec, options)
+		msg.BodyStructure, err = readBodyDepth(dec, options, depth+1)
 		if err != nil {
 			return nil, err
 		}
@@ -1189,11 +1242,29 @@ func readBodyExt1part(dec *imapwire.Decoder, options *Options) (*imap.BodyStruct
 	return &ext, nil
 }
 
-func readBodyTypeMpart(dec *imapwire.Decoder, options *Options) (*imap.BodyStructureMultiPart, error) {
+// readChildlessBodyTypeMpart reads the malformed multipart described in
+// readBody: no child bodies, the media subtype already consumed, and optional
+// body-ext-mpart left to read.
+func readChildlessBodyTypeMpart(dec *imapwire.Decoder, subtype string, hasSP bool, options *Options) (*imap.BodyStructureMultiPart, error) {
+	bs := imap.BodyStructureMultiPart{Subtype: subtype}
+	if !hasSP {
+		// Nothing follows the subtype at all, e.g. ("ALTERNATIVE").
+		return &bs, nil
+	}
+
+	var err error
+	bs.Extended, err = readBodyExtMpart(dec, options)
+	if err != nil {
+		return nil, fmt.Errorf("in body-ext-mpart: %w", err)
+	}
+	return &bs, nil
+}
+
+func readBodyTypeMpart(dec *imapwire.Decoder, options *Options, depth int) (*imap.BodyStructureMultiPart, error) {
 	var bs imap.BodyStructureMultiPart
 
 	for {
-		child, err := readBody(dec, options)
+		child, err := readBodyDepth(dec, options, depth+1)
 		if err != nil {
 			return nil, err
 		}
@@ -1284,7 +1355,7 @@ func readBodyFldParam(dec *imapwire.Decoder, options *Options) (map[string]strin
 	)
 	err := dec.ExpectNList(func() error {
 		var s string
-		if !dec.ExpectString(&s) {
+		if !dec.ExpectStringAllowStrayQuotes(&s) {
 			return dec.Err()
 		}
 

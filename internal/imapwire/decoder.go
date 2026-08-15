@@ -169,6 +169,19 @@ func (dec *Decoder) acceptByte(want byte) bool {
 	return true
 }
 
+// NextByteIs reports whether the next byte is want, without consuming it.
+//
+// It is a lookahead for grammars where the production depends on what follows
+// rather than on what has already been read. On a read error it returns false
+// and sets the decoder error, like any other accept.
+func (dec *Decoder) NextByteIs(want byte) bool {
+	if !dec.acceptByte(want) {
+		return false
+	}
+	dec.mustUnreadByte()
+	return true
+}
+
 // EOF returns true if end-of-file is reached.
 func (dec *Decoder) EOF() bool {
 	_, err := dec.r.ReadByte()
@@ -489,6 +502,15 @@ func (dec *Decoder) ExpectModSeq(ptr *uint64) bool {
 }
 
 func (dec *Decoder) Quoted(ptr *string) bool {
+	return dec.quoted(ptr, false)
+}
+
+// maxStrayQuotes bounds the recovery in quoted: the malformation seen in the
+// wild is a doubled empty string ("" written as """"), so two is enough, and a
+// bound keeps a hostile peer from making us discard an unbounded run.
+const maxStrayQuotes = 2
+
+func (dec *Decoder) quoted(ptr *string, allowStrayQuotes bool) bool {
 	if !dec.Special('"') {
 		return false
 	}
@@ -512,8 +534,56 @@ func (dec *Decoder) Quoted(ptr *string) bool {
 
 		sb.WriteByte(ch)
 	}
+
+	if allowStrayQuotes {
+		// A conformant peer always follows the closing quote with a delimiter
+		// (SP, '(', ')', ']' or CRLF), so a '"' here means the peer emitted a
+		// malformed token and the rest of the response would decode against the
+		// wrong offsets. Swallowing the stray run costs nothing on conformant
+		// input and keeps one bad field from failing the whole response.
+		//
+		// Peek rather than readByte: hitting the end of the input here is not
+		// an error, and must not set the decoder error.
+		for i := 0; i < maxStrayQuotes; i++ {
+			b, err := dec.r.Peek(1)
+			if err != nil || b[0] != '"' {
+				break
+			}
+			dec.r.Discard(1)
+			dec.readBytes++
+		}
+	}
+
 	*ptr = sb.String()
 	return true
+}
+
+// ExpectNStringAllowStrayQuotes is ExpectNString, tolerating a malformed quoted
+// string that carries stray trailing quotes. Use it only for fields where a
+// non-conformant server has been observed in the wild and the value is not
+// load-bearing.
+func (dec *Decoder) ExpectNStringAllowStrayQuotes(ptr *string) bool {
+	var s string
+	if dec.Atom(&s) {
+		if !dec.Expect(s == "NIL", "nstring") {
+			return false
+		}
+		*ptr = ""
+		return true
+	}
+	if dec.quoted(ptr, true) || dec.Literal(ptr) {
+		return true
+	}
+	return dec.Expect(false, "string")
+}
+
+// ExpectStringAllowStrayQuotes is ExpectString with the same tolerance as
+// ExpectNStringAllowStrayQuotes.
+func (dec *Decoder) ExpectStringAllowStrayQuotes(ptr *string) bool {
+	if dec.quoted(ptr, true) || dec.Literal(ptr) {
+		return true
+	}
+	return dec.Expect(false, "string")
 }
 
 func (dec *Decoder) ExpectAString(ptr *string) bool {
@@ -697,16 +767,16 @@ func (dec *Decoder) Literal(ptr *string) bool {
 	const absoluteMaxBufferedLiteral = 4 * 1024 * 1024
 	if dec.CheckBufferedLiteralFunc != nil {
 		if err := dec.CheckBufferedLiteralFunc(lit.Size(), nonSync); err != nil {
-			lit.cancel()
-			// Fail the whole decode rather than returning a plain false: callers
-			// such as ExpectAString would otherwise fall through to another
-			// read and start consuming the literal's payload as IMAP syntax —
-			// which both corrupts the command and makes the pending-octet count
-			// DiscardLine relies on wrong.
+			// Fail the whole decode rather than returning a plain false:
+			// callers such as ExpectAString would otherwise fall through to
+			// another read and start consuming the literal's payload as IMAP
+			// syntax — which both corrupts the command and makes the
+			// pending-octet count DiscardLine relies on wrong.
+			lit.cancel(nil)
 			return dec.returnErr(err)
 		}
 	} else if lit.Size() > absoluteMaxBufferedLiteral {
-		lit.cancel()
+		lit.cancel(nil)
 		return dec.returnErr(fmt.Errorf("imapwire: literal of %d bytes exceeds default buffered cap", lit.Size()))
 	}
 	var sb strings.Builder
@@ -745,7 +815,7 @@ func (dec *Decoder) LiteralReader() (lit *LiteralReader, nonSync, ok bool) {
 		dec:     dec,
 		size:    size,
 		nonSync: nonSync,
-		r:       io.LimitReader(dec.r, size),
+		r:       newLimitReader(dec.r, size),
 	}
 	return lit, nonSync, true
 }
@@ -779,14 +849,25 @@ func (lit *LiteralReader) Size() int64 {
 func (lit *LiteralReader) Read(b []byte) (int, error) {
 	n, err := lit.r.Read(b)
 	if err == io.EOF {
-		lit.cancel()
+		lit.cancel(nil)
+	} else if err != nil {
+		// Any other failure -- an i/o timeout being the common one -- breaks
+		// the literal for good. Release it and record the cause, so that later
+		// decodes report the i/o error instead of our own "cannot decode while
+		// a literal is open".
+		lit.cancel(err)
 	}
 	return n, err
 }
 
-func (lit *LiteralReader) cancel() {
+// cancel releases the literal. A non-nil err is recorded as the decoder error,
+// first one wins.
+func (lit *LiteralReader) cancel(err error) {
 	if lit.dec == nil {
 		return
+	}
+	if err != nil {
+		lit.dec.returnErr(err)
 	}
 	lit.dec.literal = false
 	// A non-synchronizing literal's octets are already on the wire: remember
@@ -802,8 +883,8 @@ func (lit *LiteralReader) cancel() {
 
 // remaining reports how many octets of the literal have not been read yet.
 func (lit *LiteralReader) remaining() int64 {
-	if r, ok := lit.r.(*io.LimitedReader); ok {
-		return r.N
+	if r, ok := lit.r.(*limitReader); ok {
+		return r.left
 	}
 	return 0
 }

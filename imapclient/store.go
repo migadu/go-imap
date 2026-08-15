@@ -11,7 +11,11 @@ import (
 //
 // Unless StoreFlags.Silent is set, the server will return the updated values.
 //
-// A nil options pointer is equivalent to a zero options value.
+// A nil options pointer is equivalent to a zero options value. The
+// UNCHANGEDSINCE modifier (RFC 7162 §3.1.3.1) is sent when
+// options.Conditional() reports it as present; note that
+// StoreOptions.UnchangedSinceSet must be set to issue the always-fail probe
+// "UNCHANGEDSINCE 0", since a zero UnchangedSince alone means "no modifier".
 func (c *Client) Store(numSet imap.NumSet, store *imap.StoreFlags, options *imap.StoreOptions) *FetchCommand {
 	cmd := &FetchCommand{
 		numSet: numSet,
@@ -19,7 +23,10 @@ func (c *Client) Store(numSet imap.NumSet, store *imap.StoreFlags, options *imap
 	}
 	enc := c.beginCommand(uidCmdName("STORE", imapwire.NumSetKind(numSet)), cmd)
 	enc.SP().NumSet(numSet).SP()
-	if options != nil && options.UnchangedSince != 0 {
+	// An explicit "UNCHANGEDSINCE 0" is the always-fail probe of RFC 7162
+	// §3.1.3.1 and must reach the server, so emit the modifier whenever it is
+	// present — which is what Conditional reports.
+	if options.Conditional() {
 		enc.Special('(').Atom("UNCHANGEDSINCE").SP().ModSeq(options.UnchangedSince).Special(')').SP()
 	}
 	switch store.Op {
@@ -69,8 +76,9 @@ func readRespCodeModified(dec *imapwire.Decoder, cmd command) (imap.NumSet, erro
 // completion line. The returned set uses the command's number space: sequence
 // numbers when Store was called with a SeqSet, UIDs when called with a UIDSet.
 //
-// Modified is only populated for a conditional STORE issued with
-// StoreOptions.UnchangedSince, and only once the command has completed (e.g.
+// Modified is only populated for a conditional STORE — one whose
+// StoreOptions carry the UNCHANGEDSINCE modifier, i.e. with UnchangedSince
+// non-zero or UnchangedSinceSet true — and only once the command has completed (e.g.
 // after Close or Collect returns). It is nil for a regular FETCH, an
 // unconditional STORE, or a conditional STORE in which every message satisfied
 // the precondition. In the expunged-message case the server reports MODIFIED on
