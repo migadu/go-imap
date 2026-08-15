@@ -531,7 +531,36 @@ func (c *Client) Close() error {
 // The command name and a space are written.
 //
 // The caller must call commandEncoder.end.
+// awaitGreeting blocks until the server greeting has been read, or until the
+// connection fails.
+//
+// A greeting that reported an error is not surfaced here: the caller still gets
+// to write its command, which then fails through the usual paths. The point is
+// only to establish ordering.
+func (c *Client) awaitGreeting() {
+	select {
+	case <-c.greetingCh:
+	case <-c.decCh:
+	}
+}
+
 func (c *Client) beginCommand(name string, cmd command) *commandEncoder {
+	// No command may be written before the greeting has been read. The greeting
+	// is what says which state the connection starts in -- OK for not
+	// authenticated, PREAUTH for already authenticated, BYE for refused -- so
+	// composing a command ahead of it is speaking out of turn.
+	//
+	// It is also actively harmful. A server hardened against pre-auth plaintext
+	// command injection (CVE-2011-0411 and relatives) discards whatever the
+	// client sent before the session was ready, exactly so injected commands
+	// cannot be replayed into the authenticated session. The command is then
+	// lost and its tag is never answered. Cyrus IMAP does this, which is what
+	// emersion/go-imap#600 hit: LOGIN issued straight after dialling hung.
+	//
+	// The read goroutine arms a read timeout for the greeting, so this wait is
+	// bounded, and it unblocks early if the connection fails.
+	c.awaitGreeting()
+
 	c.encMutex.Lock() // unlocked by commandEncoder.end
 
 	c.mutex.Lock()
