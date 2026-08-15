@@ -698,12 +698,15 @@ func (dec *Decoder) ExpectMailbox(ptr *string) bool {
 		return true
 	}
 
-	var err error
+	// The mirror of Encoder.Mailbox: in UTF-8 mode the bytes on the wire are
+	// the name. Unescaping "&-" here would fold a mailbox genuinely called
+	// "A&-B" -- four ordinary characters to a conformant peer -- down to "A&B".
 	if dec.QuotedUTF8 {
-		name, err = utf7.Unescape(name)
-	} else {
-		name, err = utf7.Decode(name)
+		*ptr = name
+		return true
 	}
+
+	name, err := utf7.Decode(name)
 	if err == nil {
 		*ptr = name
 	}

@@ -180,14 +180,16 @@ func (enc *Encoder) stringLiteral(s string) {
 func (enc *Encoder) Mailbox(name string) *Encoder {
 	if strings.EqualFold(name, "INBOX") {
 		return enc.Atom("INBOX")
-	} else {
-		if enc.QuotedUTF8 {
-			name = utf7.Escape(name)
-		} else {
-			name = utf7.Encode(name)
-		}
-		return enc.String(name)
 	}
+	// In UTF-8 mode the name goes out verbatim. Modified UTF-7 is not merely
+	// unnecessary there, it is forbidden: RFC 9051 Appendix E removes it from
+	// IMAP4rev2, and RFC 6855 §3 rules it out once UTF8=ACCEPT is enabled. So
+	// '&' carries no special meaning and must not be escaped -- escaping it
+	// would make a CREATE of "R&D" arrive as the name "R&-D".
+	if !enc.QuotedUTF8 {
+		name = utf7.Encode(name)
+	}
+	return enc.String(name)
 }
 
 func (enc *Encoder) NumSet(numSet imap.NumSet) *Encoder {
