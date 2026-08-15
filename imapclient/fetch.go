@@ -1016,7 +1016,27 @@ func parseMsgIDList(s string) ([]string, error) {
 	return h.MsgIDList("In-Reply-To")
 }
 
+// maxBodyStructureDepth bounds how deeply a BODYSTRUCTURE may nest.
+//
+// A body nests two ways -- a multipart holds bodies, and a message/rfc822 part
+// holds one more -- and neither goes through Decoder.List, so the decoder's own
+// maxListDepth never sees them. Without a bound here a server can nest as
+// deeply as maxResponseSize allows, which is millions of levels, and because
+// each level wraps the error below it the failure alone is quadratic.
+//
+// Real messages nest in single digits. This matches maxListDepth, which bounds
+// the equivalent recursion everywhere else in the decoder.
+// See https://github.com/emersion/go-imap/issues/574
+const maxBodyStructureDepth = 1000
+
 func readBody(dec *imapwire.Decoder, options *Options) (imap.BodyStructure, error) {
+	return readBodyDepth(dec, options, 0)
+}
+
+func readBodyDepth(dec *imapwire.Decoder, options *Options, depth int) (imap.BodyStructure, error) {
+	if depth > maxBodyStructureDepth {
+		return nil, fmt.Errorf("body structure nesting too deep (over %v levels)", maxBodyStructureDepth)
+	}
 	if !dec.ExpectSpecial('(') {
 		return nil, dec.Err()
 	}
@@ -1043,14 +1063,14 @@ func readBody(dec *imapwire.Decoder, options *Options) (imap.BodyStructure, erro
 		var subtype string
 		if hasSP && dec.String(&subtype) {
 			token = "body-type-1part"
-			bs, err = readBodyType1part(dec, mediaType, subtype, options)
+			bs, err = readBodyType1part(dec, mediaType, subtype, options, depth)
 		} else {
 			token = "body-type-mpart"
 			bs, err = readChildlessBodyTypeMpart(dec, mediaType, hasSP, options)
 		}
 	} else {
 		token = "body-type-mpart"
-		bs, err = readBodyTypeMpart(dec, options)
+		bs, err = readBodyTypeMpart(dec, options, depth)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("in %v: %w", token, err)
@@ -1072,7 +1092,7 @@ func readBody(dec *imapwire.Decoder, options *Options) (imap.BodyStructure, erro
 // readBodyType1part reads a body-type-1part whose media type and subtype have
 // already been consumed by readBody, which needs them to tell a single part
 // from a childless multipart.
-func readBodyType1part(dec *imapwire.Decoder, typ, subtype string, options *Options) (*imap.BodyStructureSinglePart, error) {
+func readBodyType1part(dec *imapwire.Decoder, typ, subtype string, options *Options, depth int) (*imap.BodyStructureSinglePart, error) {
 	bs := imap.BodyStructureSinglePart{Type: typ, Subtype: subtype}
 
 	if !dec.ExpectSP() {
@@ -1117,7 +1137,7 @@ func readBodyType1part(dec *imapwire.Decoder, typ, subtype string, options *Opti
 			return nil, dec.Err()
 		}
 
-		msg.BodyStructure, err = readBody(dec, options)
+		msg.BodyStructure, err = readBodyDepth(dec, options, depth+1)
 		if err != nil {
 			return nil, err
 		}
@@ -1208,11 +1228,11 @@ func readChildlessBodyTypeMpart(dec *imapwire.Decoder, subtype string, hasSP boo
 	return &bs, nil
 }
 
-func readBodyTypeMpart(dec *imapwire.Decoder, options *Options) (*imap.BodyStructureMultiPart, error) {
+func readBodyTypeMpart(dec *imapwire.Decoder, options *Options, depth int) (*imap.BodyStructureMultiPart, error) {
 	var bs imap.BodyStructureMultiPart
 
 	for {
-		child, err := readBody(dec, options)
+		child, err := readBodyDepth(dec, options, depth+1)
 		if err != nil {
 			return nil, err
 		}
