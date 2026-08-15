@@ -749,6 +749,9 @@ func (c *Client) readResponseTagged(tag, typ string) (startTLS *startTLSCommand,
 	hasSP := c.dec.SP()
 
 	var code string
+	// See the matching comment in readResponseData: a code we cannot parse is
+	// skipped like one we do not recognise, rather than failing the connection.
+	var malformedCode bool
 	if hasSP && c.dec.Special('[') { // resp-text-code
 		if !c.dec.ExpectAtom(&code) {
 			return nil, fmt.Errorf("in resp-text-code: %w", c.dec.Err())
@@ -781,13 +784,14 @@ func (c *Client) readResponseTagged(tag, typ string) (startTLS *startTLSCommand,
 		case "APPENDUID":
 			var (
 				uidValidity uint32
-				uid         imap.UID
+				uidNum      uint32
 			)
-			if !c.dec.ExpectSP() || !c.dec.ExpectNumber(&uidValidity) || !c.dec.ExpectSP() || !c.dec.ExpectUID(&uid) {
-				return nil, fmt.Errorf("in resp-code-apnd: %w", c.dec.Err())
+			if !c.dec.SP() || !c.dec.Number(&uidValidity) || !c.dec.SP() || !c.dec.Number(&uidNum) {
+				malformedCode = true
+				break
 			}
 			if cmd, ok := cmd.(*AppendCommand); ok {
-				cmd.data.UID = uid
+				cmd.data.UID = imap.UID(uidNum)
 				cmd.data.UIDValidity = uidValidity
 			}
 		case "COPYUID":
@@ -833,6 +837,10 @@ func (c *Client) readResponseTagged(tag, typ string) (startTLS *startTLSCommand,
 			if c.dec.SP() {
 				c.dec.DiscardUntilByte(']')
 			}
+		}
+		if malformedCode {
+			c.dec.DiscardUntilByte(']')
+			code = ""
 		}
 		if !c.dec.ExpectSpecial(']') {
 			return nil, fmt.Errorf("in resp-text: %w", c.dec.Err())
@@ -898,6 +906,16 @@ func (c *Client) readResponseData(typ string) error {
 		hasSP := c.dec.SP()
 
 		var code string
+		// malformedCode is set when a code we recognise carries an argument we
+		// cannot parse. Rather than failing the connection over advisory
+		// metadata, we skip the code exactly as we skip an unknown one: RFC 9051
+		// Section 7.1 already requires clients to ignore codes they do not
+		// recognise, and a code that will not parse is no more usable than one
+		// we have never heard of. Servers do get this wrong -- dynadot sends a
+		// millisecond timestamp as UIDVALIDITY, which does not fit the 32 bits
+		// RFC 9051 gives it, and that alone made the server unusable.
+		// See https://github.com/emersion/go-imap/issues/612
+		var malformedCode bool
 		if hasSP && c.dec.Special('[') { // resp-text-code
 			if !c.dec.ExpectAtom(&code) {
 				return fmt.Errorf("in resp-text-code: %w", c.dec.Err())
@@ -931,17 +949,19 @@ func (c *Client) readResponseData(typ string) error {
 					handler(&UnilateralDataMailbox{PermanentFlags: flags})
 				}
 			case "UIDNEXT":
-				var uidNext imap.UID
-				if !c.dec.ExpectSP() || !c.dec.ExpectUID(&uidNext) {
-					return c.dec.Err()
+				var num uint32
+				if !c.dec.SP() || !c.dec.Number(&num) {
+					malformedCode = true
+					break
 				}
 				if cmd := findPendingCmdByType[*SelectCommand](c); cmd != nil {
-					cmd.data.UIDNext = uidNext
+					cmd.data.UIDNext = imap.UID(num)
 				}
 			case "UIDVALIDITY":
 				var uidValidity uint32
-				if !c.dec.ExpectSP() || !c.dec.ExpectNumber(&uidValidity) {
-					return c.dec.Err()
+				if !c.dec.SP() || !c.dec.Number(&uidValidity) {
+					malformedCode = true
+					break
 				}
 				if cmd := findPendingCmdByType[*SelectCommand](c); cmd != nil {
 					cmd.data.UIDValidity = uidValidity
@@ -961,8 +981,9 @@ func (c *Client) readResponseData(typ string) error {
 				}
 			case "HIGHESTMODSEQ":
 				var modSeq uint64
-				if !c.dec.ExpectSP() || !c.dec.ExpectModSeq(&modSeq) {
-					return c.dec.Err()
+				if !c.dec.SP() || !c.dec.ModSeq(&modSeq) {
+					malformedCode = true
+					break
 				}
 				if cmd := findPendingCmdByType[*SelectCommand](c); cmd != nil {
 					cmd.data.HighestModSeq = modSeq
@@ -977,6 +998,12 @@ func (c *Client) readResponseData(typ string) error {
 				if c.dec.SP() {
 					c.dec.DiscardUntilByte(']')
 				}
+			}
+			if malformedCode {
+				// Drop whatever is left of the code and forget its name, so it
+				// is reported the same as any code we do not act on.
+				c.dec.DiscardUntilByte(']')
+				code = ""
 			}
 			if !c.dec.ExpectSpecial(']') {
 				return fmt.Errorf("in resp-text: %w", c.dec.Err())
