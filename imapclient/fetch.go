@@ -148,7 +148,12 @@ func writeFetchItemBodySection(enc *imapwire.Encoder, item *imap.FetchItemBodySe
 
 		if len(headerList) > 0 {
 			enc.SP().List(len(headerList), func(i int) {
-				enc.String(headerList[i])
+				// header-fld-name is an astring, so a quoted name is legal, but
+				// some servers only handle the atom form: mailo.com answers
+				// BODY[HEADER.FIELDS ("Message-ID")] with an empty body while
+				// answering the unquoted form correctly.
+				// See https://github.com/emersion/go-imap/pull/589
+				enc.AString(headerList[i])
 			})
 		}
 	}
