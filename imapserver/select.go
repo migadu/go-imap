@@ -52,27 +52,38 @@ func (c *Conn) handleSelect(tag string, dec *imapwire.Decoder, readOnly bool) er
 							ModSeq:      modSeq,
 						}
 
+						// RFC 7162 §3.2.5: "[SP known-uids] [SP seq-match-data]". Either
+						// may be absent, and known-uids is a sequence set where
+						// seq-match-data is parenthesised, so tell them apart by the
+						// next byte. Attempting the sequence set and continuing on
+						// failure records a decode error, and the decoder stops
+						// reading input once one is recorded -- so a client that sent
+						// seq-match-data alone lost the rest of its command.
 						if dec.SP() {
-							var knownUIDs imap.UIDSet
-							if dec.ExpectUIDSet(&knownUIDs) {
+							seqMatch := dec.NextByteIs('(')
+							if !seqMatch {
+								var knownUIDs imap.UIDSet
+								if !dec.ExpectUIDSet(&knownUIDs) {
+									return dec.Err()
+								}
 								qresyncData.KnownUIDs = knownUIDs
+								seqMatch = dec.SP()
+							}
 
-								if dec.SP() {
-									// Optional sequence/UID match data
-									err := dec.ExpectList(func() error {
-										var seqNums, uids imap.UIDSet
-										if !dec.ExpectUIDSet(&seqNums) || !dec.ExpectSP() || !dec.ExpectUIDSet(&uids) {
-											return dec.Err()
-										}
-										qresyncData.SeqMatch = &imap.QResyncSeqMatch{
-											SeqNums: seqNums,
-											UIDs:    uids,
-										}
-										return nil
-									})
-									if err != nil {
-										return err
+							if seqMatch {
+								err := dec.ExpectList(func() error {
+									var seqNums, uids imap.UIDSet
+									if !dec.ExpectUIDSet(&seqNums) || !dec.ExpectSP() || !dec.ExpectUIDSet(&uids) {
+										return dec.Err()
 									}
+									qresyncData.SeqMatch = &imap.QResyncSeqMatch{
+										SeqNums: seqNums,
+										UIDs:    uids,
+									}
+									return nil
+								})
+								if err != nil {
+									return err
 								}
 							}
 						}

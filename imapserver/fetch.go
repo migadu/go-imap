@@ -122,17 +122,21 @@ func (c *Conn) handleFetch(dec *imapwire.Decoder, numKind NumKind) error {
 			// the non-standard "(CHANGEDSINCE n) VANISHED" hybrid emitted by
 			// older versions of this library.
 			if dec.SP() {
+				// The space commits the client to a modifier, so a failure here is
+				// the command's failure: swallowing it used to let the parse run on
+				// with an error already recorded, and the decoder now stops reading
+				// input at that point, so what followed failed further from the cause.
 				var atom string
-				if dec.ExpectAtom(&atom) {
-					if strings.ToUpper(atom) == "VANISHED" {
-						if numKind != NumKindUID {
-							return fmt.Errorf("VANISHED modifier only allowed with UID FETCH")
-						}
-						options.Vanished = true
-					} else {
-						return fmt.Errorf("unexpected FETCH modifier: %v", atom)
-					}
+				if !dec.ExpectAtom(&atom) {
+					return dec.Err()
 				}
+				if strings.ToUpper(atom) != "VANISHED" {
+					return fmt.Errorf("unexpected FETCH modifier: %v", atom)
+				}
+				if numKind != NumKindUID {
+					return fmt.Errorf("VANISHED modifier only allowed with UID FETCH")
+				}
+				options.Vanished = true
 			}
 		} else {
 			// Bare uid-fetch-modifier items (RFC 7162 §6):
