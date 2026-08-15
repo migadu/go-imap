@@ -601,11 +601,11 @@ func (dec *Decoder) Literal(ptr *string) bool {
 	const absoluteMaxBufferedLiteral = 4 * 1024 * 1024
 	if dec.CheckBufferedLiteralFunc != nil {
 		if err := dec.CheckBufferedLiteralFunc(lit.Size(), nonSync); err != nil {
-			lit.cancel()
+			lit.cancel(nil)
 			return false
 		}
 	} else if lit.Size() > absoluteMaxBufferedLiteral {
-		lit.cancel()
+		lit.cancel(nil)
 		return dec.returnErr(fmt.Errorf("imapwire: literal of %d bytes exceeds default buffered cap", lit.Size()))
 	}
 	var sb strings.Builder
@@ -643,7 +643,7 @@ func (dec *Decoder) LiteralReader() (lit *LiteralReader, nonSync, ok bool) {
 	lit = &LiteralReader{
 		dec:  dec,
 		size: size,
-		r:    io.LimitReader(dec.r, size),
+		r:    newLimitReader(dec.r, size),
 	}
 	return lit, nonSync, true
 }
@@ -676,14 +676,25 @@ func (lit *LiteralReader) Size() int64 {
 func (lit *LiteralReader) Read(b []byte) (int, error) {
 	n, err := lit.r.Read(b)
 	if err == io.EOF {
-		lit.cancel()
+		lit.cancel(nil)
+	} else if err != nil {
+		// Any other failure -- an i/o timeout being the common one -- breaks
+		// the literal for good. Release it and record the cause, so that later
+		// decodes report the i/o error instead of our own "cannot decode while
+		// a literal is open".
+		lit.cancel(err)
 	}
 	return n, err
 }
 
-func (lit *LiteralReader) cancel() {
+// cancel releases the literal. A non-nil err is recorded as the decoder error,
+// first one wins.
+func (lit *LiteralReader) cancel(err error) {
 	if lit.dec == nil {
 		return
+	}
+	if err != nil {
+		lit.dec.returnErr(err)
 	}
 	lit.dec.literal = false
 	lit.dec = nil
