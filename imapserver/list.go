@@ -290,11 +290,13 @@ func readListMailbox(dec *imapwire.Decoder) (string, error) {
 		}
 	}
 
+	// Same rule as Decoder.ExpectMailbox: in UTF-8 mode the pattern is taken
+	// verbatim, since modified UTF-7 does not apply there and '&' is an
+	// ordinary character.
 	if dec.QuotedUTF8 {
-		return utf7.Unescape(mailbox)
-	} else {
-		return utf7.Decode(mailbox)
+		return mailbox, nil
 	}
+	return utf7.Decode(mailbox)
 }
 
 func isListChar(ch byte) bool {
