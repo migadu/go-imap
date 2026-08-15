@@ -1465,12 +1465,25 @@ type UnilateralDataHandler struct {
 	//
 	// Used with NOTIFY MailboxName events (RFC 5465) to detect mailbox
 	// creation, deletion, or renaming, and for subscription changes.
+	//
+	// A LIST command in flight absorbs the unsolicited LIST responses whose
+	// mailbox its reference and pattern match: those reach the command's
+	// result instead of this handler (the two are indistinguishable on the
+	// wire). An application that needs every notification should avoid running
+	// LIST while it depends on this handler, or reconcile the command's own
+	// results against the changes it expected to be notified of.
 	List func(data *imap.ListData)
 
 	// Called when the server sends an unsolicited STATUS response.
 	//
 	// Commonly used with NOTIFY to receive mailbox status updates
 	// for non-selected mailboxes (RFC 5465).
+	//
+	// A STATUS command in flight absorbs the unsolicited STATUS responses for
+	// the mailbox it asked about: they are merged into the command's result
+	// and do not reach this handler. An application that needs every
+	// notification should avoid running STATUS for a watched mailbox while it
+	// depends on this handler.
 	Status func(data *imap.StatusData)
 
 	// Called when the server sends NOTIFICATIONOVERFLOW (RFC 5465).
