@@ -246,18 +246,78 @@ func TestSearchRev2PlainSearchNoMatchesStillSendsESearch(t *testing.T) {
 	}
 }
 
-// A server advertising IMAP4rev2 without IMAP4rev1 is rev2-only: every session
-// is a rev2 session whether or not it sent ENABLE, so the rev1 response form
-// must never appear. Guards the case where the gate is read as "did the client
-// ENABLE" rather than "is this a rev2 session".
+// A server advertising IMAP4rev2 WITHOUT IMAP4rev1 is rev2-only: there are no
+// legacy clients to protect, so every session is an IMAP4rev2 session whether
+// or not it sent ENABLE, and the deprecated SEARCH response must never appear.
+//
+// The no-ENABLE case is the one that matters and the one that regressed: the
+// first version of this fix gated only on the ENABLED set, and an earlier
+// version of this very test sent ENABLE before asserting -- so it passed while
+// the case it named went untested. Both variants now run.
 func TestSearchRev2OnlyServerNeverSendsSearchResponse(t *testing.T) {
+	for _, enable := range []bool{false, true} {
+		name := "without ENABLE"
+		if enable {
+			name = "with ENABLE"
+		}
+		t.Run(name, func(t *testing.T) {
+			rc := newSearchRev2Conn(t, imap.CapSet{imap.CapIMAP4rev2: {}})
+			rc.appendOne("one")
+			if enable {
+				rc.do("ENABLE IMAP4rev2")
+			}
+			rc.do("SELECT INBOX")
+
+			resp := rc.do("SEARCH ALL")
+			if strings.Contains(resp, "* SEARCH ") {
+				t.Errorf("rev2-only server answered the deprecated SEARCH response:\n%s", resp)
+			}
+			if !strings.Contains(resp, "* ESEARCH") {
+				t.Fatalf("rev2-only server did not answer ESEARCH:\n%s", resp)
+			}
+		})
+	}
+}
+
+// The rev2-only server's response forms must agree ACROSS commands, which is
+// what the shared isIMAP4rev2 helper buys. Before it, each command open-coded
+// the test in its own spelling: SELECT and STATUS honoured the rev2-only case
+// while SEARCH did not, so one connection could be told it was rev2 by one
+// command and rev1 by the next.
+//
+// No ENABLE anywhere here -- that is the whole point.
+func TestRev2OnlyServerIsConsistentAcrossCommands(t *testing.T) {
 	rc := newSearchRev2Conn(t, imap.CapSet{imap.CapIMAP4rev2: {}})
 	rc.appendOne("one")
-	rc.do("ENABLE IMAP4rev2")
-	rc.do("SELECT INBOX")
 
-	resp := rc.do("SEARCH ALL")
-	if strings.Contains(resp, "* SEARCH ") {
-		t.Errorf("rev2-only server answered the deprecated SEARCH response:\n%s", resp)
+	sel := rc.do("SELECT INBOX")
+	if strings.Contains(sel, " RECENT") {
+		t.Errorf("rev2-only SELECT sent the deprecated RECENT response:\n%s", sel)
+	}
+	if strings.Contains(sel, "[UNSEEN ") {
+		t.Errorf("rev2-only SELECT sent the deprecated UNSEEN response code:\n%s", sel)
+	}
+
+	if !strings.Contains(rc.do("SEARCH ALL"), "* ESEARCH") {
+		t.Error("rev2-only SEARCH did not answer ESEARCH")
+	}
+
+	// STATUS (RECENT) is not a rev2 item and must be refused, not answered 0.
+	rc.seq++
+	tag := "t" + strconv.Itoa(rc.seq)
+	if _, err := rc.c.Write([]byte(tag + " STATUS INBOX (RECENT)\r\n")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	for {
+		line, err := rc.br.ReadString('\n')
+		if err != nil {
+			t.Fatalf("read: %v", err)
+		}
+		if strings.HasPrefix(line, tag+" ") {
+			if strings.Contains(line, " OK ") {
+				t.Errorf("rev2-only STATUS (RECENT) was accepted: %s", strings.TrimRight(line, "\r\n"))
+			}
+			break
+		}
 	}
 }

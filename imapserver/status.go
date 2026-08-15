@@ -43,7 +43,7 @@ func (c *Conn) handleStatus(dec *imapwire.Decoder) error {
 	//
 	// The state check runs first so a client in the wrong state gets a state
 	// error rather than "Unknown STATUS data item".
-	if options.NumRecent && (c.enabledHas(imap.CapIMAP4rev2) || !c.server.options.caps().Has(imap.CapIMAP4rev1)) {
+	if options.NumRecent && c.isIMAP4rev2() {
 		return &imap.Error{
 			Type: imap.StatusResponseTypeBad,
 			Text: "Unknown STATUS data item",
