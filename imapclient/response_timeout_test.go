@@ -317,9 +317,26 @@ func TestClientLiteralNotCutShortByConcurrentCommand(t *testing.T) {
 	}()
 
 	<-literalOpen
-	// The client is now inside the response with a literal open. Everything
-	// recorded from here until we let the literal finish must keep the long
-	// literal deadline.
+	// literalOpen fires when the server's write completes, which can be before
+	// the read goroutine has armed the literal deadline. Until it has, the
+	// reader may still be leaving its parked state, where a concurrent command
+	// legitimately retunes the deadline -- harmlessly, since the reader arms its
+	// own deadlines immediately after. Waiting for the literal deadline to
+	// appear is what makes the assertion below about the state under test
+	// rather than about that transition.
+	armed := time.Now().Add(5 * time.Second)
+	for time.Now().Before(armed) {
+		if d, ok := recorder.lastDeadline(); ok && time.Until(d) > 2*time.Minute {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if d, ok := recorder.lastDeadline(); !ok || time.Until(d) <= 2*time.Minute {
+		t.Fatal("client never armed the literal deadline")
+	}
+
+	// From here until we let the literal finish, the long literal deadline must
+	// hold.
 	mark := recorder.countDeadlines()
 
 	// Send a command from another goroutine, exactly the pipelining case. The
