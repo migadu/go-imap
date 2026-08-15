@@ -624,6 +624,28 @@ func (c *Conn) checkState(state imap.ConnState) error {
 	return nil
 }
 
+// checkWritableMailbox rejects a command that would change the selected
+// mailbox when it was selected read-only.
+//
+// RFC 9051 §6.3.2: EXAMINE selects a mailbox read-only, and "no changes to the
+// permanent state of the mailbox, including per-user state, are permitted".
+// Enforcing it here rather than in the session keeps the backend out of a
+// decision it cannot make correctly: it is not told whether an Expunge call
+// came from the client or from the implicit expunge on CLOSE, which RFC 3501
+// §6.4.2 requires to be silently skipped instead.
+func (c *Conn) checkWritableMailbox() error {
+	if err := c.checkState(imap.ConnStateSelected); err != nil {
+		return err
+	}
+	if c.selectedReadOnly {
+		return &imap.Error{
+			Type: imap.StatusResponseTypeNo,
+			Text: "Mailbox is read-only",
+		}
+	}
+	return nil
+}
+
 func (c *Conn) setReadTimeout(dur time.Duration) {
 	if dur > 0 {
 		c.conn.SetReadDeadline(time.Now().Add(dur))
