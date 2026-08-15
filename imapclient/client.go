@@ -90,6 +90,45 @@ type Options struct {
 	// buffer in memory (e.g., for FetchMessageBuffer.Collect). Larger
 	// literals must be consumed via the streaming API. Default 64 MiB.
 	MaxLiteralSize int64
+	// ResponseTimeout bounds how long to wait for a response while a command
+	// is in flight, including the wait for its first byte. This is the window
+	// in which an unresponsive server is detected. If zero, 30 seconds is used.
+	//
+	// It does not apply while IDLE is running, where silence is expected and
+	// the much longer idle timeout governs instead.
+	//
+	// Lower it to notice a dead peer sooner; raise it for servers that are slow
+	// to answer expensive commands. There is deliberately no value meaning "no
+	// timeout": a client that never gives up is the bug this bounds.
+	ResponseTimeout time.Duration
+	// LiteralReadTimeout bounds how long to wait while reading a literal, i.e.
+	// a message body or other large payload. If zero, 5 minutes is used.
+	//
+	// Raise it when fetching large messages over slow links. As with
+	// ResponseTimeout, there is no value meaning "no timeout".
+	LiteralReadTimeout time.Duration
+}
+
+// responseTimeout returns ResponseTimeout, or the default if it is unset.
+//
+// Zero means "use the default" rather than "no timeout", so that an Options
+// value written before these fields existed keeps its deadlines. setReadTimeout
+// clears the deadline entirely for a non-positive duration, so passing the raw
+// field through would silently leave such callers waiting forever.
+func (options *Options) responseTimeout() time.Duration {
+	if options.ResponseTimeout <= 0 {
+		return respReadTimeout
+	}
+	return options.ResponseTimeout
+}
+
+// literalTimeout returns LiteralReadTimeout, or the default if it is unset.
+// See responseTimeout for why zero means the default.
+func (options *Options) literalTimeout() time.Duration {
+	if options.LiteralReadTimeout <= 0 {
+		return literalReadTimeout
+	}
+	return options.LiteralReadTimeout
 }
 
 func (options *Options) wrapReadWriter(rw io.ReadWriter) io.ReadWriter {
@@ -331,7 +370,7 @@ func (c *Client) readTimeoutLocked() time.Duration {
 		pending = true
 	}
 	if pending {
-		return respReadTimeout
+		return c.options.responseTimeout()
 	}
 	return idleReadTimeout
 }
@@ -685,7 +724,7 @@ func (c *Client) read() {
 		c.closeWithError(cmdErr)
 	}()
 
-	c.setReadTimeout(respReadTimeout) // We're waiting for the greeting
+	c.setReadTimeout(c.options.responseTimeout()) // We're waiting for the greeting
 	for {
 		// Arm the deadline for the wait that is about to happen. dec.EOF blocks
 		// until the first byte of the next response arrives, so this is where a
@@ -712,7 +751,7 @@ func (c *Client) read() {
 func (c *Client) readResponse() error {
 	// The read loop re-arms the deadline for the next wait, so there is nothing
 	// to restore on the way out.
-	c.setReadTimeout(respReadTimeout)
+	c.setReadTimeout(c.options.responseTimeout())
 
 	// Apply the MaxSize budget per response rather than cumulatively.
 	c.dec.ResetCount()

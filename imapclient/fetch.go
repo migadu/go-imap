@@ -907,12 +907,12 @@ func (c *Client) handleFetch(seqNum uint32) error {
 		}
 
 		if done != nil {
-			c.setReadTimeout(literalReadTimeout)
+			c.setReadTimeout(c.options.literalTimeout())
 		}
 		items <- item
 		if done != nil {
 			<-done
-			c.setReadTimeout(respReadTimeout)
+			c.setReadTimeout(c.options.responseTimeout())
 		}
 		return nil
 	})
