@@ -52,9 +52,37 @@ func (c *Conn) handleIdle(dec *imapwire.Decoder) error {
 		done <- c.session.Idle(c.ctx, w, stop)
 	}()
 
+	// awaitBackend waits for the backend's Idle to return after stop is closed,
+	// bounded so a backend that ignores stop cannot leak this goroutine.
+	awaitBackend := func() error {
+		timer := time.NewTimer(30 * time.Second)
+		defer timer.Stop()
+		select {
+		case err := <-done:
+			return err
+		case <-timer.C:
+			c.server.logger().Printf("IDLE backend did not return within 30s after stop; goroutine leaked")
+			return fmt.Errorf("imapserver: IDLE backend did not respond to stop")
+		}
+	}
+
+	// Waiting for DONE is an idle point: the client is parked and nothing is in
+	// flight, so Server.Shutdown may end the IDLE here rather than wait up to
+	// the idle timeout for a DONE that is not coming. It does so with a plain
+	// BYE and no tagged completion, which is all it has to say.
 	c.setReadTimeout(idleReadTimeout)
+	if !c.setIdle() {
+		close(stop)
+		awaitBackend()
+		return errShutdown
+	}
 	line, isPrefix, err := c.br.ReadLine()
+	active := c.setActive()
 	close(stop)
+	if !active {
+		awaitBackend()
+		return errShutdown
+	}
 	if err == io.EOF {
 		return nil
 	} else if err != nil {
@@ -63,15 +91,5 @@ func (c *Conn) handleIdle(dec *imapwire.Decoder) error {
 		return newClientBugError("Syntax error: expected DONE to end IDLE command")
 	}
 
-	// Wait for backend to return, with timeout to prevent goroutine leak.
-	// Stop the timer on the normal path so it doesn't linger until it fires.
-	timer := time.NewTimer(30 * time.Second)
-	defer timer.Stop()
-	select {
-	case err := <-done:
-		return err
-	case <-timer.C:
-		c.server.logger().Printf("IDLE backend did not return within 30s after stop; goroutine leaked")
-		return fmt.Errorf("imapserver: IDLE backend did not respond to stop")
-	}
+	return awaitBackend()
 }

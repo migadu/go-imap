@@ -81,6 +81,14 @@ type Conn struct {
 	state   imap.ConnState
 	session Session
 
+	// idle is true while the connection has nothing in flight and is blocked
+	// waiting for client input: between commands, or inside IDLE waiting for
+	// DONE. shuttingDown is set by Server.Shutdown and means "send BYE and exit
+	// at the next idle point -- or now, if already idle". Both are guarded by
+	// mutex; see setIdle, setActive and requestShutdown for the protocol.
+	idle         bool
+	shuttingDown bool
+
 	// selectedReadOnly is true when the selected mailbox is read-only, either
 	// because it was opened with EXAMINE or because the session reported it
 	// read-only (RFC 4314 §5.2). Only touched from the command-loop goroutine,
@@ -158,6 +166,61 @@ func (c *Conn) enabledHas(cap imap.Cap) bool {
 // though blocking Session methods already receive it as their first argument.
 func (c *Conn) Context() context.Context {
 	return c.ctx
+}
+
+// errShutdown is returned by a command handler that was parked waiting for
+// client input when Server.Shutdown asked the connection to finish. It carries
+// no tagged response: the serve loop answers it with BYE and exits.
+var errShutdown = errors.New("imapserver: server shutting down")
+
+// setIdle records that the connection is about to block waiting for client
+// input with nothing in flight, and reports whether it may. False means
+// Shutdown has already asked this connection to finish, so the caller should
+// send BYE now instead of waiting.
+//
+// setIdle, setActive and requestShutdown together make the idle/active
+// decision atomic with the transition. That is what keeps a BYE from ever
+// landing in the middle of a response: Shutdown only wakes a connection it has
+// seen idle under the mutex, and a connection only starts processing input
+// after re-checking under the same mutex that Shutdown has not spoken.
+func (c *Conn) setIdle() bool {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	if c.shuttingDown {
+		return false
+	}
+	c.idle = true
+	return true
+}
+
+// setActive records that the wait for client input is over and reports
+// whether the input may be processed. False means Shutdown asked the
+// connection to finish while it was waiting; whatever arrived is dropped in
+// favour of BYE, exactly as if it had arrived after the connection closed.
+func (c *Conn) setActive() bool {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	c.idle = false
+	return !c.shuttingDown
+}
+
+// requestShutdown asks the connection to finish gracefully. An idle
+// connection is woken so it can send BYE right away; an active one will do so
+// once its current command completes.
+//
+// Shutdown never writes to the connection itself. The serve goroutine owns
+// every byte of output including the BYE, so response ordering needs no
+// further coordination.
+func (c *Conn) requestShutdown() {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	c.shuttingDown = true
+	if c.idle {
+		// Interrupt the blocked read. The serve goroutine re-arms the deadline
+		// before every read it makes after this, so a deadline in the past
+		// cannot leak into a later command.
+		c.conn.SetReadDeadline(time.Now())
+	}
 }
 
 func (c *Conn) serve() {
@@ -249,6 +312,10 @@ func (c *Conn) serve() {
 		return
 	}
 
+	// byeOnExit is set when the loop ends because Server.Shutdown asked it to,
+	// at a point where nothing is in flight. Every other way out -- LOGOUT,
+	// client EOF, a protocol error -- has already said what it needed to say.
+	byeOnExit := false
 	for {
 		var readTimeout time.Duration
 		switch c.state {
@@ -265,12 +332,32 @@ func (c *Conn) serve() {
 
 		dec.QuotedUTF8 = c.useQuotedUTF8()
 
-		if c.state == imap.ConnStateLogout || dec.EOF() {
+		if c.state == imap.ConnStateLogout {
+			break
+		}
+
+		// Between commands: nothing is in flight, so a shutdown request is
+		// honoured immediately, and one that arrives while we are blocked
+		// below wakes the read and is honoured on the way out.
+		if !c.setIdle() {
+			byeOnExit = true
+			break
+		}
+		eof := dec.EOF()
+		if !c.setActive() {
+			byeOnExit = !eof
+			break
+		}
+		if eof {
 			break
 		}
 
 		c.setReadTimeout(cmdReadTimeout)
 		if err := c.readCommand(dec); err != nil {
+			if errors.Is(err, errShutdown) {
+				byeOnExit = true
+				break
+			}
 			var imapErr *imap.Error
 			if !isConnectionClosedError(err) && !(errors.As(err, &imapErr) && imapErr.Type == imap.StatusResponseTypeBye) {
 				c.server.logger().Printf("failed to read command (remote %v): %v", c.conn.RemoteAddr(), err)
@@ -278,6 +365,55 @@ func (c *Conn) serve() {
 			break
 		}
 	}
+
+	if byeOnExit {
+		c.shutdownBye()
+	}
+}
+
+// shutdownLingerTimeout bounds how long shutdownBye waits for the client to
+// close its side after the BYE. Same idea and order of magnitude as net/http's
+// rstAvoidanceDelay.
+const shutdownLingerTimeout = 500 * time.Millisecond
+
+// shutdownBye announces the shutdown (RFC 9051 §7.1.5) and closes the
+// connection cleanly.
+//
+// Cleanly is the operative word. When a command races the shutdown it is
+// dropped unread, and closing a socket with unread input in its receive queue
+// sends RST rather than FIN. The client would then see the BYE followed by
+// "connection reset" instead of EOF -- or on some stacks not see the BYE at
+// all, since RST can discard data still in flight. So after the BYE we
+// half-close, which hands the client a clean EOF right behind the BYE, then
+// drain whatever it sent until it closes its side or the linger timeout runs
+// out. Only then does the deferred Close in serve run, with nothing left in the
+// receive queue to provoke an RST.
+//
+// Best effort throughout: the client may already be gone, every step is
+// bounded by a deadline, and Shutdown's own context force-closes anything that
+// outlives the grace period.
+func (c *Conn) shutdownBye() {
+	if err := c.writeStatusResp("", &imap.StatusResponse{
+		Type: imap.StatusResponseTypeBye,
+		Text: "Server shutting down",
+	}); err != nil {
+		if !isConnectionClosedError(err) {
+			c.server.logger().Printf("failed to write shutdown BYE (remote %v): %v", c.conn.RemoteAddr(), err)
+		}
+		return
+	}
+
+	// Read c.conn under the mutex: STARTTLS reassigns it and forceCloseConns
+	// closes it from other goroutines.
+	c.mutex.Lock()
+	conn := c.conn
+	c.mutex.Unlock()
+
+	if cw, ok := conn.(interface{ CloseWrite() error }); ok {
+		cw.CloseWrite()
+	}
+	conn.SetReadDeadline(time.Now().Add(shutdownLingerTimeout))
+	io.Copy(io.Discard, c.br)
 }
 
 func (c *Conn) readCommand(dec *imapwire.Decoder) (err error) {
@@ -423,6 +559,12 @@ func (c *Conn) readCommand(dec *imapwire.Decoder) (err error) {
 			Type: imap.StatusResponseTypeBad,
 			Text: "Unknown command",
 		}
+	}
+
+	// A handler that was parked in an idle wait when Shutdown arrived has no
+	// tagged response to give; the serve loop answers with BYE.
+	if errors.Is(err, errShutdown) {
+		return err
 	}
 
 	dec.DiscardLine()

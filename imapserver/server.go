@@ -272,21 +272,34 @@ func (s *Server) Close() error {
 	return err
 }
 
-// Shutdown gracefully shuts down the server without interrupting any
-// active connections. Shutdown works by first closing all open listeners,
-// then waiting for all connections to close or the context to expire,
-// whichever comes first.
+// Shutdown gracefully shuts down the server without interrupting any active
+// connections. It first closes all open listeners, then sends BYE to and
+// closes every idle connection, then waits for active connections to finish
+// their current command -- after which they too are sent BYE and closed -- or
+// for the context to expire, whichever comes first.
 //
-// When Shutdown is called, Serve immediately returns. Make sure the
-// program doesn't exit and waits instead for Shutdown to return.
+// A connection is idle when it has nothing in flight: it is waiting for its
+// next command, or is parked in IDLE. Ending it costs the client nothing but a
+// reconnect, so it is not waited for. A connection is active while a command
+// is being processed; that command runs to completion and its tagged response
+// is delivered before the BYE.
+//
+// When Shutdown is called, Serve immediately returns. Make sure the program
+// doesn't exit and waits instead for Shutdown to return.
 //
 // If the provided context expires before the shutdown completes, Shutdown
 // force-closes any remaining connections and returns the context's error.
-// Otherwise it returns nil.
+// Otherwise it returns nil. Since idle connections are released immediately,
+// the context only has to cover a single command's worst case, not the
+// lifetime of an idle client.
 //
 // Once Shutdown has been called on a server, it may not be reused.
 func (s *Server) Shutdown(ctx context.Context) error {
-	// 1. Stop accepting new connections
+	// 1. Stop accepting new connections, and ask every existing connection to
+	// finish. Idle connections are woken and send BYE right away; active ones
+	// do so once their command completes. Both happen on the connection's own
+	// goroutine -- Shutdown never writes to a connection -- so a BYE can never
+	// interleave with a response.
 	s.mutex.Lock()
 	if s.closed {
 		s.mutex.Unlock()
@@ -298,6 +311,9 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		if err := l.Close(); err != nil && listenerErr == nil {
 			listenerErr = err
 		}
+	}
+	for c := range s.conns {
+		c.requestShutdown()
 	}
 	s.mutex.Unlock()
 
