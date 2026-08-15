@@ -136,6 +136,19 @@ func (dec *Decoder) acceptByte(want byte) bool {
 	return true
 }
 
+// NextByteIs reports whether the next byte is want, without consuming it.
+//
+// It is a lookahead for grammars where the production depends on what follows
+// rather than on what has already been read. On a read error it returns false
+// and sets the decoder error, like any other accept.
+func (dec *Decoder) NextByteIs(want byte) bool {
+	if !dec.acceptByte(want) {
+		return false
+	}
+	dec.mustUnreadByte()
+	return true
+}
+
 // EOF returns true if end-of-file is reached.
 func (dec *Decoder) EOF() bool {
 	_, err := dec.r.ReadByte()
