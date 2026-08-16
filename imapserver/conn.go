@@ -58,6 +58,16 @@ func isConnectionClosedError(err error) bool {
 	return false
 }
 
+// isByeError reports whether err is a BYE-typed imap.Error: the backend saying
+// this connection is over (RFC 9051 §7.1.5). It is the one handler error that
+// is not a command completion — finishBye writes it untagged and stops reading,
+// the serve loop does not log it as a failure, and handleIdle interrupts the
+// wait for DONE on it and on nothing else.
+func isByeError(err error) bool {
+	var imapErr *imap.Error
+	return errors.As(err, &imapErr) && imapErr.Type == imap.StatusResponseTypeBye
+}
+
 // A Conn represents an IMAP connection to the server.
 type Conn struct {
 	server   *Server
@@ -212,6 +222,12 @@ func (c *Conn) enabledHas(cap imap.Cap) bool {
 func (c *Conn) isIMAP4rev2() bool {
 	return c.enabledHas(imap.CapIMAP4rev2) ||
 		!c.server.options.caps().Has(imap.CapIMAP4rev1)
+}
+
+// IsIMAP4rev2 reports whether this connection should be served IMAP4rev2
+// semantics (either IMAP4rev2 was enabled, or IMAP4rev1 is not advertised).
+func (c *Conn) IsIMAP4rev2() bool {
+	return c.isIMAP4rev2()
 }
 
 // Context returns the connection's context. It is cancelled when the
@@ -416,8 +432,7 @@ func (c *Conn) serve() {
 				byeOnExit = true
 				break
 			}
-			var imapErr *imap.Error
-			if !isConnectionClosedError(err) && !(errors.As(err, &imapErr) && imapErr.Type == imap.StatusResponseTypeBye) {
+			if !isConnectionClosedError(err) && !isByeError(err) {
 				c.server.logger().Printf("failed to read command (remote %v): %v", c.conn.RemoteAddr(), err)
 			}
 			break
@@ -469,7 +484,43 @@ func (c *Conn) shutdownBye() {
 		}
 		return
 	}
+	c.lingerClose()
+}
 
+// finishBye ends the connection on a BYE-typed error, and is a no-op on any
+// other one (err comes back unchanged either way, so callers can `return
+// c.finishBye(err)` without inspecting it first).
+//
+// A BYE-typed error is the backend saying this connection is over — the session
+// lost the mailbox under it (a UIDVALIDITY change, a deletion), or the server is
+// refusing to keep talking. BYE is untagged by definition (RFC 9051 §7.1.5), so
+// it cannot double as a command's completion: writing it with the tag produces
+// `a7 BYE …`, which is not a valid tagged response, and — because that reads as
+// an ordinary completion — left the connection open on a session that then
+// refused every command. Say it the way the protocol spells it, linger so the
+// close behind it is a clean EOF rather than an RST, and stop reading.
+//
+// This is the convention NewSession's BYE already follows (see serve), and the
+// serve loop already expects a BYE-typed error to come back out of readCommand:
+// it skips the "failed to read command" log for exactly this case.
+func (c *Conn) finishBye(err error) error {
+	var imapErr *imap.Error
+	if !errors.As(err, &imapErr) || imapErr.Type != imap.StatusResponseTypeBye {
+		return err
+	}
+	if writeErr := c.writeStatusResp("", (*imap.StatusResponse)(imapErr)); writeErr != nil {
+		return writeErr
+	}
+	c.lingerClose()
+	return err
+}
+
+// lingerClose half-closes the write side and drains whatever the client has
+// already sent, so the Close that follows delivers a clean EOF behind the bytes
+// just written rather than an RST that can discard them. See shutdownBye for
+// the full argument; every announced end-of-connection wants this treatment,
+// not just the shutdown one. Best effort, bounded by shutdownLingerTimeout.
+func (c *Conn) lingerClose() {
 	// Read c.conn under the mutex: STARTTLS reassigns it and forceCloseConns
 	// closes it from other goroutines.
 	c.mutex.Lock()
@@ -663,6 +714,9 @@ func (c *Conn) readCommand(dec *imapwire.Decoder) (err error) {
 		decErr  *imapwire.DecoderExpectError
 	)
 	if errors.As(err, &imapErr) {
+		if isByeError(err) {
+			return c.finishBye(err)
+		}
 		resp = (*imap.StatusResponse)(imapErr)
 		// An OK-typed error is a successful completion that carries a response
 		// code (e.g. MODIFIED from a conditional STORE, RFC 7162 §3.1.3), not a
@@ -672,7 +726,7 @@ func (c *Conn) readCommand(dec *imapwire.Decoder) (err error) {
 		// fail its precondition.
 		if imapErr.Type == imap.StatusResponseTypeOK {
 			if err := c.poll(name); err != nil {
-				return err
+				return c.finishBye(err)
 			}
 		}
 	} else if errors.As(err, &decErr) {
@@ -688,8 +742,12 @@ func (c *Conn) readCommand(dec *imapwire.Decoder) (err error) {
 		if !sendOK {
 			return nil
 		}
+		// The command-boundary poll is where a backend most often discovers the
+		// session is finished (the selected mailbox changed UIDVALIDITY or was
+		// deleted), and its error bypasses the mapping above — so route it
+		// through finishBye too, or a BYE there reaches the client as a bare EOF.
 		if err := c.poll(name); err != nil {
-			return err
+			return c.finishBye(err)
 		}
 		resp = &imap.StatusResponse{
 			Type: imap.StatusResponseTypeOK,
@@ -751,12 +809,13 @@ type RenameWriter struct {
 }
 
 // WriteOldName sends `* LIST (attrs) delim newName ("OLDNAME" (oldName))`, where
-// data.OldName holds the previous name. It is a no-op unless the client has
-// enabled IMAP4rev2: OLDNAME is an IMAP4rev2 / LIST-EXTENDED return-data item and
-// an unsolicited extended LIST would confuse an IMAP4rev1-only client (this
-// mirrors how RECENT is suppressed for rev2 clients).
+// data.OldName holds the previous name. It is a no-op unless the session is being
+// served IMAP4rev2 semantics — rev2 was enabled, OR the server does not advertise
+// IMAP4rev1 at all, in which case no ENABLE is needed. OLDNAME is an IMAP4rev2 /
+// LIST-EXTENDED return-data item and an unsolicited extended LIST would confuse an
+// IMAP4rev1-only client (this mirrors how RECENT is suppressed for rev2 clients).
 func (w *RenameWriter) WriteOldName(data *imap.ListData) error {
-	if !w.conn.enabledHas(imap.CapIMAP4rev2) {
+	if !w.conn.isIMAP4rev2() {
 		return nil
 	}
 	return w.conn.writeListData(data, nil, true)
@@ -1251,9 +1310,9 @@ func (w *UpdateWriter) WriteStatus(data *imap.StatusData, options *imap.StatusOp
 // renames, and a client that issued NOTIFY has, by using the extension,
 // opted into these extended responses — so an IMAP4rev1 NOTIFY client must
 // still learn a mailbox's new name. Non-NOTIFY callers keep the IMAP4rev2
-// gate.
+// gate — isIMAP4rev2, so a rev2-only server counts even without ENABLE.
 func (w *UpdateWriter) WriteList(data *imap.ListData) error {
-	allowOldName := w.notify || w.conn.enabledHas(imap.CapIMAP4rev2)
+	allowOldName := w.notify || w.conn.isIMAP4rev2()
 	return w.conn.writeListData(data, nil, allowOldName)
 }
 
