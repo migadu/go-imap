@@ -321,3 +321,12 @@ func TestRev2OnlyServerIsConsistentAcrossCommands(t *testing.T) {
 		}
 	}
 }
+
+func TestRenameRev2OnlyServerSendsOldNameWithoutEnable(t *testing.T) {
+	rc := newSearchRev2Conn(t, imap.CapSet{imap.CapIMAP4rev2: {}})
+	rc.do("CREATE oldbox")
+	resp := rc.do("RENAME oldbox newbox")
+	if !strings.Contains(resp, "OLDNAME") {
+		t.Fatalf("rev2-only RENAME did not send OLDNAME:\n%s", resp)
+	}
+}

@@ -214,6 +214,12 @@ func (c *Conn) isIMAP4rev2() bool {
 		!c.server.options.caps().Has(imap.CapIMAP4rev1)
 }
 
+// IsIMAP4rev2 reports whether this connection should be served IMAP4rev2
+// semantics (either IMAP4rev2 was enabled, or IMAP4rev1 is not advertised).
+func (c *Conn) IsIMAP4rev2() bool {
+	return c.isIMAP4rev2()
+}
+
 // Context returns the connection's context. It is cancelled when the
 // connection is torn down — by client disconnect, by the serve goroutine
 // exiting, or by server shutdown. Backends may use it to bound blocking work,
@@ -756,7 +762,7 @@ type RenameWriter struct {
 // an unsolicited extended LIST would confuse an IMAP4rev1-only client (this
 // mirrors how RECENT is suppressed for rev2 clients).
 func (w *RenameWriter) WriteOldName(data *imap.ListData) error {
-	if !w.conn.enabledHas(imap.CapIMAP4rev2) {
+	if !w.conn.isIMAP4rev2() {
 		return nil
 	}
 	return w.conn.writeListData(data, nil, true)
