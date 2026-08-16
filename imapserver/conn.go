@@ -475,7 +475,15 @@ func (c *Conn) shutdownBye() {
 		}
 		return
 	}
+	c.lingerClose()
+}
 
+// lingerClose half-closes the write side and drains whatever the client has
+// already sent, so the Close that follows delivers a clean EOF behind the bytes
+// just written rather than an RST that can discard them. See shutdownBye for
+// the full argument; every announced end-of-connection wants this treatment,
+// not just the shutdown one. Best effort, bounded by shutdownLingerTimeout.
+func (c *Conn) lingerClose() {
 	// Read c.conn under the mutex: STARTTLS reassigns it and forceCloseConns
 	// closes it from other goroutines.
 	c.mutex.Lock()
@@ -669,6 +677,25 @@ func (c *Conn) readCommand(dec *imapwire.Decoder) (err error) {
 		decErr  *imapwire.DecoderExpectError
 	)
 	if errors.As(err, &imapErr) {
+		// A BYE-typed error is the backend saying this connection is over — the
+		// session lost the mailbox under it (UIDVALIDITY change, deletion), or
+		// the server is refusing to keep talking. BYE is untagged by definition
+		// (RFC 9051 §7.1.5), so it cannot be the command's completion: writing
+		// it with the tag produces `a7 BYE …`, which is not a valid tagged
+		// response, and — because it reads as an ordinary completion here — left
+		// the connection open on a session that then refuses every command.
+		//
+		// Say it the way the protocol spells it and stop reading. This is the
+		// same convention NewSession's BYE already follows (see serve), and the
+		// serve loop already expects a BYE-typed error out of here: it skips the
+		// "failed to read command" log for exactly this case.
+		if imapErr.Type == imap.StatusResponseTypeBye {
+			if err := c.writeStatusResp("", (*imap.StatusResponse)(imapErr)); err != nil {
+				return err
+			}
+			c.lingerClose()
+			return imapErr
+		}
 		resp = (*imap.StatusResponse)(imapErr)
 		// An OK-typed error is a successful completion that carries a response
 		// code (e.g. MODIFIED from a conditional STORE, RFC 7162 §3.1.3), not a
@@ -757,10 +784,11 @@ type RenameWriter struct {
 }
 
 // WriteOldName sends `* LIST (attrs) delim newName ("OLDNAME" (oldName))`, where
-// data.OldName holds the previous name. It is a no-op unless the client has
-// enabled IMAP4rev2: OLDNAME is an IMAP4rev2 / LIST-EXTENDED return-data item and
-// an unsolicited extended LIST would confuse an IMAP4rev1-only client (this
-// mirrors how RECENT is suppressed for rev2 clients).
+// data.OldName holds the previous name. It is a no-op unless the session is being
+// served IMAP4rev2 semantics — rev2 was enabled, OR the server does not advertise
+// IMAP4rev1 at all, in which case no ENABLE is needed. OLDNAME is an IMAP4rev2 /
+// LIST-EXTENDED return-data item and an unsolicited extended LIST would confuse an
+// IMAP4rev1-only client (this mirrors how RECENT is suppressed for rev2 clients).
 func (w *RenameWriter) WriteOldName(data *imap.ListData) error {
 	if !w.conn.isIMAP4rev2() {
 		return nil
@@ -1257,9 +1285,9 @@ func (w *UpdateWriter) WriteStatus(data *imap.StatusData, options *imap.StatusOp
 // renames, and a client that issued NOTIFY has, by using the extension,
 // opted into these extended responses — so an IMAP4rev1 NOTIFY client must
 // still learn a mailbox's new name. Non-NOTIFY callers keep the IMAP4rev2
-// gate.
+// gate — isIMAP4rev2, so a rev2-only server counts even without ENABLE.
 func (w *UpdateWriter) WriteList(data *imap.ListData) error {
-	allowOldName := w.notify || w.conn.enabledHas(imap.CapIMAP4rev2)
+	allowOldName := w.notify || w.conn.isIMAP4rev2()
 	return w.conn.writeListData(data, nil, allowOldName)
 }
 

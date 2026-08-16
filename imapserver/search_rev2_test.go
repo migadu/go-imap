@@ -27,6 +27,14 @@ type searchRev2Conn struct {
 
 func newSearchRev2Conn(t *testing.T, caps imap.CapSet) *searchRev2Conn {
 	t.Helper()
+	return newSearchRev2ConnWrapped(t, caps, nil)
+}
+
+// newSearchRev2ConnWrapped is newSearchRev2Conn with a hook that can decorate
+// the backend session, so a test can drive a writer the in-memory backend never
+// exercises on its own.
+func newSearchRev2ConnWrapped(t *testing.T, caps imap.CapSet, wrap func(imapserver.Session) imapserver.Session) *searchRev2Conn {
+	t.Helper()
 
 	const username, password = "user", "pass"
 	memUser := imapmemserver.NewUser(username, password)
@@ -38,7 +46,11 @@ func newSearchRev2Conn(t *testing.T, caps imap.CapSet) *searchRev2Conn {
 
 	srv := imapserver.New(&imapserver.Options{
 		NewSession: func(*imapserver.Conn) (imapserver.Session, *imapserver.GreetingData, error) {
-			return memServer.NewSession(), nil, nil
+			sess := memServer.NewSession()
+			if wrap != nil {
+				sess = wrap(sess)
+			}
+			return sess, nil, nil
 		},
 		Caps:         caps,
 		InsecureAuth: true,
@@ -328,5 +340,43 @@ func TestRenameRev2OnlyServerSendsOldNameWithoutEnable(t *testing.T) {
 	resp := rc.do("RENAME oldbox newbox")
 	if !strings.Contains(resp, "OLDNAME") {
 		t.Fatalf("rev2-only RENAME did not send OLDNAME:\n%s", resp)
+	}
+}
+
+// oldNamePollSession emits one unsolicited LIST carrying OLDNAME from Poll.
+// That is the NON-NOTIFY branch of UpdateWriter.WriteList, which the in-memory
+// backend never drives on its own.
+// It embeds SessionIMAP4rev2, not Session: a rev2-only server panics on a
+// session that does not implement it, since there would be no usable base
+// protocol left.
+type oldNamePollSession struct {
+	imapserver.SessionIMAP4rev2
+}
+
+// Emitted on EVERY poll, not once: the server polls at each command sync point
+// (SELECT included), so a one-shot probe would be spent before the command the
+// assertion reads.
+func (s *oldNamePollSession) Poll(ctx context.Context, w *imapserver.UpdateWriter, allowExpunge bool) error {
+	if err := s.SessionIMAP4rev2.Poll(ctx, w, allowExpunge); err != nil {
+		return err
+	}
+	return w.WriteList(&imap.ListData{Mailbox: "newbox", Delim: '/', OldName: "oldbox"})
+}
+
+// UpdateWriter.WriteList carries the same rev2-only hazard RENAME's writer did:
+// gating OLDNAME on the ENABLED set alone strips it on a server that advertises
+// no IMAP4rev1, where every session is a rev2 session without any ENABLE. The
+// NOTIFY branch is unaffected (it emits OLDNAME regardless), so this drives the
+// non-NOTIFY path through Poll.
+func TestUpdateWriterRev2OnlyServerSendsOldNameWithoutEnable(t *testing.T) {
+	rc := newSearchRev2ConnWrapped(t, imap.CapSet{imap.CapIMAP4rev2: {}},
+		func(s imapserver.Session) imapserver.Session {
+			return &oldNamePollSession{SessionIMAP4rev2: s.(imapserver.SessionIMAP4rev2)}
+		})
+	rc.do("CREATE oldbox")
+	rc.do("SELECT INBOX")
+	resp := rc.do("NOOP")
+	if !strings.Contains(resp, "OLDNAME") {
+		t.Fatalf("rev2-only unsolicited LIST did not carry OLDNAME:\n%s", resp)
 	}
 }
