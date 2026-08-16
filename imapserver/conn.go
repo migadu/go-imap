@@ -478,6 +478,34 @@ func (c *Conn) shutdownBye() {
 	c.lingerClose()
 }
 
+// finishBye ends the connection on a BYE-typed error, and is a no-op on any
+// other one (err comes back unchanged either way, so callers can `return
+// c.finishBye(err)` without inspecting it first).
+//
+// A BYE-typed error is the backend saying this connection is over — the session
+// lost the mailbox under it (a UIDVALIDITY change, a deletion), or the server is
+// refusing to keep talking. BYE is untagged by definition (RFC 9051 §7.1.5), so
+// it cannot double as a command's completion: writing it with the tag produces
+// `a7 BYE …`, which is not a valid tagged response, and — because that reads as
+// an ordinary completion — left the connection open on a session that then
+// refused every command. Say it the way the protocol spells it, linger so the
+// close behind it is a clean EOF rather than an RST, and stop reading.
+//
+// This is the convention NewSession's BYE already follows (see serve), and the
+// serve loop already expects a BYE-typed error to come back out of readCommand:
+// it skips the "failed to read command" log for exactly this case.
+func (c *Conn) finishBye(err error) error {
+	var imapErr *imap.Error
+	if !errors.As(err, &imapErr) || imapErr.Type != imap.StatusResponseTypeBye {
+		return err
+	}
+	if writeErr := c.writeStatusResp("", (*imap.StatusResponse)(imapErr)); writeErr != nil {
+		return writeErr
+	}
+	c.lingerClose()
+	return err
+}
+
 // lingerClose half-closes the write side and drains whatever the client has
 // already sent, so the Close that follows delivers a clean EOF behind the bytes
 // just written rather than an RST that can discard them. See shutdownBye for
@@ -677,24 +705,8 @@ func (c *Conn) readCommand(dec *imapwire.Decoder) (err error) {
 		decErr  *imapwire.DecoderExpectError
 	)
 	if errors.As(err, &imapErr) {
-		// A BYE-typed error is the backend saying this connection is over — the
-		// session lost the mailbox under it (UIDVALIDITY change, deletion), or
-		// the server is refusing to keep talking. BYE is untagged by definition
-		// (RFC 9051 §7.1.5), so it cannot be the command's completion: writing
-		// it with the tag produces `a7 BYE …`, which is not a valid tagged
-		// response, and — because it reads as an ordinary completion here — left
-		// the connection open on a session that then refuses every command.
-		//
-		// Say it the way the protocol spells it and stop reading. This is the
-		// same convention NewSession's BYE already follows (see serve), and the
-		// serve loop already expects a BYE-typed error out of here: it skips the
-		// "failed to read command" log for exactly this case.
 		if imapErr.Type == imap.StatusResponseTypeBye {
-			if err := c.writeStatusResp("", (*imap.StatusResponse)(imapErr)); err != nil {
-				return err
-			}
-			c.lingerClose()
-			return imapErr
+			return c.finishBye(err)
 		}
 		resp = (*imap.StatusResponse)(imapErr)
 		// An OK-typed error is a successful completion that carries a response
@@ -705,7 +717,7 @@ func (c *Conn) readCommand(dec *imapwire.Decoder) (err error) {
 		// fail its precondition.
 		if imapErr.Type == imap.StatusResponseTypeOK {
 			if err := c.poll(name); err != nil {
-				return err
+				return c.finishBye(err)
 			}
 		}
 	} else if errors.As(err, &decErr) {
@@ -721,8 +733,12 @@ func (c *Conn) readCommand(dec *imapwire.Decoder) (err error) {
 		if !sendOK {
 			return nil
 		}
+		// The command-boundary poll is where a backend most often discovers the
+		// session is finished (the selected mailbox changed UIDVALIDITY or was
+		// deleted), and its error bypasses the mapping above — so route it
+		// through finishBye too, or a BYE there reaches the client as a bare EOF.
 		if err := c.poll(name); err != nil {
-			return err
+			return c.finishBye(err)
 		}
 		resp = &imap.StatusResponse{
 			Type: imap.StatusResponseTypeOK,

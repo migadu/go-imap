@@ -20,6 +20,7 @@ import (
 type byeSession struct {
 	*imapmemserver.UserSession
 	selectBye bool
+	pollBye   bool
 	idleBye   chan struct{} // close to make a running Idle return the BYE
 }
 
@@ -39,6 +40,13 @@ func (s *byeSession) Select(ctx context.Context, mailbox string, options *imap.S
 		return nil, byeErr()
 	}
 	return s.UserSession.Select(ctx, mailbox, options)
+}
+
+func (s *byeSession) Poll(ctx context.Context, w *imapserver.UpdateWriter, allowExpunge bool) error {
+	if s.pollBye {
+		return byeErr()
+	}
+	return s.UserSession.Poll(ctx, w, allowExpunge)
 }
 
 func (s *byeSession) Idle(ctx context.Context, w *imapserver.UpdateWriter, stop <-chan struct{}) error {
@@ -89,6 +97,41 @@ func TestByeErrorFromHandlerIsUntagged(t *testing.T) {
 	wc.login(t)
 
 	tag := wc.send(t, "SELECT INBOX")
+	lines := readUntilClosed(t, wc)
+
+	if len(lines) == 0 {
+		t.Fatal("server closed the connection without a BYE")
+	}
+	if got := lines[0]; got != "* BYE mailbox state changed" {
+		t.Errorf("first line = %q, want an untagged BYE", got)
+	}
+	for _, l := range lines {
+		if strings.HasPrefix(l, tag+" ") {
+			t.Errorf("BYE was written as the tagged response %q", l)
+		}
+	}
+}
+
+// TestByeFromCommandBoundaryPollIsUntagged covers the OTHER way a session
+// reports it is finished: not from the command handler, but from the poll that
+// flushes pending updates just before the tagged completion. That is where a
+// backend most often notices (it is the only place a quiet session looks at its
+// mailbox at all), and its error takes an early return that skips the handler
+// error mapping — so the BYE reached the client as a bare EOF, with no BYE and
+// no tagged response to the command it had in flight.
+func TestByeFromCommandBoundaryPollIsUntagged(t *testing.T) {
+	user := newTestUser(t)
+	srv := newShutdownTestServer(t, func() imapserver.Session {
+		s := newByeSession(user)
+		s.pollBye = true
+		return s
+	})
+
+	wc := dialWire(t, srv.addr)
+	wc.login(t)
+	wc.mustOK(t, "SELECT INBOX") // Poll runs at the NEXT command boundary
+
+	tag := wc.send(t, "NOOP")
 	lines := readUntilClosed(t, wc)
 
 	if len(lines) == 0 {
