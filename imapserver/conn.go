@@ -58,6 +58,16 @@ func isConnectionClosedError(err error) bool {
 	return false
 }
 
+// isByeError reports whether err is a BYE-typed imap.Error: the backend saying
+// this connection is over (RFC 9051 §7.1.5). It is the one handler error that
+// is not a command completion — finishBye writes it untagged and stops reading,
+// the serve loop does not log it as a failure, and handleIdle interrupts the
+// wait for DONE on it and on nothing else.
+func isByeError(err error) bool {
+	var imapErr *imap.Error
+	return errors.As(err, &imapErr) && imapErr.Type == imap.StatusResponseTypeBye
+}
+
 // A Conn represents an IMAP connection to the server.
 type Conn struct {
 	server   *Server
@@ -422,8 +432,7 @@ func (c *Conn) serve() {
 				byeOnExit = true
 				break
 			}
-			var imapErr *imap.Error
-			if !isConnectionClosedError(err) && !(errors.As(err, &imapErr) && imapErr.Type == imap.StatusResponseTypeBye) {
+			if !isConnectionClosedError(err) && !isByeError(err) {
 				c.server.logger().Printf("failed to read command (remote %v): %v", c.conn.RemoteAddr(), err)
 			}
 			break
@@ -705,7 +714,7 @@ func (c *Conn) readCommand(dec *imapwire.Decoder) (err error) {
 		decErr  *imapwire.DecoderExpectError
 	)
 	if errors.As(err, &imapErr) {
-		if imapErr.Type == imap.StatusResponseTypeBye {
+		if isByeError(err) {
 			return c.finishBye(err)
 		}
 		resp = (*imap.StatusResponse)(imapErr)

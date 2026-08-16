@@ -108,10 +108,24 @@ func (c *Conn) handleIdle(dec *imapwire.Decoder) error {
 	// past; backendEnded is what tells the resulting timeout apart from the
 	// client genuinely going quiet.
 	//
-	// Only an ERROR is acted on. A backend returning nil has merely stopped
-	// idling — the client is still parked and still owes a DONE, and ending the
-	// command under it would leave the two sides disagreeing about whether the
-	// IDLE is over.
+	// The idle deadline is armed HERE, before the watcher exists: the interrupt
+	// is itself a deadline, so an interrupt that landed before the arm would be
+	// overwritten by it and the read below would block on the 35-minute window
+	// as if the backend had said nothing. A backend that fails the moment it is
+	// asked to idle (the mailbox was already gone when IDLE arrived) is exactly
+	// the one that races this. Ordering against setIdle is unchanged: the arm
+	// still precedes it, so requestShutdown's own past deadline still wins.
+	//
+	// Only a BYE-typed error is acted on. A backend returning nil has merely
+	// stopped idling — the client is still parked and still owes a DONE, and
+	// ending the command under it would leave the two sides disagreeing about
+	// whether the IDLE is over. Any OTHER error (a write failure, a panic) is
+	// held for the DONE exactly as before: it becomes the tagged NO that
+	// answers the DONE, which is a completion the client is waiting for,
+	// whereas answering it early hands the client a tagged line while it still
+	// owes a DONE — and a BYE is the only completion that has no such
+	// follow-up, because it ends the connection.
+	c.setReadTimeout(idleReadTimeout)
 	var backendEnded atomic.Bool
 	watchStop := make(chan struct{})
 	watcherDone := make(chan struct{})
@@ -119,7 +133,7 @@ func (c *Conn) handleIdle(dec *imapwire.Decoder) error {
 		defer close(watcherDone)
 		select {
 		case <-ended:
-			if idleErr != nil {
+			if isByeError(idleErr) {
 				backendEnded.Store(true)
 				c.interruptRead()
 			}
@@ -140,7 +154,6 @@ func (c *Conn) handleIdle(dec *imapwire.Decoder) error {
 	// flight, so Server.Shutdown may end the IDLE here rather than wait up to
 	// the idle timeout for a DONE that is not coming. It does so with a plain
 	// BYE and no tagged completion, which is all it has to say.
-	c.setReadTimeout(idleReadTimeout)
 	if !c.setIdle() {
 		close(stop)
 		awaitBackend()
@@ -154,13 +167,12 @@ func (c *Conn) handleIdle(dec *imapwire.Decoder) error {
 		return errShutdown
 	}
 	if backendEnded.Load() {
-		// The backend ended the IDLE, so its result is the answer and err (if
-		// any) is this handler's own interrupt rather than anything the client
-		// did. Checked before err on purpose: a DONE arriving in the same
+		// The backend ended the IDLE with a BYE, so that is the answer and err
+		// (if any) is this handler's own interrupt rather than anything the
+		// client did. Checked before err on purpose: a DONE arriving in the same
 		// instant is not a reason to keep serving a mailbox the backend just
-		// said it cannot serve, and the backend's result answers that DONE
-		// correctly either way — nil completes the command, a BYE ends the
-		// connection.
+		// said it cannot serve — the BYE answers that DONE correctly too, since
+		// it ends the connection either way.
 		return awaitBackend()
 	}
 	if err != nil {

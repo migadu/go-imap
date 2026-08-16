@@ -2,6 +2,7 @@ package imapserver_test
 
 import (
 	"context"
+	"errors"
 	"net"
 	"strings"
 	"sync"
@@ -22,14 +23,24 @@ type byeSession struct {
 	selectBye bool
 	pollBye   bool
 	idleBye   chan struct{} // close to make a running Idle return the BYE
+	idleFail  chan struct{} // close to make a running Idle return a NON-BYE error
+
+	// idleByeAtOnce makes Idle return the BYE synchronously, before it ever
+	// blocks — the backend already knew the mailbox was gone when IDLE came in.
+	idleByeAtOnce bool
 }
 
 func newByeSession(user *imapmemserver.User) *byeSession {
 	return &byeSession{
 		UserSession: imapmemserver.NewUserSession(user),
 		idleBye:     make(chan struct{}),
+		idleFail:    make(chan struct{}),
 	}
 }
+
+// errIdleBroke is the shape of an ordinary backend failure mid-IDLE — a write
+// error, a lost upstream — that is NOT a BYE and so does not end the connection.
+var errIdleBroke = errors.New("backend broke mid-idle")
 
 func byeErr() error {
 	return &imap.Error{Type: imap.StatusResponseTypeBye, Text: "mailbox state changed"}
@@ -50,9 +61,14 @@ func (s *byeSession) Poll(ctx context.Context, w *imapserver.UpdateWriter, allow
 }
 
 func (s *byeSession) Idle(ctx context.Context, w *imapserver.UpdateWriter, stop <-chan struct{}) error {
+	if s.idleByeAtOnce {
+		return byeErr()
+	}
 	select {
 	case <-s.idleBye:
 		return byeErr()
+	case <-s.idleFail:
+		return errIdleBroke
 	case <-stop:
 		return nil
 	case <-ctx.Done():
@@ -197,6 +213,115 @@ func TestIdleEndedByBackendDisconnectsPromptly(t *testing.T) {
 			t.Errorf("IDLE was answered with the tagged response %q", l)
 		}
 	}
+}
+
+// TestIdleByeBeforeTheWaitBeginsDisconnectsPromptly is the same promise for a
+// backend that fails the moment it is asked to idle — the mailbox was already
+// gone when IDLE arrived, so Idle returns the BYE before it ever blocks.
+//
+// That is the ordering the interrupt is most exposed to: the interrupt is a
+// read deadline in the past, and if the idle deadline were armed AFTER the
+// watcher started, an interrupt that had already landed would be overwritten
+// by the arm and the wait for DONE would block on the full idle window as if
+// the backend had said nothing. handleIdle arms the deadline before either
+// goroutine exists for exactly this reason; the case is timing-dependent, so
+// this pins the promise rather than reliably reproducing the loss.
+func TestIdleByeBeforeTheWaitBeginsDisconnectsPromptly(t *testing.T) {
+	user := newTestUser(t)
+	srv := newShutdownTestServer(t, func() imapserver.Session {
+		s := newByeSession(user)
+		s.idleByeAtOnce = true
+		return s
+	}, imap.CapIdle)
+
+	wc := dialWire(t, srv.addr)
+	wc.login(t)
+	wc.mustOK(t, "SELECT INBOX")
+
+	tag := wc.send(t, "IDLE")
+	start := time.Now()
+	// The continuation request may or may not precede the BYE: the backend
+	// goroutine is started only after "+ idling" is written, so it always does
+	// here — but nothing below depends on it, and a client must cope with
+	// either order.
+	lines := readUntilClosed(t, wc)
+	if elapsed := time.Since(start); elapsed > 3*time.Second {
+		t.Errorf("took %v to end the IDLE; it must not wait for DONE", elapsed)
+	}
+	var sawBye bool
+	for _, l := range lines {
+		if l == "* BYE mailbox state changed" {
+			sawBye = true
+		}
+		if strings.HasPrefix(l, tag+" ") {
+			t.Errorf("IDLE was answered with the tagged response %q", l)
+		}
+	}
+	if !sawBye {
+		t.Fatalf("server closed the connection without a BYE; read %q", lines)
+	}
+}
+
+// TestIdleNonByeBackendErrorWaitsForDone pins the boundary of the interrupt:
+// only a BYE ends the wait for DONE early. Any other error a backend returns
+// mid-IDLE is held until the client's DONE and becomes the tagged NO that
+// answers it — as it always was — because a tagged completion delivered while
+// the client still owes a DONE is a line the client is not expecting, and the
+// DONE it then sends is a line the server cannot parse as a command. A BYE has
+// no such follow-up: it ends the connection.
+func TestIdleNonByeBackendErrorWaitsForDone(t *testing.T) {
+	user := newTestUser(t)
+	var mu sync.Mutex
+	var sessions []*byeSession
+	srv := newShutdownTestServer(t, func() imapserver.Session {
+		s := newByeSession(user)
+		mu.Lock()
+		sessions = append(sessions, s)
+		mu.Unlock()
+		return s
+	}, imap.CapIdle)
+
+	wc := dialWire(t, srv.addr)
+	wc.login(t)
+	wc.mustOK(t, "SELECT INBOX")
+
+	tag := wc.send(t, "IDLE")
+	if line, err := wc.readLine(); err != nil || !strings.HasPrefix(line, "+") {
+		t.Fatalf("IDLE = %q, %v; want a continuation request", line, err)
+	}
+
+	mu.Lock()
+	s := sessions[0]
+	mu.Unlock()
+	close(s.idleFail) // an ordinary failure, not a BYE
+
+	// Nothing may arrive while the client is still parked: no tagged line, no
+	// BYE, no close. A bounded read that times out is the pass condition.
+	wc.conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+	if line, err := wc.br.ReadString('\n'); err == nil {
+		t.Fatalf("server spoke before DONE on a non-BYE backend error: %q", strings.TrimRight(line, "\r\n"))
+	} else if !isTimeout(err) {
+		t.Fatalf("read before DONE = %v; want a timeout (silence)", err)
+	}
+
+	// DONE is answered with the backend's failure as a tagged NO ...
+	if _, err := wc.conn.Write([]byte("DONE\r\n")); err != nil {
+		t.Fatalf("writing DONE: %v", err)
+	}
+	lines, err := wc.waitTagged(tag)
+	if err != nil {
+		t.Fatalf("after DONE: %v (read %q)", err, lines)
+	}
+	if last := lines[len(lines)-1]; !strings.HasPrefix(last, tag+" NO") {
+		t.Errorf("IDLE completion = %q, want %s NO", last, tag)
+	}
+	// ... and the connection is still a working session afterwards.
+	wc.mustOK(t, "NOOP")
+}
+
+func isTimeout(err error) bool {
+	var ne net.Error
+	return errors.As(err, &ne) && ne.Timeout()
 }
 
 // idleTimeoutListener imposes a per-read inactivity deadline on every accepted
