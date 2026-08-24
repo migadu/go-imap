@@ -474,6 +474,27 @@ func (dec *Decoder) ExpectBodyFldOctets(ptr *uint32) bool {
 	return dec.ExpectNumber(ptr)
 }
 
+// ExpectBodyFldLines parses body-fld-lines, the line count of a text or
+// message/rfc822 part.
+//
+// Workaround: the field is mandatory, but some servers send NIL for it -- most
+// often when they fall back to a synthetic body structure for a message they
+// could not parse, and forget that a "text" part owes a line count. Accept NIL
+// as zero: refusing it fails the whole FETCH response, and with it every other
+// message in the batch, over one part whose line count nobody needs.
+func (dec *Decoder) ExpectBodyFldLines(ptr *int64) bool {
+	// Number64 unreads the first non-digit byte, so NIL is still intact here.
+	if dec.Number64(ptr) {
+		return true
+	}
+	var s string
+	if dec.Atom(&s) && strings.EqualFold(s, "NIL") {
+		*ptr = 0
+		return true
+	}
+	return dec.Expect(false, "body-fld-lines")
+}
+
 func (dec *Decoder) Number64(ptr *int64) bool {
 	s, ok := dec.numberStr()
 	if !ok {
