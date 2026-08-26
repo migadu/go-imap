@@ -776,6 +776,15 @@ func writeBodyType1part(enc *imapwire.Encoder, bs *imap.BodyStructureSinglePart,
 		enc.SP().Number64(msg.NumLines)
 	} else if text := bs.Text; text != nil {
 		enc.SP().Number64(text.NumLines)
+	} else if strings.EqualFold(bs.Type, "text") {
+		// body-fld-lines is mandatory for a text part (RFC 9051 body-type-text).
+		// A backend that hands us a "text" part with no line count -- typically a
+		// synthetic structure built for a message it could not parse -- would
+		// otherwise put the extension section where the count belongs, and clients
+		// fail the entire FETCH response on it. Report zero: the count is a lie no
+		// client acts on, whereas malformed output costs every message in the
+		// response.
+		enc.SP().Number64(0)
 	}
 
 	if !extended {

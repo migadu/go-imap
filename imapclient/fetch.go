@@ -1174,7 +1174,7 @@ func readBodyType1part(dec *imapwire.Decoder, typ, subtype string, options *Opti
 			return nil, err
 		}
 
-		if !dec.ExpectSP() || !dec.ExpectNumber64(&msg.NumLines) {
+		if !dec.ExpectSP() || !dec.ExpectBodyFldLines(&msg.NumLines) {
 			return nil, dec.Err()
 		}
 
@@ -1183,7 +1183,7 @@ func readBodyType1part(dec *imapwire.Decoder, typ, subtype string, options *Opti
 	} else if strings.EqualFold(bs.Type, "text") {
 		var text imap.BodyStructureText
 
-		if !dec.ExpectNumber64(&text.NumLines) {
+		if !dec.ExpectBodyFldLines(&text.NumLines) {
 			return nil, dec.Err()
 		}
 
