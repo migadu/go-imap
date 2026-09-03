@@ -13,7 +13,23 @@ import (
 // its own view of the mailbox, because IMAP clients asynchronously receive
 // mailbox updates.
 type MailboxTracker struct {
-	mutex       sync.Mutex
+	mutex sync.Mutex
+	// numMessages is the server's count. It is read and written ONLY under
+	// `mutex`: queueUpdate needs the whole read-check-write to be one step, or
+	// two concurrent expunges can each pass the range check and then decrement
+	// past zero.
+	//
+	// No SessionTracker reads it. Each session carries its own copy
+	// (SessionTracker.numMessages), written in the same critical section as the
+	// update that moved it is appended to that session's queue, so a session's
+	// readers see a count and a queue that agree with each other while holding
+	// only the session's mutex. They could not take this one — queueUpdate holds
+	// it and then takes each session's mutex to enqueue, so the reverse order
+	// deadlocks — and reading it outside any lock (or through an atomic) was
+	// wrong in a subtler way: the store landed AFTER the fan-out, so a reader
+	// could find an expunge already in its queue and a count that had not yet
+	// absorbed it, and EncodeNumMessages then undid an expunge the count never
+	// applied, answering one more than the client could name.
 	numMessages uint32
 	sessions    map[*SessionTracker]struct{}
 }
@@ -31,8 +47,11 @@ func NewMailboxTracker(numMessages uint32) *MailboxTracker {
 // The caller must call SessionTracker.Close once they are done with the
 // session.
 func (t *MailboxTracker) NewSession() *SessionTracker {
-	st := &SessionTracker{mailbox: t}
 	t.mutex.Lock()
+	// Seed the session's count under the mailbox mutex, in the same critical
+	// section as its registration: no update can land between the two, so the
+	// session starts with an empty queue and a count that agrees with it.
+	st := &SessionTracker{mailbox: t, numMessages: t.numMessages}
 	t.sessions[st] = struct{}{}
 	t.mutex.Unlock()
 	return st
@@ -61,18 +80,20 @@ func (t *MailboxTracker) queueUpdate(update *trackerUpdate, source *SessionTrack
 		update.prevNumMessages = t.numMessages
 	}
 
-	for st := range t.sessions {
-		if source != nil && st == source {
-			continue
-		}
-		st.queueUpdate(update)
-	}
-
 	switch {
 	case update.expunge != 0:
 		t.numMessages--
 	case update.numMessages != 0:
 		t.numMessages = update.numMessages
+	}
+
+	// Hand every session the post-update count together with the update, so
+	// each writes both under its own mutex in one step. The source session is
+	// spared the update but not the count: today only flag updates carry a
+	// source and they never move the count, but the count must stay right by
+	// construction rather than by that coincidence.
+	for st := range t.sessions {
+		st.queueUpdate(update, t.numMessages, source != nil && st == source)
 	}
 	return nil
 }
@@ -161,18 +182,24 @@ type SessionTracker struct {
 	// slow network write.
 	deliverMutex sync.Mutex
 
-	mutex   sync.Mutex
-	queue   []trackerUpdate
-	updates chan<- struct{}
+	mutex sync.Mutex
+	// numMessages is the server's count as of the last update appended to
+	// `queue` — never behind the queue, never ahead of it — because the two are
+	// written in one critical section (see queueUpdate). It is what the three
+	// readers below reconcile the queue against; see MailboxTracker.numMessages
+	// for why they must not read the mailbox's copy.
+	numMessages uint32
+	queue       []trackerUpdate
+	updates     chan<- struct{}
 }
 
 // Close unregisters the session.
 //
-// After Close, DecodeSeqNum/EncodeSeqNum return 0 rather than dereferencing the
-// released mailbox: a NOTIFY pump goroutine may still hold a reference to this
-// tracker and call them after a concurrent UNSELECT/SELECT closed it. The
-// t.mailbox field is cleared under t.mutex so those readers observe the change
-// race-free.
+// After Close, DecodeSeqNum, EncodeSeqNum and EncodeNumMessages return 0
+// rather than reporting a view of a mailbox the session has left: a NOTIFY
+// pump goroutine may still hold a reference to this tracker and call them after
+// a concurrent UNSELECT/SELECT closed it. The t.mailbox field is cleared under
+// t.mutex so those readers observe the change race-free.
 func (t *SessionTracker) Close() {
 	t.mutex.Lock()
 	mailbox := t.mailbox
@@ -186,11 +213,18 @@ func (t *SessionTracker) Close() {
 	}
 }
 
-func (t *SessionTracker) queueUpdate(update *trackerUpdate) {
-	var updates chan<- struct{}
+// queueUpdate appends update and records numMessages, the server's count once
+// the update is applied, in one critical section. skip spares the queue append
+// (the update's source session already knows about it) but never the count.
+func (t *SessionTracker) queueUpdate(update *trackerUpdate, numMessages uint32, skip bool) {
 	t.mutex.Lock()
+	t.numMessages = numMessages
+	if skip {
+		t.mutex.Unlock()
+		return
+	}
 	t.queue = append(t.queue, *update)
-	updates = t.updates
+	updates := t.updates
 	t.mutex.Unlock()
 
 	if updates != nil {
@@ -402,7 +436,7 @@ func (t *SessionTracker) DecodeSeqNum(seqNum uint32) uint32 {
 		}
 	}
 
-	if seqNum > t.mailbox.numMessages {
+	if seqNum > t.numMessages {
 		return 0
 	}
 
@@ -425,7 +459,7 @@ func (t *SessionTracker) EncodeSeqNum(seqNum uint32) uint32 {
 		return 0 // tracker closed (see Close)
 	}
 
-	if seqNum > t.mailbox.numMessages {
+	if seqNum > t.numMessages {
 		return 0
 	}
 
@@ -462,9 +496,13 @@ func (t *SessionTracker) EncodeNumMessages() uint32 {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
 
+	if t.mailbox == nil {
+		return 0 // tracker closed (see Close)
+	}
+
 	// Undo each pending update, newest first, to recover the count as of the
 	// last one the client actually saw.
-	n := t.mailbox.numMessages
+	n := t.numMessages
 	for i := len(t.queue) - 1; i >= 0; i-- {
 		update := &t.queue[i]
 		if update.numMessages != 0 {

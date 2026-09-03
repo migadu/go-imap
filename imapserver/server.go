@@ -65,10 +65,66 @@ type Options struct {
 	// Raw ingress and egress data will be written to this writer, if any.
 	// Note, this may include sensitive information such as credentials used
 	// during authentication.
+	//
+	// This writer is shared by EVERY connection and carries no direction or
+	// connection identity, so concurrent sessions interleave into one stream.
+	// Prefer NewDebugConn when you need to record one client.
 	DebugWriter io.Writer
+
+	// NewDebugConn, if set, is called once per accepted connection with the
+	// client's net.Conn (before any TLS upgrade). Returning a non-nil
+	// DebugConn records that connection's protocol bytes; returning nil
+	// records nothing for it, which is what makes a per-client capture
+	// possible at all.
+	//
+	// It is strictly more useful than DebugWriter for two reasons. It knows
+	// WHICH connection it is recording, so a server can capture one client
+	// without every other session landing in the same file. And it separates
+	// the two directions, which a single io.Writer cannot: a caller of
+	// DebugWriter receives reads and writes interleaved with no marker saying
+	// which is which.
+	//
+	// The recorder is bound ONCE, to the pre-TLS connection, and re-applied
+	// when STARTTLS upgrades it — so it records PLAINTEXT on a STARTTLS
+	// session, which nothing outside the library can do (the upgrade happens
+	// on the connection the caller handed us, so a tee below it sees only
+	// ciphertext from that point on).
+	//
+	// Like DebugWriter, the bytes may include credentials.
+	NewDebugConn func(net.Conn) DebugConn
 }
 
-func (options *Options) wrapReadWriter(rw io.ReadWriter) io.ReadWriter {
+// DebugConn records one connection's protocol bytes, by direction. See
+// Options.NewDebugConn. Implementations must be safe for concurrent use: a
+// server push can be written while a client read is in flight.
+type DebugConn interface {
+	// ClientBytes records bytes read FROM the client.
+	ClientBytes(p []byte)
+	// ServerBytes records bytes written TO the client.
+	ServerBytes(p []byte)
+}
+
+// debugFunc adapts a byte-sink method to io.Writer. It never fails: a
+// diagnostic must not be able to break the connection it is observing.
+type debugFunc func(p []byte)
+
+func (f debugFunc) Write(p []byte) (int, error) {
+	f(p)
+	return len(p), nil
+}
+
+// wrapReadWriter tees rw into the connection's recorder (preferred) or the
+// server-wide DebugWriter, or returns it untouched when neither is set.
+func (options *Options) wrapReadWriter(rw io.ReadWriter, d DebugConn) io.ReadWriter {
+	if d != nil {
+		return struct {
+			io.Reader
+			io.Writer
+		}{
+			Reader: io.TeeReader(rw, debugFunc(d.ClientBytes)),
+			Writer: io.MultiWriter(rw, debugFunc(d.ServerBytes)),
+		}
+	}
 	if options.DebugWriter == nil {
 		return rw
 	}
