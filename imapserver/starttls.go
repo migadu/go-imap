@@ -58,7 +58,9 @@ func (c *Conn) handleStartTLS(tag string, dec *imapwire.Decoder) error {
 	c.conn = tlsConn
 	c.mutex.Unlock()
 
-	rw := c.server.options.wrapReadWriter(tlsConn)
+	// The same recorder as before the upgrade: this is the line that makes a
+	// STARTTLS capture plaintext.
+	rw := c.server.options.wrapReadWriter(tlsConn, c.debug)
 	c.br.Reset(rw)
 	c.bw.Reset(rw)
 

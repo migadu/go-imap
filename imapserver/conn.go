@@ -82,6 +82,10 @@ type Conn struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
+	// debug records this connection's protocol bytes when the server set
+	// Options.NewDebugConn. Immutable after newConn, so it needs no lock.
+	debug DebugConn
+
 	mutex     sync.Mutex
 	conn      net.Conn
 	enabled   imap.CapSet
@@ -138,7 +142,14 @@ type Conn struct {
 }
 
 func newConn(c net.Conn, server *Server) *Conn {
-	rw := server.options.wrapReadWriter(c)
+	// Bound to the PRE-TLS connection and kept for the connection's life, so a
+	// STARTTLS upgrade re-applies the same recorder to the TLS conn and the
+	// capture stays plaintext across it.
+	var debug DebugConn
+	if server.options.NewDebugConn != nil {
+		debug = server.options.NewDebugConn(c)
+	}
+	rw := server.options.wrapReadWriter(c, debug)
 	br := bufio.NewReader(rw)
 	bw := bufio.NewWriter(rw)
 	// The context is created here, before the connection is registered with the
@@ -147,6 +158,7 @@ func newConn(c net.Conn, server *Server) *Conn {
 	return &Conn{
 		conn:    c,
 		server:  server,
+		debug:   debug,
 		br:      br,
 		bw:      bw,
 		ctx:     ctx,
