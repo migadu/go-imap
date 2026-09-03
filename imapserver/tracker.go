@@ -3,6 +3,7 @@ package imapserver
 import (
 	"fmt"
 	"sync"
+	"sync/atomic"
 
 	"github.com/emersion/go-imap/v2"
 )
@@ -13,17 +14,34 @@ import (
 // its own view of the mailbox, because IMAP clients asynchronously receive
 // mailbox updates.
 type MailboxTracker struct {
-	mutex       sync.Mutex
-	numMessages uint32
+	mutex sync.Mutex
+	// numMessages is ATOMIC because it is read outside this mutex.
+	//
+	// Every mutation happens under `mutex` — queueUpdate needs the whole
+	// read-check-write to be one step, or two concurrent expunges can each pass
+	// the range check and then decrement past zero. But three SessionTracker
+	// methods (DecodeSeqNum, EncodeSeqNum, EncodeNumMessages) also read it while
+	// holding the SESSION's mutex, and they cannot take this one: queueUpdate
+	// holds `mutex` and then takes each session's mutex to enqueue, so acquiring
+	// them in the other order deadlocks. Guarding one field with two different
+	// mutexes is what the race detector reported on any server where one session
+	// expunges while another encodes a sequence number — i.e. every shared
+	// mailbox.
+	//
+	// The load may be momentarily ahead of what a given session has been told,
+	// which is not new and not a defect: that is precisely what each session's
+	// own queue reconciles. The atomic only makes the read well-defined.
+	numMessages atomic.Uint32
 	sessions    map[*SessionTracker]struct{}
 }
 
 // NewMailboxTracker creates a new mailbox tracker.
 func NewMailboxTracker(numMessages uint32) *MailboxTracker {
-	return &MailboxTracker{
-		numMessages: numMessages,
-		sessions:    make(map[*SessionTracker]struct{}),
+	t := &MailboxTracker{
+		sessions: make(map[*SessionTracker]struct{}),
 	}
+	t.numMessages.Store(numMessages)
+	return t
 }
 
 // NewSession creates a new session tracker for the mailbox.
@@ -47,18 +65,19 @@ func (t *MailboxTracker) queueUpdate(update *trackerUpdate, source *SessionTrack
 	// arbitrary goroutines (not just IDLE, which recovers), so a panic here would
 	// crash whatever goroutine reported the inconsistency — often the whole
 	// process.
-	if update.expunge != 0 && update.expunge > t.numMessages {
-		return fmt.Errorf("imapserver: expunge sequence number (%v) out of range (%v messages in mailbox)", update.expunge, t.numMessages)
+	cur := t.numMessages.Load()
+	if update.expunge != 0 && update.expunge > cur {
+		return fmt.Errorf("imapserver: expunge sequence number (%v) out of range (%v messages in mailbox)", update.expunge, cur)
 	}
-	if update.numMessages != 0 && update.numMessages < t.numMessages {
-		return fmt.Errorf("imapserver: cannot decrease mailbox number of messages from %v to %v", t.numMessages, update.numMessages)
+	if update.numMessages != 0 && update.numMessages < cur {
+		return fmt.Errorf("imapserver: cannot decrease mailbox number of messages from %v to %v", cur, update.numMessages)
 	}
 
 	// Capture the current count before applying the update so that
 	// EncodeSeqNum can determine which seqNums are new (not yet seen
 	// by the client).
 	if update.numMessages != 0 {
-		update.prevNumMessages = t.numMessages
+		update.prevNumMessages = cur
 	}
 
 	for st := range t.sessions {
@@ -70,9 +89,9 @@ func (t *MailboxTracker) queueUpdate(update *trackerUpdate, source *SessionTrack
 
 	switch {
 	case update.expunge != 0:
-		t.numMessages--
+		t.numMessages.Store(cur - 1)
 	case update.numMessages != 0:
-		t.numMessages = update.numMessages
+		t.numMessages.Store(update.numMessages)
 	}
 	return nil
 }
@@ -402,7 +421,7 @@ func (t *SessionTracker) DecodeSeqNum(seqNum uint32) uint32 {
 		}
 	}
 
-	if seqNum > t.mailbox.numMessages {
+	if seqNum > t.mailbox.numMessages.Load() {
 		return 0
 	}
 
@@ -425,7 +444,7 @@ func (t *SessionTracker) EncodeSeqNum(seqNum uint32) uint32 {
 		return 0 // tracker closed (see Close)
 	}
 
-	if seqNum > t.mailbox.numMessages {
+	if seqNum > t.mailbox.numMessages.Load() {
 		return 0
 	}
 
@@ -464,7 +483,7 @@ func (t *SessionTracker) EncodeNumMessages() uint32 {
 
 	// Undo each pending update, newest first, to recover the count as of the
 	// last one the client actually saw.
-	n := t.mailbox.numMessages
+	n := t.mailbox.numMessages.Load()
 	for i := len(t.queue) - 1; i >= 0; i-- {
 		update := &t.queue[i]
 		if update.numMessages != 0 {
