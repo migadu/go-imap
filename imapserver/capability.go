@@ -152,8 +152,12 @@ func (c *Conn) availableCaps() []imap.Cap {
 		}
 
 		// Add ACL capability if the session supports it (RFC 4314). The
-		// extension also requires advertising the "RIGHTS=" capability listing
-		// the rights introduced by RFC 4314 (k, x, t, e); see Section 2.1.
+		// extension also requires advertising the "RIGHTS=" capability naming
+		// the rights the server implements beyond RFC 2086's. §6's formal
+		// syntax fixes its content ("new-rights ... MUST include t, e, x, and
+		// k"), so it is a constant and not derived from what a session lets a
+		// grant carry (SessionACLVirtualRights): a backend that never grants
+		// `x` still implements it, and still lists it here.
 		if _, ok := c.session.(SessionACL); ok {
 			caps = append(caps, imap.CapACL)
 			caps = append(caps, imap.Cap("RIGHTS="+imap.RightSetExtended.String()))
