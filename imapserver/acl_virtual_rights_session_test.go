@@ -2,6 +2,7 @@ package imapserver
 
 import (
 	"bytes"
+	"errors"
 	"strings"
 	"testing"
 
@@ -60,7 +61,6 @@ func TestNewVirtualRightsNormalizes(t *testing.T) {
 func TestExpandVirtualRightsFollowsDeclaration(t *testing.T) {
 	noX := newVirtualRights(imap.RightSet("k"), imap.RightSet("te"))
 	second := newVirtualRights(imap.RightSet("k"), imap.RightSet("xte"))
-	none := newVirtualRights(nil, nil)
 
 	cases := []struct {
 		vr    virtualRights
@@ -74,14 +74,70 @@ func TestExpandVirtualRightsFollowsDeclaration(t *testing.T) {
 		{second, imap.RightSet("c"), imap.RightSet("k")},
 		{second, imap.RightSet("d"), imap.RightSet("xte")},
 		{second, imap.RightSet("lrswicd"), imap.RightSet("lrswikxte")},
-		// An empty declaration expands the virtual right to nothing.
-		{none, imap.RightSet("lrcd"), imap.RightSet("lr")},
 	}
 	for _, tc := range cases {
-		got := expandVirtualRights(tc.input, tc.vr)
+		got, err := expandVirtualRights(tc.input, tc.vr)
+		if err != nil {
+			t.Errorf("expandVirtualRights(%q, c=%q d=%q): %v", tc.input, tc.vr.create, tc.vr.delete, err)
+			continue
+		}
 		if !got.Equal(tc.want) || len(got) != len(tc.want) {
 			t.Errorf("expandVirtualRights(%q, c=%q d=%q) = %q, want %q", tc.input, tc.vr.create, tc.vr.delete, got, tc.want)
 		}
+	}
+}
+
+// TestMemberlessVirtualRightIsRefused pins RFC 4314 §3.1 for a virtual right
+// the session declares without members: it is not a right this server has, so
+// naming it is a client bug (BAD), never an empty expansion. Before the fix
+// "SETACL INBOX bob c" under such a declaration reached the session as an empty
+// Replace and silently revoked bob's entry. Explicit member letters are
+// unaffected, and a declaration that empties only one virtual right refuses
+// only that one.
+func TestMemberlessVirtualRightIsRefused(t *testing.T) {
+	none := newVirtualRights(nil, nil)
+	noDelete := newVirtualRights(imap.RightSet("kx"), nil)
+
+	cases := []struct {
+		vr      virtualRights
+		input   imap.RightSet
+		want    imap.RightSet
+		wantBad bool
+	}{
+		{none, imap.RightSet("c"), nil, true},
+		{none, imap.RightSet("lrd"), nil, true},
+		{none, imap.RightSet("lrkx"), imap.RightSet("lrkx"), false},
+		{noDelete, imap.RightSet("lrc"), imap.RightSet("lrkx"), false},
+		{noDelete, imap.RightSet("lrd"), nil, true},
+	}
+	for _, tc := range cases {
+		got, err := expandVirtualRights(tc.input, tc.vr)
+		if tc.wantBad {
+			var imapErr *imap.Error
+			if !errors.As(err, &imapErr) || imapErr.Type != imap.StatusResponseTypeBad {
+				t.Errorf("expandVirtualRights(%q, c=%q d=%q) = %q, %v; want a BAD error", tc.input, tc.vr.create, tc.vr.delete, got, err)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("expandVirtualRights(%q, c=%q d=%q): %v", tc.input, tc.vr.create, tc.vr.delete, err)
+			continue
+		}
+		if !got.Equal(tc.want) || len(got) != len(tc.want) {
+			t.Errorf("expandVirtualRights(%q, c=%q d=%q) = %q, want %q", tc.input, tc.vr.create, tc.vr.delete, got, tc.want)
+		}
+	}
+
+	// Through the handler: the session must not be called at all.
+	session := &aclFamilySession{}
+	conn := newACLTestConn(t, session, &bytes.Buffer{})
+	err := conn.handleSetACL(argsDecoder(" INBOX bob lrc"))
+	var imapErr *imap.Error
+	if !errors.As(err, &imapErr) || imapErr.Type != imap.StatusResponseTypeBad {
+		t.Fatalf("handleSetACL under an empty declaration returned %v, want BAD", err)
+	}
+	if session.calls != 0 {
+		t.Errorf("session.SetACL was called %d time(s) with rights %q; a refused SETACL must not reach the backend", session.calls, session.setRights)
 	}
 }
 

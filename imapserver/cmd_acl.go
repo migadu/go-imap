@@ -62,7 +62,11 @@ func (c *Conn) handleSetACL(dec *imapwire.Decoder) error {
 	}
 
 	identifier := imap.RightsIdentifier(identifierStr)
-	return session.SetACL(c.ctx, mailbox, identifier, modification, expandVirtualRights(rights, c.virtualRights()))
+	expanded, err := expandVirtualRights(rights, c.virtualRights())
+	if err != nil {
+		return err
+	}
+	return session.SetACL(c.ctx, mailbox, identifier, modification, expanded)
 }
 
 func (c *Conn) handleDeleteACL(dec *imapwire.Decoder) error {
@@ -266,10 +270,16 @@ func newVirtualRights(create, delete imap.RightSet) virtualRights {
 // non-member (an `x` under a backend that keeps it out of both) is passed
 // through as the client's own request.
 //
+// A virtual right the session declares with no members is not a right this
+// server has at all, and RFC 4314 §3.1 requires an unrecognized right to draw a
+// BAD rather than be ignored: naming it returns a client-bug error, so that
+// "SETACL ... c" against such a backend cannot quietly turn into an empty
+// replacement that revokes the identifier's entry.
+//
 // formatRightsWithCompat and writeListRights are the inverse and read the same
 // declaration: they append `c` when any create member is held (or grantable)
 // and `d` when any delete member is.
-func expandVirtualRights(rs imap.RightSet, vr virtualRights) imap.RightSet {
+func expandVirtualRights(rs imap.RightSet, vr virtualRights) (imap.RightSet, error) {
 	res := make(imap.RightSet, 0, len(rs)+len(vr.create)+len(vr.delete))
 	hasC := false
 	hasD := false
@@ -284,12 +294,18 @@ func expandVirtualRights(rs imap.RightSet, vr virtualRights) imap.RightSet {
 		}
 	}
 	if hasC {
+		if len(vr.create) == 0 {
+			return nil, newClientBugError("The c right is not supported")
+		}
 		res = appendMissing(res, vr.create)
 	}
 	if hasD {
+		if len(vr.delete) == 0 {
+			return nil, newClientBugError("The d right is not supported")
+		}
 		res = appendMissing(res, vr.delete)
 	}
-	return res
+	return res, nil
 }
 
 func appendMissing(rs, add imap.RightSet) imap.RightSet {

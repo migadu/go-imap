@@ -122,7 +122,11 @@ func TestExpandVirtualRights(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		got := expandVirtualRights(tc.input, defaultVirtualRights())
+		got, err := expandVirtualRights(tc.input, defaultVirtualRights())
+		if err != nil {
+			t.Errorf("expandVirtualRights(%q): %v", tc.input, err)
+			continue
+		}
 		if !got.Equal(tc.want) {
 			t.Errorf("expandVirtualRights(%q) = %q, want %q", tc.input, got, tc.want)
 		}
