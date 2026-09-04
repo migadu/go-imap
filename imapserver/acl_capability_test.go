@@ -108,9 +108,14 @@ func TestExpandVirtualRights(t *testing.T) {
 	}{
 		{imap.RightSet("lrswi"), imap.RightSet("lrswi")},
 		{imap.RightSet("c"), imap.RightSet("k")},
-		{imap.RightSet("d"), imap.RightSet("xte")},
-		{imap.RightSet("cd"), imap.RightSet("kxte")},
-		{imap.RightSet("lrswicda"), imap.RightSet("lrswikxtea")},
+		// `d` is `t`+`e` (Dovecot/Cyrus reading of RFC 4314 §2.1.1): mailbox
+		// deletion `x` is never implied.
+		{imap.RightSet("d"), imap.RightSet("te")},
+		{imap.RightSet("cd"), imap.RightSet("kte")},
+		{imap.RightSet("lrswicda"), imap.RightSet("lrswiktea")},
+		// An explicit `x` survives alongside the expansion, and is not doubled.
+		{imap.RightSet("xd"), imap.RightSet("xte")},
+		{imap.RightSet("td"), imap.RightSet("te")},
 	}
 
 	for _, tc := range tests {
@@ -128,9 +133,11 @@ func TestFormatRightsWithCompat(t *testing.T) {
 	}{
 		{imap.RightSet("lrswi"), "lrswi"},
 		{imap.RightSet("k"), "kc"},
-		{imap.RightSet("x"), "xd"},
+		// `x` alone is not the virtual `d`.
+		{imap.RightSet("x"), "x"},
 		{imap.RightSet("t"), "td"},
 		{imap.RightSet("e"), "ed"},
+		{imap.RightSet("te"), "ted"},
 		{imap.RightSet("kxte"), "kxtecd"},
 	}
 
