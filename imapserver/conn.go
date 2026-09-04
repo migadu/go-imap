@@ -868,7 +868,12 @@ func (c *Conn) checkBufferedLiteral(size int64, nonSync bool) error {
 }
 
 func (c *Conn) acceptLiteral(size int64, nonSync bool) error {
-	if nonSync && size > 4096 && !c.server.options.caps().Has(imap.CapLiteralPlus) {
+	// The bound follows what is ADVERTISED, not what is configured: before
+	// authentication the capability list carries LITERAL- (RFC 7888 §3 forbids
+	// offering it alongside LITERAL+), so its 4096-byte cap on
+	// non-synchronizing literals applies there even on a server that will
+	// advertise LITERAL+ once the client has logged in.
+	if nonSync && size > 4096 && !c.advertisesLiteralPlus(c.configuredCaps()) {
 		return &imap.Error{
 			Type: imap.StatusResponseTypeBad,
 			Text: "Non-synchronizing literals are limited to 4096 bytes",
