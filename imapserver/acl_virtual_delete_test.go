@@ -19,12 +19,14 @@ type aclRecordingSession struct {
 	Session
 	setRights imap.RightSet
 	setMod    imap.RightModification
+	calls     int
 }
 
 func (s *aclRecordingSession) GetACL(ctx context.Context, mailbox string) (*imap.GetACLData, error) {
 	return nil, nil
 }
 func (s *aclRecordingSession) SetACL(ctx context.Context, mailbox string, id imap.RightsIdentifier, mod imap.RightModification, rights imap.RightSet) error {
+	s.calls++
 	s.setMod, s.setRights = mod, rights
 	return nil
 }

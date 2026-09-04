@@ -82,8 +82,10 @@ type SessionACLVirtualRights interface {
 	SessionACL
 
 	// VirtualRights returns the members of the virtual `c` (create) and `d`
-	// (delete) rights, in that order. Either may be empty, in which case that
-	// virtual right expands to nothing and is never advertised.
+	// (delete) rights, in that order. Either may be empty, in which case the
+	// server does not have that virtual right: a client naming it in SETACL is
+	// refused with BAD (RFC 4314 §3.1, unrecognized right), and it is never
+	// appended to GETACL, MYRIGHTS or LISTRIGHTS.
 	VirtualRights() (create, delete imap.RightSet)
 }
 
