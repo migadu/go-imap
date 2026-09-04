@@ -1,8 +1,6 @@
 package imapserver
 
 import (
-	"strings"
-
 	"github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/internal"
 	"github.com/emersion/go-imap/v2/internal/imapwire"
@@ -64,7 +62,7 @@ func (c *Conn) handleSetACL(dec *imapwire.Decoder) error {
 	}
 
 	identifier := imap.RightsIdentifier(identifierStr)
-	return session.SetACL(c.ctx, mailbox, identifier, modification, expandVirtualRights(rights))
+	return session.SetACL(c.ctx, mailbox, identifier, modification, expandVirtualRights(rights, c.virtualRights()))
 }
 
 func (c *Conn) handleDeleteACL(dec *imapwire.Decoder) error {
@@ -141,10 +139,11 @@ func (c *Conn) writeGetACL(data *imap.GetACLData) error {
 	enc := newResponseEncoder(c)
 	defer enc.end()
 
+	vr := c.virtualRights()
 	enc.Atom("*").SP().Atom("ACL").SP().Mailbox(data.Mailbox)
 	for i := range data.ACL {
 		entry := &data.ACL[i]
-		enc.SP().String(string(entry.Identifier)).SP().String(formatRightsWithCompat(entry.Rights))
+		enc.SP().String(string(entry.Identifier)).SP().String(formatRightsWithCompat(entry.Rights, vr))
 	}
 	return enc.CRLF()
 }
@@ -169,18 +168,19 @@ func (c *Conn) writeListRights(data *imap.ListRightsData) error {
 	// right, that obsolete right MUST be advertised. The members here are listed
 	// individually (each its own group, independently grantable), so the virtual
 	// right is returned by itself as its own group. §3.7 forbids listing any right
-	// more than once, so only add c/d when not already present. The members of
-	// `c` are `k` and `x`, those of `d` are `t` and `e`; see expandVirtualRights.
-	var all strings.Builder
-	all.WriteString(string(data.RequiredRights))
+	// more than once, so only add c/d when not already present. Which rights are
+	// members is the session's declaration (see virtualRights), the same one
+	// SETACL expands against.
+	var all imap.RightSet
+	all = append(all, data.RequiredRights...)
 	for i := range data.OptionalRights {
-		all.WriteString(string(data.OptionalRights[i]))
+		all = append(all, data.OptionalRights[i]...)
 	}
-	allRights := all.String()
-	if strings.ContainsAny(allRights, "kx") && !strings.ContainsRune(allRights, 'c') {
+	vr := c.virtualRights()
+	if anyRightIn(vr.create, all) && !containsRight(all, imap.RightCreate) {
 		enc.SP().String("c")
 	}
-	if strings.ContainsAny(allRights, "te") && !strings.ContainsRune(allRights, 'd') {
+	if anyRightIn(vr.delete, all) && !containsRight(all, imap.RightDelete) {
 		enc.SP().String("d")
 	}
 
@@ -193,7 +193,7 @@ func (c *Conn) writeMyRights(data *imap.MyRightsData) error {
 
 	enc.Atom("*").SP().Atom("MYRIGHTS").SP().
 		Mailbox(data.Mailbox).SP().
-		String(formatRightsWithCompat(data.Rights))
+		String(formatRightsWithCompat(data.Rights, c.virtualRights()))
 
 	return enc.CRLF()
 }
@@ -203,53 +203,102 @@ func formatRights(rm imap.RightModification, rs imap.RightSet) string {
 	return internal.FormatRights(rm, rs)
 }
 
+// virtualRights is the resolved membership of RFC 4314 §2.1.1's virtual `c`
+// and `d` rights for one connection. It is the single source that
+// expandVirtualRights, formatRightsWithCompat and writeListRights all read, so
+// what SETACL accepts on the session's behalf and what GETACL, MYRIGHTS and
+// LISTRIGHTS advertise on its behalf cannot drift apart.
+type virtualRights struct {
+	create imap.RightSet
+	delete imap.RightSet
+}
+
+// virtualRights returns the session's declaration when it makes one
+// (SessionACLVirtualRights) and the RFC's first family otherwise.
+func (c *Conn) virtualRights() virtualRights {
+	if s, ok := c.session.(SessionACLVirtualRights); ok {
+		create, delete := s.VirtualRights()
+		return newVirtualRights(create, delete)
+	}
+	return defaultVirtualRights()
+}
+
+func defaultVirtualRights() virtualRights {
+	return newVirtualRights(DefaultVirtualCreate, DefaultVirtualDelete)
+}
+
+// newVirtualRights normalizes a declaration: the virtual letters themselves
+// are not members of anything, a right is listed once, and a right named in
+// both sets is kept in `create` only. The last rule is what stops a backend
+// from putting `x` in both, which no RFC family does and which would make
+// every output append both `c` and `d` for it.
+func newVirtualRights(create, delete imap.RightSet) virtualRights {
+	var vr virtualRights
+	for _, r := range create {
+		if r != imap.RightCreate && r != imap.RightDelete && !containsRight(vr.create, r) {
+			vr.create = append(vr.create, r)
+		}
+	}
+	for _, r := range delete {
+		if r != imap.RightCreate && r != imap.RightDelete && !containsRight(vr.create, r) && !containsRight(vr.delete, r) {
+			vr.delete = append(vr.delete, r)
+		}
+	}
+	return vr
+}
+
 // expandVirtualRights maps the obsolete RFC 2086 rights a client may still name
-// (RFC 4314 §2.1.1) onto the rights this server actually has: `c` becomes `k`
-// `x`, and `d` becomes `t` `e`.
+// (RFC 4314 §2.1.1) onto their members, as the session declares them: by
+// default `c` becomes `k` `x` and `d` becomes `t` `e`.
 //
 // §2.1.1 describes two server families and lets each define the virtual
 // rights: servers whose RFC 2086 `c` controlled DELETE read `c` as `k`+`x` and
 // `d` as `e`+`t`; servers whose `d` controlled DELETE read `c` as `k` and `d` as
-// `e`+`t`+`x`. Either way `x` is a member of exactly one virtual right, so an
-// RFC 2086 client can still grant and see mailbox deletion. This server is of
-// the first family, as are Dovecot (unconditionally) and Cyrus (its default,
-// deleteright=c): the RFC's own worked examples expand `d` to `et`, and a
-// client written against either expects "SETACL ... d" to delegate deleting and
-// expunging MESSAGES and not the mailbox itself. Leaving `x` out of `c` as well
-// would put it in no virtual right at all, which the RFC does not describe and
-// which makes `x` unreachable for RFC 2086 clients.
+// `e`+`t`+`x`. The default is the first family, as are Dovecot (unconditionally)
+// and Cyrus (its default, deleteright=c): the RFC's own worked examples expand
+// `d` to `et`, and a client written against either expects "SETACL ... d" to
+// delegate deleting and expunging MESSAGES and not the mailbox itself. A
+// backend for which `x` is never grantable declares it a member of neither
+// (SessionACLVirtualRights), so that a client's `c` does not turn into a
+// request the backend must refuse over a letter the client never typed.
 //
-// formatRightsWithCompat and writeListRights are the inverse and must agree:
-// they append `c` when `k` or `x` is held (or grantable), and `d` when `t` or
-// `e` is, never `d` for `x` alone.
-func expandVirtualRights(rs imap.RightSet) imap.RightSet {
-	res := make(imap.RightSet, 0, len(rs))
+// A member the client also named explicitly is not doubled, and an explicit
+// non-member (an `x` under a backend that keeps it out of both) is passed
+// through as the client's own request.
+//
+// formatRightsWithCompat and writeListRights are the inverse and read the same
+// declaration: they append `c` when any create member is held (or grantable)
+// and `d` when any delete member is.
+func expandVirtualRights(rs imap.RightSet, vr virtualRights) imap.RightSet {
+	res := make(imap.RightSet, 0, len(rs)+len(vr.create)+len(vr.delete))
 	hasC := false
 	hasD := false
 	for _, r := range rs {
-		if r == imap.RightCreate {
+		switch r {
+		case imap.RightCreate:
 			hasC = true
-		} else if r == imap.RightDelete {
+		case imap.RightDelete:
 			hasD = true
-		} else {
+		default:
 			res = append(res, r)
 		}
 	}
 	if hasC {
-		for _, cr := range []imap.Right{imap.RightCreateChild, imap.RightDeleteMbox} {
-			if !containsRight(res, cr) {
-				res = append(res, cr)
-			}
-		}
+		res = appendMissing(res, vr.create)
 	}
 	if hasD {
-		for _, dr := range []imap.Right{imap.RightDeleteMsg, imap.RightExpunge} {
-			if !containsRight(res, dr) {
-				res = append(res, dr)
-			}
-		}
+		res = appendMissing(res, vr.delete)
 	}
 	return res
+}
+
+func appendMissing(rs, add imap.RightSet) imap.RightSet {
+	for _, r := range add {
+		if !containsRight(rs, r) {
+			rs = append(rs, r)
+		}
+	}
+	return rs
 }
 
 func containsRight(rs imap.RightSet, r imap.Right) bool {
@@ -261,27 +310,27 @@ func containsRight(rs imap.RightSet, r imap.Right) bool {
 	return false
 }
 
-// formatRightsWithCompat renders a right set for GETACL/MYRIGHTS with the
-// obsolete virtual rights appended (RFC 4314 §2.1.1): `c` when `k` or `x` is
-// held, `d` when `t` or `e` is held. `x` alone implies `c`, not `d`; it is a
-// member of the virtual create right here (see expandVirtualRights).
-func formatRightsWithCompat(rs imap.RightSet) string {
-	hasKX := false
-	hasTE := false
-	for _, r := range rs {
-		if r == imap.RightCreateChild || r == imap.RightDeleteMbox {
-			hasKX = true
-		}
-		if r == imap.RightDeleteMsg || r == imap.RightExpunge {
-			hasTE = true
+// anyRightIn reports whether any of members is present in rs.
+func anyRightIn(members, rs imap.RightSet) bool {
+	for _, m := range members {
+		if containsRight(rs, m) {
+			return true
 		}
 	}
+	return false
+}
 
+// formatRightsWithCompat renders a right set for GETACL/MYRIGHTS with the
+// obsolete virtual rights appended (RFC 4314 §2.1.1): `c` when any member of
+// the virtual create right is held, `d` when any member of the virtual delete
+// right is. Membership is the session's declaration, the same one
+// expandVirtualRights reads; by default `x` alone implies `c`, not `d`.
+func formatRightsWithCompat(rs imap.RightSet, vr virtualRights) string {
 	s := string(rs)
-	if hasKX && !strings.ContainsRune(s, 'c') {
+	if anyRightIn(vr.create, rs) && !containsRight(rs, imap.RightCreate) {
 		s += "c"
 	}
-	if hasTE && !strings.ContainsRune(s, 'd') {
+	if anyRightIn(vr.delete, rs) && !containsRight(rs, imap.RightDelete) {
 		s += "d"
 	}
 	return s

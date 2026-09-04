@@ -50,3 +50,48 @@ type SessionACL interface {
 	// This command does not require any special permissions - any user can check their own rights.
 	MyRights(ctx context.Context, mailbox string) (*imap.MyRightsData, error)
 }
+
+// SessionACLVirtualRights is an optional extension of SessionACL that lets a
+// backend define the membership of the two virtual rights RFC 4314 §2.1.1 keeps
+// alive for RFC 2086 clients: `c` (create) and `d` (delete).
+//
+// The section describes two server families and leaves the choice to the
+// server: those whose RFC 2086 `c` controlled DELETE read `c` as `k`+`x` and
+// `d` as `e`+`t`, those whose `d` did read `c` as `k` and `d` as `e`+`t`+`x`.
+// A backend that implements none of this gets the first family
+// (DefaultVirtualCreate, DefaultVirtualDelete), which is Dovecot's fixed
+// reading and Cyrus' default. A backend for which `x` is not something a grant
+// can carry at all may leave it out of both, so that a client's "SETACL ... c"
+// is not expanded into a request the backend then has to refuse over a letter
+// the client never typed.
+//
+// The declaration is the ONE source for everything the server does with the
+// virtual rights: the expansion of an incoming `c`/`d` in SETACL, the `c`/`d`
+// appended to GETACL and MYRIGHTS, and the `c`/`d` groups added to LISTRIGHTS.
+// Reading all three from one place is what keeps them from disagreeing, which
+// is why this is a single method returning both sets rather than one per
+// right. The two sets are normalized before use: the virtual letters
+// themselves and duplicates are dropped, and a right named in both stays in
+// `create` only, since in both RFC families a right is a member of at most one
+// virtual right.
+//
+// The RIGHTS= capability is deliberately NOT derived from this. RFC 4314 §6's
+// formal syntax fixes it ("new-rights ... MUST include t, e, x, and k"), so it
+// names the rights the server implements, not the ones a grant may carry.
+type SessionACLVirtualRights interface {
+	SessionACL
+
+	// VirtualRights returns the members of the virtual `c` (create) and `d`
+	// (delete) rights, in that order. Either may be empty, in which case that
+	// virtual right expands to nothing and is never advertised.
+	VirtualRights() (create, delete imap.RightSet)
+}
+
+// DefaultVirtualCreate and DefaultVirtualDelete are the members of the virtual
+// `c` and `d` rights for a SessionACL that does not implement
+// SessionACLVirtualRights: RFC 4314 §2.1.1's first family, `c` = `k`+`x` and
+// `d` = `t`+`e`.
+var (
+	DefaultVirtualCreate = imap.RightSet{imap.RightCreateChild, imap.RightDeleteMbox}
+	DefaultVirtualDelete = imap.RightSet{imap.RightDeleteMsg, imap.RightExpunge}
+)

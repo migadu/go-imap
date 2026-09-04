@@ -41,8 +41,9 @@ func hasCap(caps []imap.Cap, want imap.Cap) bool {
 
 // TestACLCapabilityAdvertisesRights verifies RFC 4314 compliance: a server whose
 // session implements the ACL extension must advertise both "ACL" and the
-// "RIGHTS=" capability. Per Section 2.1 the RIGHTS= string must contain "t",
-// "e", "x", and "k"; per Section 2.2 it must not contain RFC 2086 rights.
+// "RIGHTS=" capability. Per the formal syntax in Section 6 ("new-rights ...
+// MUST include t, e, x, and k") the RIGHTS= string must contain those four;
+// per Section 2.2 it must not contain RFC 2086 rights.
 func TestACLCapabilityAdvertisesRights(t *testing.T) {
 	srv := &Server{options: Options{Caps: imap.CapSet{imap.CapIMAP4rev1: {}}}}
 
@@ -59,11 +60,11 @@ func TestACLCapabilityAdvertisesRights(t *testing.T) {
 			t.Errorf("state %v: %q not advertised, got %v", state, rightsCap, caps)
 		}
 
-		// Section 2.1: RIGHTS= MUST include t, e, x, k.
+		// Section 6 formal syntax: RIGHTS= MUST include t, e, x, k.
 		rights := imap.RightSetExtended.String()
 		for _, r := range []rune{'t', 'e', 'x', 'k'} {
 			if !containsRune(rights, r) {
-				t.Errorf("RIGHTS=%q missing required right %q (RFC 4314 2.1)", rights, r)
+				t.Errorf("RIGHTS=%q missing required right %q (RFC 4314 section 6)", rights, r)
 			}
 		}
 		// Section 2.2: RIGHTS= MUST NOT include RFC 2086 rights or digits.
@@ -121,7 +122,7 @@ func TestExpandVirtualRights(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		got := expandVirtualRights(tc.input)
+		got := expandVirtualRights(tc.input, defaultVirtualRights())
 		if !got.Equal(tc.want) {
 			t.Errorf("expandVirtualRights(%q) = %q, want %q", tc.input, got, tc.want)
 		}
@@ -144,7 +145,7 @@ func TestFormatRightsWithCompat(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		got := formatRightsWithCompat(tc.input)
+		got := formatRightsWithCompat(tc.input, defaultVirtualRights())
 		if len(got) != len(tc.want) {
 			t.Errorf("formatRightsWithCompat(%q) = %q, want %q", tc.input, got, tc.want)
 			continue
