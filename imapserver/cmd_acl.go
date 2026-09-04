@@ -170,14 +170,14 @@ func (c *Conn) writeListRights(data *imap.ListRightsData) error {
 	// individually (each its own group, independently grantable), so the virtual
 	// right is returned by itself as its own group. §3.7 forbids listing any right
 	// more than once, so only add c/d when not already present. The members of
-	// `d` are `t` and `e` only; see expandVirtualRights for why `x` is not one.
+	// `c` are `k` and `x`, those of `d` are `t` and `e`; see expandVirtualRights.
 	var all strings.Builder
 	all.WriteString(string(data.RequiredRights))
 	for i := range data.OptionalRights {
 		all.WriteString(string(data.OptionalRights[i]))
 	}
 	allRights := all.String()
-	if strings.ContainsRune(allRights, 'k') && !strings.ContainsRune(allRights, 'c') {
+	if strings.ContainsAny(allRights, "kx") && !strings.ContainsRune(allRights, 'c') {
 		enc.SP().String("c")
 	}
 	if strings.ContainsAny(allRights, "te") && !strings.ContainsRune(allRights, 'd') {
@@ -204,22 +204,24 @@ func formatRights(rm imap.RightModification, rs imap.RightSet) string {
 }
 
 // expandVirtualRights maps the obsolete RFC 2086 rights a client may still name
-// (RFC 4314 §2.1.1) onto the rights this server actually has: `c` becomes `k`,
-// and `d` becomes `t` `e`.
+// (RFC 4314 §2.1.1) onto the rights this server actually has: `c` becomes `k`
+// `x`, and `d` becomes `t` `e`.
 //
-// §2.1.1 leaves the exact composition of `d` to the server: it is "the union"
-// of the delete-ish rights the server implements, and mailbox deletion (`x`)
-// was split out from message deletion precisely so that a server could grant
-// one without the other. Dovecot and Cyrus both read `d` as `e`+`t` and keep
-// `x` separate, so a client written against either expects "SETACL ... d" to
-// delegate deleting and expunging MESSAGES and not the mailbox itself. Folding
-// `x` in would silently hand out a right the client never asked for, and a
-// backend that cannot grant `x` would have to refuse the whole request over a
-// letter the client never typed. `x` therefore reaches the backend only when
-// the client names it.
+// §2.1.1 describes two server families and lets each define the virtual
+// rights: servers whose RFC 2086 `c` controlled DELETE read `c` as `k`+`x` and
+// `d` as `e`+`t`; servers whose `d` controlled DELETE read `c` as `k` and `d` as
+// `e`+`t`+`x`. Either way `x` is a member of exactly one virtual right, so an
+// RFC 2086 client can still grant and see mailbox deletion. This server is of
+// the first family, as are Dovecot (unconditionally) and Cyrus (its default,
+// deleteright=c): the RFC's own worked examples expand `d` to `et`, and a
+// client written against either expects "SETACL ... d" to delegate deleting and
+// expunging MESSAGES and not the mailbox itself. Leaving `x` out of `c` as well
+// would put it in no virtual right at all, which the RFC does not describe and
+// which makes `x` unreachable for RFC 2086 clients.
 //
 // formatRightsWithCompat and writeListRights are the inverse and must agree:
-// they append `d` when `t` or `e` is held (or grantable), never for `x` alone.
+// they append `c` when `k` or `x` is held (or grantable), and `d` when `t` or
+// `e` is, never `d` for `x` alone.
 func expandVirtualRights(rs imap.RightSet) imap.RightSet {
 	res := make(imap.RightSet, 0, len(rs))
 	hasC := false
@@ -234,8 +236,10 @@ func expandVirtualRights(rs imap.RightSet) imap.RightSet {
 		}
 	}
 	if hasC {
-		if !containsRight(res, imap.RightCreateChild) {
-			res = append(res, imap.RightCreateChild)
+		for _, cr := range []imap.Right{imap.RightCreateChild, imap.RightDeleteMbox} {
+			if !containsRight(res, cr) {
+				res = append(res, cr)
+			}
 		}
 	}
 	if hasD {
@@ -258,15 +262,15 @@ func containsRight(rs imap.RightSet, r imap.Right) bool {
 }
 
 // formatRightsWithCompat renders a right set for GETACL/MYRIGHTS with the
-// obsolete virtual rights appended (RFC 4314 §2.1.1): `c` when `k` is held, `d`
-// when `t` or `e` is held. `x` alone does not imply `d`; it is not a member of
-// the virtual right here (see expandVirtualRights).
+// obsolete virtual rights appended (RFC 4314 §2.1.1): `c` when `k` or `x` is
+// held, `d` when `t` or `e` is held. `x` alone implies `c`, not `d`; it is a
+// member of the virtual create right here (see expandVirtualRights).
 func formatRightsWithCompat(rs imap.RightSet) string {
-	hasK := false
+	hasKX := false
 	hasTE := false
 	for _, r := range rs {
-		if r == imap.RightCreateChild {
-			hasK = true
+		if r == imap.RightCreateChild || r == imap.RightDeleteMbox {
+			hasKX = true
 		}
 		if r == imap.RightDeleteMsg || r == imap.RightExpunge {
 			hasTE = true
@@ -274,7 +278,7 @@ func formatRightsWithCompat(rs imap.RightSet) string {
 	}
 
 	s := string(rs)
-	if hasK && !strings.ContainsRune(s, 'c') {
+	if hasKX && !strings.ContainsRune(s, 'c') {
 		s += "c"
 	}
 	if hasTE && !strings.ContainsRune(s, 'd') {
