@@ -29,13 +29,7 @@ func (c *Conn) handleCapability(dec *imapwire.Decoder) error {
 // Some extensions (e.g. SASL-IR, ENABLE) don't require backend support and
 // thus are always enabled.
 func (c *Conn) availableCaps() []imap.Cap {
-	available := c.server.options.caps()
-
-	// If the session provides its own capabilities, it completely overrides
-	// the server-wide ones.
-	if capSession, ok := c.session.(SessionCapabilities); ok {
-		available = capSession.GetCapabilities()
-	}
+	available := c.configuredCaps()
 
 	var caps []imap.Cap
 	// IMAP4rev2 implies NAMESPACE and MOVE, so it requires the session to
@@ -61,10 +55,15 @@ func (c *Conn) availableCaps() []imap.Cap {
 	}
 
 	if available.Has(imap.CapIMAP4rev1) {
-		caps = append(caps, []imap.Cap{
-			imap.CapSASLIR,
-			imap.CapLiteralMinus,
-		}...)
+		caps = append(caps, imap.CapSASLIR)
+		// RFC 7888 §3: a server MUST NOT advertise LITERAL- and LITERAL+ at
+		// the same time. LITERAL- is the pre-authentication offer (it is what
+		// bounds a non-synchronizing literal at 4096 bytes before LOGIN);
+		// LITERAL+ is backend-gated and authenticated-state only (below). So
+		// once LITERAL+ is being advertised, LITERAL- must go.
+		if !c.advertisesLiteralPlus(available) {
+			caps = append(caps, imap.CapLiteralMinus)
+		}
 	}
 	if c.canStartTLS() {
 		caps = append(caps, imap.CapStartTLS)
@@ -181,6 +180,31 @@ func (c *Conn) availableCaps() []imap.Cap {
 	}
 
 	return caps
+}
+
+// configuredCaps is the capability set the connection selects from: the
+// session's own set when it provides one (SessionCapabilities), which completely
+// overrides the server-wide Options.Caps, else the server-wide set.
+func (c *Conn) configuredCaps() imap.CapSet {
+	if capSession, ok := c.session.(SessionCapabilities); ok {
+		return capSession.GetCapabilities()
+	}
+	return c.server.options.caps()
+}
+
+// advertisesLiteralPlus reports whether LITERAL+ is part of the capability list
+// in the connection's CURRENT state: configured in available AND the connection
+// is authenticated. It is the one predicate behind both the CAPABILITY list
+// (where it is also what suppresses LITERAL-, RFC 7888 §3) and the
+// non-synchronizing literal size cap in acceptLiteral, so what is advertised and
+// what is enforced cannot drift: before authentication the server advertises
+// LITERAL- and enforces its 4096-byte bound even when LITERAL+ is configured.
+func (c *Conn) advertisesLiteralPlus(available imap.CapSet) bool {
+	switch c.state {
+	case imap.ConnStateAuthenticated, imap.ConnStateSelected:
+		return available.Has(imap.CapLiteralPlus)
+	}
+	return false
 }
 
 func addAvailableCaps(caps *[]imap.Cap, available imap.CapSet, l []imap.Cap) {
