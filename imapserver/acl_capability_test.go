@@ -107,14 +107,16 @@ func TestExpandVirtualRights(t *testing.T) {
 		want  imap.RightSet
 	}{
 		{imap.RightSet("lrswi"), imap.RightSet("lrswi")},
-		{imap.RightSet("c"), imap.RightSet("k")},
-		// `d` is `t`+`e` (Dovecot/Cyrus reading of RFC 4314 §2.1.1): mailbox
-		// deletion `x` is never implied.
+		// `c` is `k`+`x` and `d` is `t`+`e` (RFC 4314 §2.1.1 first family, as
+		// Dovecot and Cyrus' default): mailbox deletion `x` comes with `c`, and
+		// `d` never implies it.
+		{imap.RightSet("c"), imap.RightSet("kx")},
 		{imap.RightSet("d"), imap.RightSet("te")},
-		{imap.RightSet("cd"), imap.RightSet("kte")},
-		{imap.RightSet("lrswicda"), imap.RightSet("lrswiktea")},
+		{imap.RightSet("cd"), imap.RightSet("kxte")},
+		{imap.RightSet("lrswicda"), imap.RightSet("lrswikxtea")},
 		// An explicit `x` survives alongside the expansion, and is not doubled.
 		{imap.RightSet("xd"), imap.RightSet("xte")},
+		{imap.RightSet("xc"), imap.RightSet("xk")},
 		{imap.RightSet("td"), imap.RightSet("te")},
 	}
 
@@ -133,8 +135,8 @@ func TestFormatRightsWithCompat(t *testing.T) {
 	}{
 		{imap.RightSet("lrswi"), "lrswi"},
 		{imap.RightSet("k"), "kc"},
-		// `x` alone is not the virtual `d`.
-		{imap.RightSet("x"), "x"},
+		// `x` alone is a member of the virtual `c`, not of `d`.
+		{imap.RightSet("x"), "xc"},
 		{imap.RightSet("t"), "td"},
 		{imap.RightSet("e"), "ed"},
 		{imap.RightSet("te"), "ted"},

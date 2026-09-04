@@ -12,11 +12,11 @@ import (
 	"github.com/emersion/go-imap/v2/imapserver/imapmemserver"
 )
 
-// TestVirtualDeleteOverMemServer runs the virtual `d` end to end against
-// imapmemserver, whose own SetACL also reads `d` as `t`+`e`: the two layers
-// must agree, and the GETACL answer must show `t`, `e` and the compatibility
-// `d` while never inventing an `x` the client did not ask for.
-func TestVirtualDeleteOverMemServer(t *testing.T) {
+// memServerACLRights runs one SETACL for bob on a fresh imapmemserver and
+// returns the rights GETACL then reports for bob, so the virtual-right tests
+// exercise the wire layer and the backend together.
+func memServerACLRights(t *testing.T, setACLArgs string) string {
+	t.Helper()
 	memServer := imapmemserver.New()
 	memServer.AddUser(imapmemserver.NewUser("owner", "pass"))
 
@@ -73,7 +73,7 @@ func TestVirtualDeleteOverMemServer(t *testing.T) {
 	readLine() // greeting
 	mustOK("a1", "LOGIN owner pass")
 	mustOK("a2", "CREATE Shared")
-	mustOK("a3", `SETACL Shared bob lrd`)
+	mustOK("a3", "SETACL Shared bob "+setACLArgs)
 
 	var row string
 	for _, l := range mustOK("a4", "GETACL Shared") {
@@ -90,13 +90,48 @@ func TestVirtualDeleteOverMemServer(t *testing.T) {
 		t.Fatalf("GETACL row has no entry for bob: %s", row)
 	}
 	rights := row[i+len(`"bob" "`):]
-	rights = rights[:strings.IndexByte(rights, '"')]
+	return rights[:strings.IndexByte(rights, '"')]
+}
+
+// TestVirtualDeleteOverMemServer runs the virtual `d` end to end against
+// imapmemserver, whose own SetACL also reads `d` as `t`+`e`: the two layers
+// must agree, and the GETACL answer must show `t`, `e` and the compatibility
+// `d` while never inventing an `x` the client did not ask for.
+func TestVirtualDeleteOverMemServer(t *testing.T) {
+	rights := memServerACLRights(t, "lrd")
 	for _, want := range "lrted" {
 		if !strings.ContainsRune(rights, want) {
-			t.Errorf("bob's rights %q lack %q (row %s)", rights, want, row)
+			t.Errorf("bob's rights %q lack %q", rights, want)
 		}
 	}
 	if strings.ContainsRune(rights, 'x') {
-		t.Errorf("bob's rights %q carry `x`, which the virtual `d` must not confer (row %s)", rights, row)
+		t.Errorf("bob's rights %q carry `x`, which the virtual `d` must not confer", rights)
+	}
+	if strings.ContainsRune(rights, 'c') {
+		t.Errorf("bob's rights %q carry `c`, although neither `k` nor `x` is held", rights)
+	}
+}
+
+// TestVirtualCreateOverMemServer is the `c` counterpart: imapmemserver reads
+// `c` as `k`+`x` like imapserver does, and GETACL reports `k`, `x` and the
+// compatibility `c` - without a `d`, since no delete member is held.
+func TestVirtualCreateOverMemServer(t *testing.T) {
+	rights := memServerACLRights(t, "lrc")
+	for _, want := range "lrkxc" {
+		if !strings.ContainsRune(rights, want) {
+			t.Errorf("bob's rights %q lack %q", rights, want)
+		}
+	}
+	if strings.ContainsRune(rights, 'd') {
+		t.Errorf("bob's rights %q carry `d`, although neither `t` nor `e` is held", rights)
+	}
+
+	// RFC 4314 §2.1.1's own example, `c` and `d` together: `x` is there, and
+	// it came from `c`.
+	rights = memServerACLRights(t, "lrswicd")
+	for _, want := range "lrswikxtecd" {
+		if !strings.ContainsRune(rights, want) {
+			t.Errorf("bob's rights %q lack %q", rights, want)
+		}
 	}
 }

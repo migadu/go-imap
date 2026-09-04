@@ -667,9 +667,11 @@ func (sess *UserSession) SetACL(ctx context.Context, name string, identifier ima
 	// Apply modification
 	currentRights := mbox.acl[identifier]
 
-	// Handle obsolete rights for backwards compatibility
+	// Handle obsolete rights for backwards compatibility (RFC 4314 §2.1.1):
+	// `c` is `k`+`x` and `d` is `t`+`e`, the same reading as imapserver's
+	// expandVirtualRights, so the two layers agree.
 	if strings.Contains(string(rights), "c") {
-		rights = rights.Add(imap.RightSet("k"))
+		rights = rights.Add(imap.RightSet("kx"))
 	}
 	if strings.Contains(string(rights), "d") {
 		rights = rights.Add(imap.RightSet("te"))
