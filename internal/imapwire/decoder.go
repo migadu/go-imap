@@ -824,7 +824,11 @@ func (dec *Decoder) Literal(ptr *string) bool {
 		}
 	} else if lit.Size() > absoluteMaxBufferedLiteral {
 		lit.cancel(nil)
-		return dec.returnErr(fmt.Errorf("imapwire: literal of %d bytes exceeds default buffered cap", lit.Size()))
+		// The peer sent more than is allowed here: a syntax error, which a
+		// server answers with BAD, not an internal failure.
+		return dec.returnErr(&DecoderExpectError{
+			Message: fmt.Sprintf("literal of %d bytes exceeds the %d byte limit", lit.Size(), absoluteMaxBufferedLiteral),
+		})
 	}
 	var sb strings.Builder
 	_, err := io.Copy(&sb, lit)
@@ -847,12 +851,22 @@ func (dec *Decoder) LiteralReader() (lit *LiteralReader, nonSync, ok bool) {
 	// than 1 GiB in a single literal without orchestration outside the
 	// protocol.
 	const absoluteMaxLiteralSize = 1 << 30
-	if size < 0 || size > absoluteMaxLiteralSize {
-		dec.returnErr(fmt.Errorf("imapwire: literal size %d out of bounds", size))
-		return nil, false, false
-	}
 	if dec.side == ConnSideServer {
 		nonSync = dec.acceptByte('+')
+	}
+	if size < 0 || size > absoluteMaxLiteralSize {
+		// Refused on sight, so the peer's syntax: an expect error, which a
+		// server answers with BAD. The octets of a non-synchronizing literal
+		// are on the wire regardless, in a quantity nobody validated, and the
+		// announcement is consumed past the point where DiscardLine could
+		// recognise it -- the stream cannot be resynchronised.
+		if nonSync {
+			dec.desynced = true
+		}
+		dec.returnErr(&DecoderExpectError{
+			Message: fmt.Sprintf("literal size %d out of bounds", size),
+		})
+		return nil, false, false
 	}
 	if !dec.ExpectSpecial('}') || !dec.ExpectCRLF() {
 		return nil, false, false
