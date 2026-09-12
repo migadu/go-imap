@@ -242,6 +242,18 @@ func (c *Conn) IsIMAP4rev2() bool {
 	return c.isIMAP4rev2()
 }
 
+// State reports the connection's current IMAP state.
+//
+// Its consumer is Session.Close: the library calls Close identically for a
+// client LOGOUT, a dropped socket and a server shutdown, and the state is the
+// only thing that tells the first (ConnStateLogout) from the others, which is
+// what a backend's session-end log line wants to say. Close runs on the
+// connection goroutine, which is the goroutine that writes c.state, so no
+// lock is needed there.
+func (c *Conn) State() imap.ConnState {
+	return c.state
+}
+
 // Context returns the connection's context. It is cancelled when the
 // connection is torn down — by client disconnect, by the serve goroutine
 // exiting, or by server shutdown. Backends may use it to bound blocking work,
