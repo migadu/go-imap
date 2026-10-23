@@ -102,6 +102,30 @@ func (c *Client) List(ref, pattern string, options *imap.ListOptions) *ListComma
 	return cmd
 }
 
+// Lsub sends an LSUB command (RFC 3501 section 6.3.9), which lists the
+// subscribed mailboxes.
+//
+// IMAP4rev2 removes LSUB in favor of LIST (SUBSCRIBED), which needs IMAP4rev2
+// or LIST-EXTENDED. LSUB is how an IMAP4rev1 server without LIST-EXTENDED
+// tells which mailboxes are subscribed. Its answer is LIST data, with one
+// difference: a mailbox that is not subscribed may be listed with
+// \Noselect, when the pattern ends in "%" and the mailbox has subscribed
+// children.
+//
+// The caller must fully consume the ListCommand, as for List.
+func (c *Client) Lsub(ref, pattern string) *ListCommand {
+	cmd := &ListCommand{
+		mailboxes: make(chan *imap.ListData, 64),
+		ref:       ref,
+		pattern:   pattern,
+		lsub:      true,
+	}
+	enc := c.beginCommand("LSUB", cmd)
+	enc.SP().Mailbox(ref).SP().Mailbox(pattern)
+	enc.end()
+	return cmd
+}
+
 func (c *Client) handleList() error {
 	data, err := readList(c.dec)
 	if err != nil {
@@ -111,7 +135,10 @@ func (c *Client) handleList() error {
 	cmd := c.findPendingCmdFunc(func(cmd command) bool {
 		switch cmd := cmd.(type) {
 		case *ListCommand:
-			return cmd.matches(data)
+			// A LIST response is never an answer to LSUB: one that arrives
+			// while LSUB is in flight is unsolicited (NOTIFY) and says
+			// nothing about subscriptions.
+			return !cmd.lsub && cmd.matches(data)
 		case *SelectCommand:
 			return cmd.mailbox == data.Mailbox && cmd.data.List == nil
 		default:
@@ -141,13 +168,34 @@ func (c *Client) handleList() error {
 	return nil
 }
 
-// ListCommand is a LIST command.
+// handleLsub reads an LSUB response, which has the grammar of a LIST
+// response, and hands it to the LSUB command it answers. There is no
+// unsolicited LSUB response: one that answers no LSUB command in flight is
+// dropped.
+func (c *Client) handleLsub() error {
+	data, err := readList(c.dec)
+	if err != nil {
+		return fmt.Errorf("in LSUB: %w", err)
+	}
+
+	cmd := c.findPendingCmdFunc(func(cmd command) bool {
+		list, ok := cmd.(*ListCommand)
+		return ok && list.lsub && list.matches(data)
+	})
+	if cmd != nil {
+		cmd.(*ListCommand).mailboxes <- data
+	}
+	return nil
+}
+
+// ListCommand is a LIST or an LSUB command.
 type ListCommand struct {
 	commandBase
 	mailboxes chan *imap.ListData
 
 	ref            string
 	pattern        string
+	lsub           bool // an LSUB command, answered with LSUB responses
 	returnStatus   bool
 	returnMetadata bool
 	pendingData    *imap.ListData
