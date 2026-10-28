@@ -634,3 +634,36 @@ func TestUIDFetchBufferUnilateralHandlerHandsOffCollectedData(t *testing.T) {
 		t.Fatal("callback did not queue its collected response")
 	}
 }
+
+// A response that a pending sequence-number FETCH claims by its number cannot
+// be the answer to a UID command, so it streams as it always did instead of
+// being buffered behind one (issue #82). The client pipelines, so a UID STORE
+// sent while a FETCH is still streaming is pending during its responses.
+func TestUIDFetchBufferSkipsResponsesClaimedBySeqNum(t *testing.T) {
+	body := strings.Repeat("x", 100)
+	client := newUIDBufferLimitClient(t, &imapclient.Options{MaxFetchBufferSize: 16}, func(conn net.Conn, reader *bufio.Reader) error {
+		var tags []string
+		for i := 0; i < 2; i++ {
+			line, err := reader.ReadString('\n')
+			if err != nil {
+				return err
+			}
+			tag, _, _ := strings.Cut(line, " ")
+			tags = append(tags, tag)
+		}
+		_, err := fmt.Fprintf(conn, "* 1 FETCH (BODY[] {%d}\r\n%s)\r\n%s OK fetched\r\n* 1 FETCH (FLAGS (\\Seen) UID 9)\r\n%s OK stored\r\n", len(body), body, tags[0], tags[1])
+		return err
+	})
+	fetch := client.Fetch(imap.SeqSetNum(1), &imap.FetchOptions{BodySection: []*imap.FetchItemBodySection{{}}})
+	store := client.Store(imap.UIDSetNum(9), &imap.StoreFlags{Op: imap.StoreFlagsAdd, Flags: []imap.Flag{imap.FlagSeen}}, nil)
+	messages, err := fetch.Collect()
+	if err != nil {
+		t.Fatalf("FETCH with a UID STORE pending: %v", err)
+	}
+	if len(messages) != 1 || string(messages[0].FindBodySection(&imap.FetchItemBodySection{})) != body {
+		t.Errorf("FETCH returned %d messages, want one with the 100-byte body", len(messages))
+	}
+	if err := store.Close(); err != nil {
+		t.Errorf("STORE: %v", err)
+	}
+}
