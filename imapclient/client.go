@@ -977,11 +977,20 @@ func (c *Client) readResponseTagged(tag, typ string) (startTLS *startTLSCommand,
 				cmd.data.DestUIDs = dstUIDs
 			}
 		case "READ-ONLY", "READ-WRITE": // RFC 9051 §7.1
+			// The codes describe the selected mailbox. STORE and EXPUNGE act on
+			// it, so even their refusal speaks for it; any other command's
+			// refusal may concern another mailbox (COPY, MOVE or APPEND into a
+			// read-only one), so only its OK counts.
 			readOnly := code == "READ-ONLY"
-			if cmd, ok := cmd.(*SelectCommand); ok {
+			switch cmd := cmd.(type) {
+			case *SelectCommand:
 				cmd.data.ReadOnly = readOnly
-			} else {
+			case *FetchCommand, *ExpungeCommand:
 				c.setMailboxReadOnly(readOnly)
+			default:
+				if strings.EqualFold(typ, "OK") {
+					c.setMailboxReadOnly(readOnly)
+				}
 			}
 		case "MODIFIED": // RFC 7162 §3.1.3: conditional STORE UNCHANGEDSINCE failures
 			if !c.dec.ExpectSP() {

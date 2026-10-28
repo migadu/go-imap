@@ -108,3 +108,61 @@ func testMailboxReadOnlyChanges(t *testing.T, tagged bool) {
 	}
 	check("after EXAMINE", true)
 }
+
+// RFC 9051 §7.1: READ-ONLY and READ-WRITE describe the selected mailbox. A
+// refusal of COPY into some other, read-only mailbox says nothing about it; a
+// refusal of STORE does, and so does a tagged OK.
+func TestTaggedReadOnlyScope(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer serverConn.Close()
+
+	replies := []string{
+		"* 1 EXISTS\r\n%s OK [READ-WRITE] SELECT completed\r\n",
+		"%s NO [READ-ONLY] Target mailbox is read-only\r\n",
+		"%s NO [READ-ONLY] Mailbox is read-only\r\n",
+		"%s OK [READ-WRITE] NOOP completed\r\n",
+	}
+	go func() {
+		fmt.Fprint(serverConn, "* OK [CAPABILITY IMAP4rev1] ready\r\n")
+		r := bufio.NewReader(serverConn)
+		for _, reply := range replies {
+			line, err := r.ReadString('\n')
+			if err != nil {
+				return
+			}
+			tag, _, _ := strings.Cut(line, " ")
+			fmt.Fprint(serverConn, strings.ReplaceAll(reply, "%s", tag))
+		}
+	}()
+
+	client := imapclient.New(clientConn, nil)
+	defer client.Close()
+
+	check := func(step string, want bool) {
+		t.Helper()
+		if got := client.Mailbox().ReadOnly; got != want {
+			t.Errorf("%s: Mailbox().ReadOnly = %v, want %v", step, got, want)
+		}
+	}
+
+	if _, err := client.Select("INBOX", nil).Wait(); err != nil {
+		t.Fatalf("Select() = %v", err)
+	}
+	check("after SELECT", false)
+
+	if _, err := client.Copy(imap.SeqSetNum(1), "Shared/ro").Wait(); err == nil {
+		t.Fatalf("Copy() succeeded, want NO")
+	}
+	check("after COPY refused with READ-ONLY", false)
+
+	store := client.Store(imap.SeqSetNum(1), &imap.StoreFlags{Op: imap.StoreFlagsAdd, Flags: []imap.Flag{imap.FlagSeen}}, nil)
+	if err := store.Close(); err == nil {
+		t.Fatalf("Store() succeeded, want NO")
+	}
+	check("after STORE refused with READ-ONLY", true)
+
+	if err := client.Noop().Wait(); err != nil {
+		t.Fatalf("Noop() = %v", err)
+	}
+	check("after NOOP OK [READ-WRITE]", false)
+}
