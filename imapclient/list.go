@@ -239,14 +239,7 @@ func (cmd *ListCommand) matches(data *imap.ListData) bool {
 	}
 	if ref != "" && data.Delim != 0 {
 		delim := string(data.Delim)
-		if strings.HasSuffix(ref, delim) {
-			// A wildcard-leading pattern stays in the reference's hierarchy.
-			// Matching it against the whole name would absorb unrelated LIST
-			// notifications (e.g. INBOX while listing "Archive/" "*").
-			if pattern[0] == '*' || pattern[0] == '%' {
-				return false
-			}
-		} else {
+		if !strings.HasSuffix(ref, delim) {
 			// RFC 9051 §6.3.9 gives three interpretations of "foo/bar" +
 			// "rag/baz": the child path above, direct concatenation, or a
 			// path relative to "foo/". Accept the latter two as well. Strip
@@ -262,6 +255,13 @@ func (cmd *ListCommand) matches(data *imap.ListData) bool {
 				}
 			}
 		}
+	}
+	// A wildcard-leading pattern stays in the reference's hierarchy, whatever
+	// the reference's form or the delimiter. Matching it against the whole
+	// name would absorb unrelated LIST notifications (e.g. INBOX while listing
+	// "Archive" "*").
+	if ref != "" && (pattern[0] == '*' || pattern[0] == '%') {
+		return false
 	}
 	// Breakout characters are server-defined, so literal-leading patterns
 	// may override the reference. Do not restrict this to known /, ~ or #
