@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -529,7 +530,10 @@ func (mbox *MailboxView) Sort(ctx context.Context, kind imapserver.NumKind, sort
 		}
 	}
 
-	var data imap.SortData
+	var (
+		data    imap.SortData
+		modSeqs []uint64 // of the messages in data.All, in the same order
+	)
 	for _, msg := range sorter.msgs {
 		if kind == imapserver.NumKindUID {
 			data.All = append(data.All, uint32(msg.uid))
@@ -540,25 +544,28 @@ func (mbox *MailboxView) Sort(ctx context.Context, kind imapserver.NumKind, sort
 			}
 			data.All = append(data.All, seqNum)
 		}
-		data.ModSeq = max(data.ModSeq, msg.modSeq)
+		modSeqs = append(modSeqs, msg.modSeq)
 	}
 
 	// 4. Calculate MIN, MAX, COUNT for ESORT
 	data.Count = uint32(len(data.All))
-	if len(data.All) > 0 {
-		// Find the true min and max, regardless of sort order, as required
-		// by RFC 5267.
-		min, max := data.All[0], data.All[0]
-		for _, num := range data.All[1:] {
-			if num < min {
-				min = num
+	if n := len(data.All); n > 0 {
+		// RFC 5267 §3.1: MIN and MAX are the lowest and highest *sorted*
+		// messages, the first and last in sort order.
+		data.Min, data.Max = data.All[0], data.All[n-1]
+
+		// RFC 4731 §3.2 (RFC 7162 §3.1.10 for SORT): MODSEQ covers only the
+		// messages the response returns.
+		if options == nil || options.ReturnAll || options.ReturnCount {
+			data.ModSeq = slices.Max(modSeqs)
+		} else {
+			if options.ReturnMin {
+				data.ModSeq = modSeqs[0]
 			}
-			if num > max {
-				max = num
+			if options.ReturnMax {
+				data.ModSeq = max(data.ModSeq, modSeqs[n-1])
 			}
 		}
-		data.Min = min
-		data.Max = max
 	}
 
 	return &data, nil
