@@ -92,13 +92,16 @@ type Options struct {
 	// buffer in memory (e.g., for FetchMessageBuffer.Collect). Larger
 	// literals must be consumed via the streaming API. Default 64 MiB.
 	MaxLiteralSize int64
-	// MaxFetchBufferSize caps the combined literal payload buffered to route a
-	// FETCH response: BODY, BINARY and metadata read before its UID, plus
-	// metadata held until SELECT updates are complete. Zero or negative values
-	// use the default of 64 MiB. At most 4096 items may be buffered, including
-	// empty body sections.
-	// Exceeding the limit fails the connection and its pending commands.
-	// Responses with UID before their bodies keep streaming without this cap.
+	// MaxFetchBufferSize caps the combined literal payload buffered to route
+	// FETCH responses: BODY, BINARY and metadata read before its UID, plus
+	// metadata held until SELECT updates are complete. The cap covers every
+	// message not yet consumed: a response that would go over it waits until
+	// consumers free enough, as a streamed body waits for its reader. Zero
+	// or negative values use the default of 64 MiB. At most 4096 items may be
+	// buffered per response, including empty body sections.
+	// A single response exceeding the limit fails the connection and its
+	// pending commands. Responses with UID before their bodies keep streaming
+	// without this cap.
 	MaxFetchBufferSize int64
 	// ResponseTimeout bounds how long to wait for a response while a command
 	// is in flight, including the wait for its first byte. This is the window
@@ -244,6 +247,13 @@ type Client struct {
 	// the read deadline: once a response is being decoded the deadline belongs
 	// to the reader, which lengthens it for literals.
 	awaitingResp bool
+
+	// fetchBuf* account for the FETCH data buffered to route responses (see
+	// Options.MaxFetchBufferSize), summed over every message not yet
+	// consumed. fetchBufFreed is closed, and cleared, when bytes are released.
+	fetchBufMutex sync.Mutex
+	fetchBufInUse int64
+	fetchBufFreed chan struct{}
 }
 
 // New creates a new IMAP client.

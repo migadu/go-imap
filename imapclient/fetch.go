@@ -376,7 +376,9 @@ type FetchMessageData struct {
 	items chan FetchItemData
 	prev  FetchItemData
 	opts  *Options
-	done  chan struct{} // signals consumption of a response buffered before UID
+	// release returns the bytes buffered to route this response to the
+	// client's budget; it runs once the message has been consumed.
+	release func()
 }
 
 // Next advances to the next data item for this message.
@@ -390,9 +392,9 @@ func (data *FetchMessageData) Next() FetchItemData {
 
 	item := <-data.items
 	data.prev = item
-	if item == nil && data.done != nil {
-		close(data.done)
-		data.done = nil
+	if item == nil && data.release != nil {
+		data.release()
+		data.release = nil
 	}
 	return item
 }
@@ -700,19 +702,15 @@ func (c *Client) handleFetch(seqNum uint32) (err error) {
 	dec := c.dec
 
 	items := make(chan FetchItemData, 32)
-	var consumed chan struct{}
+	// bufferedBytes counts this response's share of the client-wide budget.
+	// Once the message is handed over, its consumer returns it (msg.release);
+	// until then it is returned here.
+	var bufferedBytes int64
+	released := false
 	defer func() {
 		close(items)
-		if err == nil && consumed != nil {
-			// Metadata literals also occupy the buffer. Wait for the whole
-			// message to be consumed so the pending-command queue cannot
-			// retain one full buffer for every response.
-			select {
-			case <-consumed:
-				c.setReadTimeout(c.options.responseTimeout())
-			case <-c.closeCh:
-				err = net.ErrClosed
-			}
+		if !released && bufferedBytes > 0 {
+			c.releaseFetchBuffer(bufferedBytes)
 		}
 	}()
 
@@ -747,10 +745,16 @@ func (c *Client) handleFetch(seqNum uint32) (err error) {
 	handled := false
 	shouldBuffer := func() bool { return needsUID && !handled && uid == 0 }
 	shouldBufferMetadata := func() bool { return shouldBuffer() || (!handled && selectCmd != nil) }
-	var bufferedBytes int64
 	reserve := func(size int64) error {
+		// One response can never hold more than the whole budget.
 		if size > c.options.maxFetchBufferSize()-bufferedBytes {
 			return errFetchBufferTooLarge
+		}
+		// Messages still holding buffered data, unconsumed, may leave too
+		// little of it: wait for them, as a streamed literal waits for its
+		// reader. A message whose data fits does not hold the reader up.
+		if err := c.acquireFetchBuffer(size); err != nil {
+			return err
 		}
 		bufferedBytes += size
 		return nil
@@ -778,9 +782,9 @@ func (c *Client) handleFetch(seqNum uint32) (err error) {
 		if handled {
 			return nil
 		}
-		if bufferedBytes > 0 {
-			consumed = make(chan struct{})
-			msg.done = consumed
+		if n := bufferedBytes; n > 0 {
+			msg.release = func() { c.releaseFetchBuffer(n) }
+			released = true
 		}
 
 		// Check if this is a QRESYNC SELECT response
@@ -1141,6 +1145,46 @@ func (c *Client) handleFetch(seqNum uint32) (err error) {
 			return dec.Err()
 		}
 	}
+}
+
+// acquireFetchBuffer takes size bytes of the budget shared by every message
+// buffered and not yet consumed, waiting until consumers release enough.
+func (c *Client) acquireFetchBuffer(size int64) error {
+	waited := false
+	for {
+		c.fetchBufMutex.Lock()
+		if c.fetchBufInUse+size <= c.options.maxFetchBufferSize() {
+			c.fetchBufInUse += size
+			c.fetchBufMutex.Unlock()
+			if waited {
+				// Time spent waiting on consumers is not a stalled server.
+				c.setReadTimeout(c.options.responseTimeout())
+			}
+			return nil
+		}
+		if c.fetchBufFreed == nil {
+			c.fetchBufFreed = make(chan struct{})
+		}
+		freed := c.fetchBufFreed
+		c.fetchBufMutex.Unlock()
+
+		waited = true
+		select {
+		case <-freed:
+		case <-c.closeCh:
+			return net.ErrClosed
+		}
+	}
+}
+
+func (c *Client) releaseFetchBuffer(size int64) {
+	c.fetchBufMutex.Lock()
+	c.fetchBufInUse -= size
+	if c.fetchBufFreed != nil {
+		close(c.fetchBufFreed)
+		c.fetchBufFreed = nil
+	}
+	c.fetchBufMutex.Unlock()
 }
 
 func isMsgAttNameChar(ch byte) bool {
