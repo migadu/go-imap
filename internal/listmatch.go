@@ -30,6 +30,18 @@ func MatchList(name string, delim rune, reference, pattern string) bool {
 	return matchList(name, delimStr, pattern)
 }
 
+// MatchPattern reports whether pattern on its own matches name, with no
+// reference and no special meaning for a leading delimiter. The client uses it
+// for a server that let the pattern override the reference (RFC 9051 section
+// 6.3.9: "~smith/Mail/" "/usr/doc/foo" lists /usr/doc/foo).
+func MatchPattern(name string, delim rune, pattern string) bool {
+	var delimStr string
+	if delim != 0 {
+		delimStr = string(delim)
+	}
+	return matchList(name, delimStr, pattern)
+}
+
 // matchList reports whether pattern matches name (RFC 9051 section 6.3.9): "*"
 // matches any sequence of bytes, "%" any sequence of bytes not containing the
 // hierarchy delimiter, and everything else matches itself. With an empty delim,
