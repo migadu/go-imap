@@ -135,7 +135,7 @@ func (c *Conn) handleSort(tag string, dec *imapwire.Decoder, numKind NumKind) er
 		return err
 	}
 
-	// Write SORT/ESORT response
+	// Write SORT/ESEARCH response
 	if c.isIMAP4rev2() || extended {
 		return c.writeESort(tag, data, &options, numKind)
 	} else {
@@ -159,13 +159,16 @@ func (c *Conn) writeSort(nums []uint32, numKind NumKind) error {
 	return enc.CRLF()
 }
 
+// writeESort answers an extended SORT. RFC 5267 §3.1 gives SORT the return
+// options of ESEARCH and answers it with an ESEARCH response, with ALL in sort
+// order; no RFC defines an ESORT response.
 func (c *Conn) writeESort(tag string, data *imap.SortData, options *imap.SortOptions, numKind NumKind) error {
 	enc := newResponseEncoder(c)
 	defer enc.end()
 
-	enc.Atom("*").SP().Atom("ESORT")
+	enc.Atom("*").SP().Atom("ESEARCH")
 	if tag != "" {
-		enc.SP().Special('(').Atom("TAG").SP().Atom(tag).Special(')')
+		enc.SP().Special('(').Atom("TAG").SP().String(tag).Special(')')
 	}
 	if numKind == NumKindUID {
 		enc.SP().Atom("UID")

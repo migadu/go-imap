@@ -89,6 +89,10 @@ func (c *Client) handleSort() error {
 	return nil
 }
 
+// handleESort reads an untagged ESORT response. No RFC defines one: an extended
+// SORT is answered with ESEARCH (RFC 5267 §3.1), which handleESearch routes to
+// readESortData. Servers built from this fork sent ESORT before they were
+// fixed, so it is still accepted.
 func (c *Client) handleESort() error {
 	cmd := findPendingCmdByType[*SortCommand](c)
 	if cmd == nil {
@@ -100,7 +104,11 @@ func (c *Client) handleESort() error {
 		}
 		return nil
 	}
+	return c.readESortData(cmd)
+}
 
+// readESortData reads the return data of an extended SORT into cmd.
+func (c *Client) readESortData(cmd *SortCommand) error {
 	isUID := cmd.numKind == imapwire.NumKindUID
 
 	for c.dec.SP() {
@@ -137,20 +145,9 @@ func (c *Client) handleESort() error {
 			if !c.dec.ExpectSP() || !c.dec.ExpectAtom(&seqSetStr) {
 				return c.dec.Err()
 			}
-			set, err := imapnum.ParseSet(seqSetStr)
+			nums, err := sortedNums(seqSetStr)
 			if err != nil {
 				return fmt.Errorf("in ALL seq-set: %w", err)
-			}
-
-			const maxAllResultSize = 10_000_000
-			if set.Cardinality() > maxAllResultSize {
-				return fmt.Errorf("esort: server returned ALL set with %d entries (cap %d)",
-					set.Cardinality(), maxAllResultSize)
-			}
-
-			nums, ok := set.Nums()
-			if !ok {
-				return fmt.Errorf("esort: ALL contained a dynamic set, which is not allowed")
 			}
 
 			if isUID {
@@ -162,11 +159,44 @@ func (c *Client) handleESort() error {
 				cmd.data.SeqNums = nums
 			}
 		default:
-			return fmt.Errorf("unknown ESORT return option: %q", s)
+			// search-return-data is extensible (RFC 4466 §2.6.2), and a real
+			// ESEARCH can carry more than SORT asked for, e.g. MODSEQ (RFC 7162
+			// §3.1.10). Skip it, as readESearchReturnData does.
+			if !c.dec.ExpectSP() || !c.dec.DiscardValue() {
+				return c.dec.Err()
+			}
 		}
 	}
 
 	return nil
+}
+
+// sortedNums expands the ALL sequence-set of an extended SORT. RFC 5267 §3.1
+// lists the numbers in sort order, so the elements are expanded in the order
+// given rather than through imapnum.Set, which sorts them. A range stands for
+// its numbers in increasing order (§3.2).
+func sortedNums(s string) ([]uint32, error) {
+	const maxAllResultSize = 10_000_000
+	var nums []uint32
+	for elem := range strings.SplitSeq(s, ",") {
+		r, err := imapnum.ParseRange(elem)
+		if err != nil {
+			return nil, err
+		}
+		if r.Start == 0 || r.Stop == 0 {
+			return nil, fmt.Errorf("esort: ALL contained a dynamic set, which is not allowed")
+		}
+		if uint64(len(nums))+uint64(r.Stop-r.Start)+1 > maxAllResultSize {
+			return nil, fmt.Errorf("esort: server returned ALL set with more than %d entries", maxAllResultSize)
+		}
+		for n := r.Start; ; n++ {
+			nums = append(nums, n)
+			if n == r.Stop {
+				break
+			}
+		}
+	}
+	return nums, nil
 }
 
 // Sort sends a SORT command.

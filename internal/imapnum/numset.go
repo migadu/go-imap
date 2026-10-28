@@ -306,6 +306,12 @@ func parseNumRange(v string) (Range, error) {
 	return r, errBadNumSet(v)
 }
 
+// ParseRange parses a single "n" or "n:m" element of a set. Unlike ParseSet it
+// keeps no state, so a caller can walk a set whose element order matters.
+func ParseRange(v string) (Range, error) {
+	return parseNumRange(v)
+}
+
 // ParseSet returns a new Set after parsing the set string.
 func ParseSet(set string) (Set, error) {
 	var s Set
