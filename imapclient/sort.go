@@ -31,6 +31,10 @@ type SortData struct {
 	Min   uint32
 	Max   uint32
 	Count uint32
+
+	// The highest mod-sequence of the returned messages. Populated when the
+	// search criteria use MODSEQ (RFC 7162 §3.1.9, §3.1.10).
+	ModSeq uint64 // requires CONDSTORE
 }
 
 func (c *Client) sort(numKind imapwire.NumKind, options *SortOptions) *SortCommand {
@@ -74,6 +78,24 @@ func (c *Client) sort(numKind imapwire.NumKind, options *SortOptions) *SortComma
 func (c *Client) handleSort() error {
 	cmd := findPendingCmdByType[*SortCommand](c)
 	for c.dec.SP() {
+		if c.dec.Special('(') {
+			// RFC 7162 §3.1.9: "* SORT 2 3 4 (MODSEQ 917162500)"
+			var name string
+			if !c.dec.ExpectAtom(&name) || !c.dec.ExpectSP() {
+				return c.dec.Err()
+			} else if strings.ToUpper(name) != "MODSEQ" {
+				return fmt.Errorf("in search-sort-mod-seq: expected %q, got %q", "MODSEQ", name)
+			}
+			var modSeq uint64
+			if !c.dec.ExpectModSeq(&modSeq) || !c.dec.ExpectSpecial(')') {
+				return c.dec.Err()
+			}
+			if cmd != nil {
+				cmd.data.ModSeq = modSeq
+			}
+			break
+		}
+
 		var num uint32
 		if !c.dec.ExpectNumber(&num) {
 			return c.dec.Err()
@@ -138,6 +160,10 @@ func (c *Client) readESortData(cmd *SortCommand) error {
 			}
 		case "COUNT":
 			if !c.dec.ExpectSP() || !c.dec.ExpectNumber(&cmd.data.Count) {
+				return c.dec.Err()
+			}
+		case "MODSEQ": // RFC 7162 §3.1.10
+			if !c.dec.ExpectSP() || !c.dec.ExpectModSeq(&cmd.data.ModSeq) {
 				return c.dec.Err()
 			}
 		case "ALL":
