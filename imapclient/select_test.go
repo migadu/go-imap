@@ -47,7 +47,7 @@ func TestSelect_keywordWithBracket(t *testing.T) {
 	defer serverConn.Close()
 
 	go func() {
-		fmt.Fprint(serverConn, "* OK ready\r\n")
+		fmt.Fprint(serverConn, "* OK [CAPABILITY IMAP4rev1] ready\r\n")
 		r := bufio.NewReader(serverConn)
 		line, err := r.ReadString('\n')
 		if err != nil {
