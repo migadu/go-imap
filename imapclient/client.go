@@ -63,6 +63,8 @@ type SelectedMailbox struct {
 	NumMessages    uint32
 	Flags          []imap.Flag
 	PermanentFlags []imap.Flag
+	// ReadOnly indicates that the mailbox is read-only.
+	ReadOnly bool
 }
 
 func (mbox *SelectedMailbox) copy() *SelectedMailbox {
@@ -685,6 +687,7 @@ func (c *Client) completeCommand(cmd command, err error) {
 				NumMessages:    cmd.data.NumMessages,
 				Flags:          cmd.data.Flags,
 				PermanentFlags: cmd.data.PermanentFlags,
+				ReadOnly:       cmd.data.ReadOnly,
 			}
 			c.mutex.Unlock()
 		}
