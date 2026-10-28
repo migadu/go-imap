@@ -8,6 +8,7 @@ import (
 	"net"
 	netmail "net/mail"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/emersion/go-imap/v2"
@@ -19,6 +20,8 @@ import (
 var errLiteralTooLarge = errors.New("imapclient: literal exceeds MaxLiteralSize")
 
 var errFetchBufferTooLarge = errors.New("imapclient: buffered FETCH data exceeds MaxFetchBufferSize")
+
+var errFetchMessageReleased = errors.New("imapclient: unsolicited FETCH message used after its UnilateralDataHandler.Fetch callback returned")
 
 // Empty bodies and metadata need a bound independent of the payload budget.
 const maxFetchBufferedItems = 4096
@@ -379,6 +382,12 @@ type FetchMessageData struct {
 	// release returns the bytes buffered to route this response to the
 	// client's budget; it runs once the message has been consumed.
 	release func()
+
+	// mu serializes reading the message, its literals included, with
+	// releaseAfterCallback, which may run while a worker still holds it.
+	mu sync.Mutex
+	// released is set once an unsolicited message's callback has returned.
+	released bool
 }
 
 // Next advances to the next data item for this message.
@@ -386,6 +395,16 @@ type FetchMessageData struct {
 // If there is one or more data items left, the next item is returned.
 // Otherwise nil is returned.
 func (data *FetchMessageData) Next() FetchItemData {
+	data.mu.Lock()
+	defer data.mu.Unlock()
+	if data.released {
+		return nil
+	}
+	return data.next()
+}
+
+// next is Next with data.mu held.
+func (data *FetchMessageData) next() FetchItemData {
 	if d, ok := data.prev.(discarder); ok {
 		d.discard()
 	}
@@ -407,6 +426,18 @@ func (data *FetchMessageData) discard() {
 	}
 }
 
+// releaseAfterCallback ends an unsolicited message once its
+// UnilateralDataHandler.Fetch callback has returned. It drains whatever the
+// callback left unread, so the reader can go on, and makes any later use fail
+// with errFetchMessageReleased rather than race with the drain (issue #83).
+func (data *FetchMessageData) releaseAfterCallback() {
+	data.mu.Lock()
+	defer data.mu.Unlock()
+	data.released = true
+	for data.next() != nil {
+	}
+}
+
 // Collect accumulates message data into a struct.
 //
 // This method will read and store message contents in memory. This is
@@ -424,6 +455,12 @@ func (data *FetchMessageData) Collect() (*FetchMessageBuffer, error) {
 		if err := buf.populateItemData(item); err != nil {
 			return buf, err
 		}
+	}
+	data.mu.Lock()
+	released := data.released
+	data.mu.Unlock()
+	if released {
+		return buf, errFetchMessageReleased
 	}
 	return buf, nil
 }
@@ -464,9 +501,7 @@ type FetchItemDataBodySection struct {
 func (FetchItemDataBodySection) fetchItemData() {}
 
 func (item FetchItemDataBodySection) discard() {
-	if item.Literal != nil {
-		io.Copy(io.Discard, item.Literal)
-	}
+	discardLiteral(item.Literal)
 }
 
 // MatchCommand checks whether a section returned by the server in a response
@@ -486,8 +521,18 @@ type FetchItemDataBinarySection struct {
 func (FetchItemDataBinarySection) fetchItemData() {}
 
 func (item FetchItemDataBinarySection) discard() {
-	if item.Literal != nil {
-		io.Copy(io.Discard, item.Literal)
+	discardLiteral(item.Literal)
+}
+
+// discardLiteral reads lit to its end. FetchMessageData.next calls it with the
+// message's mu held, so a fetchLiteralReader is drained without taking it.
+func discardLiteral(lit imap.LiteralReader) {
+	if lit, ok := lit.(*fetchLiteralReader); ok {
+		lit.drain()
+		return
+	}
+	if lit != nil {
+		io.Copy(io.Discard, lit)
 	}
 }
 
@@ -832,7 +877,7 @@ func (c *Client) handleFetch(seqNum uint32) (err error) {
 			}
 		} else if handler := c.options.unilateralDataHandler().Fetch; handler != nil {
 			go func() {
-				defer msg.discard()
+				defer msg.releaseAfterCallback()
 				handler(msg)
 			}()
 		} else {
@@ -1025,12 +1070,13 @@ func (c *Client) handleFetch(seqNum uint32) (err error) {
 						return err
 					}
 					done = make(chan struct{})
-					fetchLit = &fetchLiteralReader{LiteralReader: bytes.NewReader(b), ch: done}
+					fetchLit = &fetchLiteralReader{LiteralReader: bytes.NewReader(b), ch: done, msg: msg}
 				} else if lit != nil {
 					done = make(chan struct{})
 					fetchLit = &fetchLiteralReader{
 						LiteralReader: lit,
 						ch:            done,
+						msg:           msg,
 					}
 				}
 
@@ -1745,14 +1791,35 @@ func readSectionPart(dec *imapwire.Decoder) (part []int, dot bool) {
 
 type fetchLiteralReader struct {
 	imap.LiteralReader
-	ch chan<- struct{}
+	ch  chan<- struct{}
+	msg *FetchMessageData
 }
 
 func (lit *fetchLiteralReader) Read(b []byte) (int, error) {
+	lit.msg.mu.Lock()
+	defer lit.msg.mu.Unlock()
+	if lit.msg.released {
+		return 0, errFetchMessageReleased
+	}
+	return lit.read(b)
+}
+
+// read is Read with lit.msg.mu held.
+func (lit *fetchLiteralReader) read(b []byte) (int, error) {
 	n, err := lit.LiteralReader.Read(b)
 	if err != nil && lit.ch != nil {
 		close(lit.ch)
 		lit.ch = nil
 	}
 	return n, err
+}
+
+// drain reads the literal to its end with lit.msg.mu held.
+func (lit *fetchLiteralReader) drain() {
+	var buf [4096]byte
+	for {
+		if _, err := lit.read(buf[:]); err != nil {
+			return
+		}
+	}
 }
