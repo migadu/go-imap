@@ -178,10 +178,19 @@ func (c *Client) handleLsub() error {
 		return fmt.Errorf("in LSUB: %w", err)
 	}
 
-	cmd := c.findPendingCmdFunc(func(cmd command) bool {
+	isLsub := func(cmd command) bool {
 		list, ok := cmd.(*ListCommand)
-		return ok && list.lsub && list.matches(data)
+		return ok && list.lsub
+	}
+	// The pattern only picks between LSUB commands in flight. A response that
+	// matches none still answers one of them, since none is unsolicited, and
+	// the server's reading of the reference may be one matches cannot follow.
+	cmd := c.findPendingCmdFunc(func(cmd command) bool {
+		return isLsub(cmd) && cmd.(*ListCommand).matches(data)
 	})
+	if cmd == nil {
+		cmd = c.findPendingCmdFunc(isLsub)
+	}
 	if cmd != nil {
 		cmd.(*ListCommand).mailboxes <- data
 	}
@@ -224,7 +233,13 @@ func (cmd *ListCommand) matches(data *imap.ListData) bool {
 	// The wire form is what the server matched against: INBOX is canonicalized
 	// to upper case in both directions (RFC 9051 §6.3.9 has the server match
 	// and report the uppercase spelling), so compare the canonical forms.
-	return internal.MatchList(data.Mailbox, data.Delim, canonicalMailbox(cmd.ref), canonicalMailbox(cmd.pattern))
+	ref, pattern := canonicalMailbox(cmd.ref), canonicalMailbox(cmd.pattern)
+	// RFC 9051 §6.3.9 leaves the reading of the reference to the server. Its
+	// examples read it either before the pattern or not at all, when the
+	// pattern names an absolute path ("~smith/Mail/" "/usr/doc/foo" lists
+	// /usr/doc/foo), so a response that matches either reading is claimed.
+	return internal.MatchList(data.Mailbox, data.Delim, ref, pattern) ||
+		internal.MatchPattern(data.Mailbox, data.Delim, pattern)
 }
 
 // canonicalMailbox spells a mailbox name the way the encoder puts it on the
