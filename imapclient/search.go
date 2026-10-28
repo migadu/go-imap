@@ -219,32 +219,25 @@ func (c *Client) handleESearch() error {
 		}
 		spRead = false
 	}
-	cmd := c.findPendingCmdFunc(func(anyCmd command) bool {
-		switch cmd := anyCmd.(type) {
-		case *SearchCommand:
-			if tag != "" {
-				return cmd.tag == tag
+	// RFC 4466 section 2.6.2 and RFC 9051 section 7.3.4: without a
+	// correlator the response was not caused by a particular command, even
+	// if only one command is pending. Still parse it to consume the response.
+	var cmd command
+	if tag != "" {
+		cmd = c.findPendingCmdFunc(func(cmd command) bool {
+			switch cmd.(type) {
+			case *SearchCommand, *MultiSearchCommand, *SortCommand:
+				return cmd.base().tag == tag
+			default:
+				return false
 			}
-			return true
-		case *MultiSearchCommand:
-			if tag != "" {
-				return cmd.tag == tag
-			}
-			return true
-		}
-		return false
-	})
-	if cmd == nil {
+		})
+	}
+	if sortCmd, ok := cmd.(*SortCommand); ok {
 		// RFC 5267 §3.1: an extended SORT is answered with ESEARCH too. Its ALL
 		// is in sort order, which a SearchData cannot hold, so it is read the
 		// way an ESORT response is.
-		sortCmd, _ := c.findPendingCmdFunc(func(anyCmd command) bool {
-			cmd, ok := anyCmd.(*SortCommand)
-			return ok && (tag == "" || cmd.tag == tag)
-		}).(*SortCommand)
-		if sortCmd != nil {
-			return c.readESortData(sortCmd, spRead)
-		}
+		return c.readESortData(sortCmd, spRead)
 	}
 	if err := readESearchReturnData(c.dec, data, spRead); err != nil {
 		return err
