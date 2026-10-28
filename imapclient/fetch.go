@@ -866,8 +866,18 @@ func (c *Client) handleFetch(seqNum uint32) error {
 				}
 
 				var fetchLit imap.LiteralReader
-				if lit != nil {
-					emptyLiteral = lit.Size() == 0
+				if lit != nil && lit.Size() == 0 {
+					// Nothing to stream, so read it now and queue the item like
+					// any other: the message is then handed over after the rest
+					// of the response, UID included. A UID FETCH can claim a
+					// message only by its UID, which a server may send after an
+					// empty body (issue #774).
+					emptyLiteral = true
+					if _, err := io.Copy(io.Discard, lit); err != nil {
+						return err
+					}
+					fetchLit = lit
+				} else if lit != nil {
 					done = make(chan struct{})
 					fetchLit = &fetchLiteralReader{
 						LiteralReader: lit,
