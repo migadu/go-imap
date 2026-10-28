@@ -89,6 +89,10 @@ func (c *Client) handleSort() error {
 	return nil
 }
 
+// handleESort reads an untagged ESORT response. No RFC defines one: an extended
+// SORT is answered with ESEARCH (RFC 5267 §3.1), which handleESearch routes to
+// readESortData. Servers built from this fork sent ESORT before they were
+// fixed, so it is still accepted.
 func (c *Client) handleESort() error {
 	cmd := findPendingCmdByType[*SortCommand](c)
 	if cmd == nil {
@@ -100,7 +104,11 @@ func (c *Client) handleESort() error {
 		}
 		return nil
 	}
+	return c.readESortData(cmd)
+}
 
+// readESortData reads the return data of an extended SORT into cmd.
+func (c *Client) readESortData(cmd *SortCommand) error {
 	isUID := cmd.numKind == imapwire.NumKindUID
 
 	for c.dec.SP() {
@@ -151,7 +159,12 @@ func (c *Client) handleESort() error {
 				cmd.data.SeqNums = nums
 			}
 		default:
-			return fmt.Errorf("unknown ESORT return option: %q", s)
+			// search-return-data is extensible (RFC 4466 §2.6.2), and a real
+			// ESEARCH can carry more than SORT asked for, e.g. MODSEQ (RFC 7162
+			// §3.1.10). Skip it, as readESearchReturnData does.
+			if !c.dec.ExpectSP() || !c.dec.DiscardValue() {
+				return c.dec.Err()
+			}
 		}
 	}
 
