@@ -165,7 +165,7 @@ func (c *Conn) writeESort(tag string, data *imap.SortData, options *imap.SortOpt
 
 	enc.Atom("*").SP().Atom("ESORT")
 	if tag != "" {
-		enc.SP().Special('(').Atom("TAG").SP().Atom(tag).Special(')')
+		enc.SP().Special('(').Atom("TAG").SP().String(tag).Special(')')
 	}
 	if numKind == NumKindUID {
 		enc.SP().Atom("UID")
