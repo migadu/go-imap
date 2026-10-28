@@ -47,6 +47,19 @@ func TestSortResponse(t *testing.T) {
 			wantUIDs: []imap.UID{30, 10, 11, 20},
 		},
 		{
+			// Some servers wrap MODSEQ in parentheses; readESearchReturnData
+			// accepts that on SEARCH, so SORT must too.
+			name:       "ESEARCH with (MODSEQ n)",
+			response:   `* ESEARCH (TAG "%s") ALL 3,1,2 (MODSEQ 917162500)`,
+			wantSeq:    []uint32{3, 1, 2},
+			wantModSeq: 917162500,
+		},
+		{
+			name:     "ESEARCH with an unknown parenthesized item",
+			response: `* ESEARCH (TAG "%s") ALL 3,1,2 (X-FOO bar)`,
+			wantSeq:  []uint32{3, 1, 2},
+		},
+		{
 			name:     "legacy ESORT",
 			response: `* ESORT (TAG %s) ALL 3,1,2`,
 			wantSeq:  []uint32{3, 1, 2},
