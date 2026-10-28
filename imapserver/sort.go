@@ -129,21 +129,53 @@ func (c *Conn) handleSort(tag string, dec *imapwire.Decoder, numKind NumKind) er
 		options.ReturnAll = true
 	}
 
+	// Read before the session can rewrite the criteria. readSearchKey keeps a
+	// MODSEQ key only when CONDSTORE is supported.
+	hasModSeq := searchCriteriaHasModSeq(&searchCriteria)
+
 	// Call the session's Sort method
 	data, err := c.session.Sort(c.ctx, numKind, sortCriteria, charset, &searchCriteria, &options)
 	if err != nil {
 		return err
 	}
 
-	// Write SORT/ESEARCH response
-	if c.isIMAP4rev2() || extended {
+	// RFC 7162 §3.1.9 and §3.1.10: the response carries the highest
+	// mod-sequence of the result only when the criteria use MODSEQ. A client
+	// that did not ask cannot be expected to parse it.
+	if !hasModSeq {
+		data.ModSeq = 0
+	}
+
+	// Write SORT/ESEARCH response. Only return options select ESEARCH (RFC 5267
+	// §3.1). IMAP4rev2 changes SEARCH's answer (RFC 9051 §6.4.4) but not
+	// SORT's, which stays the SORT response of RFC 5256 §4.
+	if extended {
 		return c.writeESort(tag, data, &options, numKind)
 	} else {
-		return c.writeSort(data.All, numKind)
+		return c.writeSort(data.All, data.ModSeq, numKind)
 	}
 }
 
-func (c *Conn) writeSort(nums []uint32, numKind NumKind) error {
+// searchCriteriaHasModSeq reports whether criteria use a MODSEQ key anywhere,
+// including under NOT and OR.
+func searchCriteriaHasModSeq(criteria *imap.SearchCriteria) bool {
+	if criteria.ModSeq != nil {
+		return true
+	}
+	for i := range criteria.Not {
+		if searchCriteriaHasModSeq(&criteria.Not[i]) {
+			return true
+		}
+	}
+	for i := range criteria.Or {
+		if searchCriteriaHasModSeq(&criteria.Or[i][0]) || searchCriteriaHasModSeq(&criteria.Or[i][1]) {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *Conn) writeSort(nums []uint32, modSeq uint64, numKind NumKind) error {
 	enc := newResponseEncoder(c)
 	defer enc.end()
 
@@ -155,6 +187,11 @@ func (c *Conn) writeSort(nums []uint32, numKind NumKind) error {
 		} else {
 			enc.Number(num)
 		}
+	}
+	// RFC 7162 §3.1.9, e.g. "* SORT 2 3 4 (MODSEQ 917162500)". The grammar
+	// allows it only after at least one number.
+	if modSeq > 0 && len(nums) > 0 {
+		enc.SP().Special('(').Atom("MODSEQ").SP().ModSeq(modSeq).Special(')')
 	}
 	return enc.CRLF()
 }
@@ -195,6 +232,10 @@ func (c *Conn) writeESort(tag string, data *imap.SortData, options *imap.SortOpt
 	}
 	if options.ReturnCount {
 		enc.SP().Atom("COUNT").SP().Number(data.Count)
+	}
+	// RFC 7162 §3.1.10, e.g. "* ESEARCH (TAG "a") ALL 5,3,2,1 MODSEQ 1236".
+	if data.ModSeq > 0 {
+		enc.SP().Atom("MODSEQ").SP().ModSeq(data.ModSeq)
 	}
 	return enc.CRLF()
 }

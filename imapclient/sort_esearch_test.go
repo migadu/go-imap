@@ -14,19 +14,31 @@ import (
 
 // An extended SORT is answered with ESEARCH (RFC 5267 §3.1). Servers built from
 // this fork used to send an ESORT response instead, which is still accepted.
-func TestSortExtendedResponse(t *testing.T) {
+// Either form may end with the highest mod-sequence (RFC 7162 §3.1.9, §3.1.10).
+func TestSortResponse(t *testing.T) {
 	for _, tc := range []struct {
-		name     string
-		uid      bool
-		response string // %s is the command's tag
-		wantSeq  []uint32
-		wantUIDs []imap.UID
+		name       string
+		plain      bool // no RETURN options
+		uid        bool
+		response   string // %s is the command's tag
+		wantSeq    []uint32
+		wantUIDs   []imap.UID
+		wantModSeq uint64
 	}{
 		{
 			// RFC 7162 §3.1.10, Example 20.
-			name:     "ESEARCH",
-			response: `* ESEARCH (TAG "%s") ALL 5,3,2,1 MODSEQ 1236`,
-			wantSeq:  []uint32{5, 3, 2, 1},
+			name:       "ESEARCH",
+			response:   `* ESEARCH (TAG "%s") ALL 5,3,2,1 MODSEQ 1236`,
+			wantSeq:    []uint32{5, 3, 2, 1},
+			wantModSeq: 1236,
+		},
+		{
+			// RFC 7162 §3.1.9, in the form of §3.1.5's Example 15.
+			name:       "plain SORT with MODSEQ",
+			plain:      true,
+			response:   `* SORT 2 5 6 (MODSEQ 917162500)`,
+			wantSeq:    []uint32{2, 5, 6},
+			wantModSeq: 917162500,
 		},
 		{
 			name:     "ESEARCH UID",
@@ -51,7 +63,7 @@ func TestSortExtendedResponse(t *testing.T) {
 					return
 				}
 				tag, _, _ := strings.Cut(line, " ")
-				fmt.Fprintf(serverConn, tc.response+"\r\n", tag)
+				fmt.Fprint(serverConn, strings.ReplaceAll(tc.response, "%s", tag)+"\r\n")
 				fmt.Fprintf(serverConn, "%s OK SORT completed\r\n", tag)
 			}()
 
@@ -61,7 +73,9 @@ func TestSortExtendedResponse(t *testing.T) {
 			options := &imapclient.SortOptions{
 				SortCriteria:   []imap.SortCriterion{{Key: imap.SortKeyDate}},
 				SearchCriteria: &imap.SearchCriteria{},
-				Return:         imap.SortOptions{ReturnAll: true},
+			}
+			if !tc.plain {
+				options.Return = imap.SortOptions{ReturnAll: true}
 			}
 			var cmd *imapclient.SortCommand
 			if tc.uid {
@@ -78,6 +92,9 @@ func TestSortExtendedResponse(t *testing.T) {
 			}
 			if !reflect.DeepEqual(data.UIDs, tc.wantUIDs) {
 				t.Errorf("SortData.UIDs = %v, want %v", data.UIDs, tc.wantUIDs)
+			}
+			if data.ModSeq != tc.wantModSeq {
+				t.Errorf("SortData.ModSeq = %v, want %v", data.ModSeq, tc.wantModSeq)
 			}
 		})
 	}
