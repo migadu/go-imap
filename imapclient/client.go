@@ -441,6 +441,15 @@ func (c *Client) setState(state imap.ConnState) {
 	c.mutex.Unlock()
 }
 
+func (c *Client) setMailboxReadOnly(readOnly bool) {
+	c.mutex.Lock()
+	if c.state == imap.ConnStateSelected {
+		c.mailbox = c.mailbox.copy()
+		c.mailbox.ReadOnly = readOnly
+	}
+	c.mutex.Unlock()
+}
+
 // Caps returns the capabilities advertised by the server.
 //
 // When the server hasn't sent the capability list, this method will request it
@@ -648,10 +657,6 @@ func findPendingCmdByType[T command](c *Client) T {
 }
 
 func (c *Client) completeCommand(cmd command, err error) {
-	done := cmd.base().done
-	done <- err
-	close(done)
-
 	// Ensure the command is not blocked waiting on continuation requests
 	c.mutex.Lock()
 	var filtered []continuationRequest
@@ -709,6 +714,12 @@ func (c *Client) completeCommand(cmd command, err error) {
 	case *ExpungeCommand:
 		close(cmd.seqNums)
 	}
+
+	// Wait must observe the final connection state, mailbox snapshot and
+	// closed result channels when it returns.
+	done := cmd.base().done
+	done <- err
+	close(done)
 }
 
 func (c *Client) registerContReq(cmd command) *imapwire.ContinuationRequest {
@@ -945,13 +956,12 @@ func (c *Client) readResponseTagged(tag, typ string) (startTLS *startTLSCommand,
 				cmd.data.SourceUIDs = srcUIDs
 				cmd.data.DestUIDs = dstUIDs
 			}
-		case "READ-ONLY": // RFC 3501 / RFC 4314 §5.2
+		case "READ-ONLY", "READ-WRITE": // RFC 9051 §7.1
+			readOnly := code == "READ-ONLY"
 			if cmd, ok := cmd.(*SelectCommand); ok {
-				cmd.data.ReadOnly = true
-			}
-		case "READ-WRITE":
-			if cmd, ok := cmd.(*SelectCommand); ok {
-				cmd.data.ReadOnly = false
+				cmd.data.ReadOnly = readOnly
+			} else {
+				c.setMailboxReadOnly(readOnly)
 			}
 		case "MODIFIED": // RFC 7162 §3.1.3: conditional STORE UNCHANGEDSINCE failures
 			if !c.dec.ExpectSP() {
@@ -1084,12 +1094,7 @@ func (c *Client) readResponseData(typ string) error {
 				// access to the selected mailbox has changed.
 				readOnly := code == "READ-ONLY"
 
-				c.mutex.Lock()
-				if c.state == imap.ConnStateSelected {
-					c.mailbox = c.mailbox.copy()
-					c.mailbox.ReadOnly = readOnly
-				}
-				c.mutex.Unlock()
+				c.setMailboxReadOnly(readOnly)
 
 				if cmd := findPendingCmdByType[*SelectCommand](c); cmd != nil {
 					cmd.data.ReadOnly = readOnly
