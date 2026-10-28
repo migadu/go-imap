@@ -146,8 +146,10 @@ func (c *Conn) handleSort(tag string, dec *imapwire.Decoder, numKind NumKind) er
 		data.ModSeq = 0
 	}
 
-	// Write SORT/ESEARCH response
-	if c.isIMAP4rev2() || extended {
+	// Write SORT/ESEARCH response. Only return options select ESEARCH (RFC 5267
+	// §3.1). IMAP4rev2 changes SEARCH's answer (RFC 9051 §6.4.4) but not
+	// SORT's, which stays the SORT response of RFC 5256 §4.
+	if extended {
 		return c.writeESort(tag, data, &options, numKind)
 	} else {
 		return c.writeSort(data.All, data.ModSeq, numKind)
