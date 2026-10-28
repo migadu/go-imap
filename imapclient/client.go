@@ -1079,6 +1079,21 @@ func (c *Client) readResponseData(typ string) error {
 				} else if handler := c.options.unilateralDataHandler().Mailbox; handler != nil {
 					handler(&UnilateralDataMailbox{PermanentFlags: flags})
 				}
+			case "READ-ONLY", "READ-WRITE":
+				// RFC 9051 §7.1: besides answering SELECT, these report that the
+				// access to the selected mailbox has changed.
+				readOnly := code == "READ-ONLY"
+
+				c.mutex.Lock()
+				if c.state == imap.ConnStateSelected {
+					c.mailbox = c.mailbox.copy()
+					c.mailbox.ReadOnly = readOnly
+				}
+				c.mutex.Unlock()
+
+				if cmd := findPendingCmdByType[*SelectCommand](c); cmd != nil {
+					cmd.data.ReadOnly = readOnly
+				}
 			case "UIDNEXT":
 				var num uint32
 				if !c.dec.SP() || !c.dec.Number(&num) {
