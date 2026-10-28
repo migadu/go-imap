@@ -52,6 +52,8 @@ func ExpectDate(dec *imapwire.Decoder) (time.Time, error) {
 	return t, nil
 }
 
+// ExpectFlagList reads a flag list from a server response. Only imapclient
+// uses it, so it accepts "]" in a flag; see isListedFlagChar.
 func ExpectFlagList(dec *imapwire.Decoder) ([]imap.Flag, error) {
 	var flags []imap.Flag
 	err := dec.ExpectList(func() error {
@@ -59,7 +61,7 @@ func ExpectFlagList(dec *imapwire.Decoder) ([]imap.Flag, error) {
 		// https://github.com/emersion/go-imap/pull/633
 		dec.SP()
 
-		flag, err := ExpectFlag(dec)
+		flag, err := expectFlag(dec, true)
 		if err != nil {
 			return err
 		}
@@ -77,17 +79,26 @@ func ExpectCap(dec *imapwire.Decoder) (imap.Cap, error) {
 	return canonicalCap(name), nil
 }
 
+// ExpectFlag reads a flag as an atom. imapserver parses a client's flags with
+// it, and a keyword taken from a client is later listed in FLAGS and
+// PERMANENTFLAGS, so it stays strict.
 func ExpectFlag(dec *imapwire.Decoder) (imap.Flag, error) {
+	return expectFlag(dec, false)
+}
+
+func expectFlag(dec *imapwire.Decoder, listed bool) (imap.Flag, error) {
 	isSystem := dec.Special('\\')
 	if isSystem && dec.Special('*') {
 		return imap.FlagWildcard, nil // flag-perm
 	}
-	// A flag is an atom, which excludes "]", but servers such as Gmail accept
-	// keywords containing it and then list them in FLAGS and PERMANENTFLAGS.
-	// Every place a flag appears is inside a parenthesized list, so accepting
-	// "]" here cannot swallow the end of a response code.
 	var name string
-	if !dec.Expect(dec.Func(&name, isFlagChar), "flag") {
+	var ok bool
+	if listed {
+		ok = dec.Expect(dec.Func(&name, isListedFlagChar), "flag")
+	} else {
+		ok = dec.ExpectAtom(&name)
+	}
+	if !ok {
 		return "", fmt.Errorf("in flag: %w", dec.Err())
 	}
 	if isSystem {
@@ -96,7 +107,11 @@ func ExpectFlag(dec *imapwire.Decoder) (imap.Flag, error) {
 	return canonicalFlag(name), nil
 }
 
-func isFlagChar(ch byte) bool {
+// A flag is an atom, which excludes "]", but servers such as Gmail accept
+// keywords containing it and then list them in FLAGS and PERMANENTFLAGS.
+// Inside a flag list "]" cannot be the end of a response code, so accepting it
+// there cannot swallow one.
+func isListedFlagChar(ch byte) bool {
 	return imapwire.IsAtomChar(ch) || ch == ']'
 }
 
