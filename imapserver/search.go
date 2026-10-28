@@ -82,9 +82,21 @@ func (c *Conn) handleSearch(tag string, dec *imapwire.Decoder, numKind NumKind) 
 		options.ReturnAll = true
 	}
 
+	// Read before the session can rewrite the criteria. readSearchKey keeps a
+	// MODSEQ key only when CONDSTORE is supported.
+	hasModSeq := searchCriteriaHasModSeq(&criteria)
+
 	data, err := c.session.Search(c.ctx, numKind, &criteria, &options)
 	if err != nil {
 		return err
+	}
+
+	// RFC 7162 §3.1.5 and §3.1.6: the response carries the highest
+	// mod-sequence of the result only when the criteria use MODSEQ, as for
+	// SORT (handleSort). A client that did not ask cannot be expected to
+	// parse it.
+	if !hasModSeq {
+		data.ModSeq = 0
 	}
 
 	var supportsESEARCH bool

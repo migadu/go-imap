@@ -141,12 +141,18 @@ func (c *Conn) handleESearch(tag string, dec *imapwire.Decoder) error {
 		}
 	}
 
+	// Read before the session can rewrite the criteria; see handleSearch.
+	hasModSeq := searchCriteriaHasModSeq(&criteria)
+
 	results, err := sessionMultiSearch.MultiSearch(c.ctx, &source, &criteria, &options)
 	if err != nil {
 		return err
 	}
 
 	for _, data := range results {
+		if !hasModSeq {
+			data.ModSeq = 0
+		}
 		// RFC 7377 §2.1: "An ESEARCH response MUST NOT be returned for mailboxes
 		// that contain no matching messages. This is true even when result
 		// options such as MIN, MAX, and COUNT are specified."
