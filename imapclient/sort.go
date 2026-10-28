@@ -126,14 +126,16 @@ func (c *Client) handleESort() error {
 		}
 		return nil
 	}
-	return c.readESortData(cmd)
+	return c.readESortData(cmd, false)
 }
 
-// readESortData reads the return data of an extended SORT into cmd.
-func (c *Client) readESortData(cmd *SortCommand) error {
+// readESortData reads the return data of an extended SORT into cmd. spRead
+// reports that the SP in front of the first item has been read.
+func (c *Client) readESortData(cmd *SortCommand, spRead bool) error {
 	isUID := cmd.numKind == imapwire.NumKindUID
 
-	for c.dec.SP() {
+	for spRead || c.dec.SP() {
+		spRead = false
 		var s string
 		if c.dec.Special('(') {
 			var key, tag string

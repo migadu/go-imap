@@ -204,42 +204,42 @@ func (c *Client) handleSearch() error {
 }
 
 func (c *Client) handleESearch() error {
-	if !c.dec.ExpectSP() {
-		return c.dec.Err()
-	}
+	// esearch-response = "ESEARCH" [search-correlator] [SP "UID"]
+	// *(SP search-return-data), and search-correlator = SP "(" ... ")". All
+	// of it is optional, and one byte of lookahead cannot tell the
+	// correlator's SP from the next item's, so read the SP here and tell the
+	// readers below whether they still have to.
 	data := &imap.SearchData{}
-	tag, err := readSearchCorrelator(c.dec, data)
-	if err != nil {
-		return err
-	}
-	cmd := c.findPendingCmdFunc(func(anyCmd command) bool {
-		switch cmd := anyCmd.(type) {
-		case *SearchCommand:
-			if tag != "" {
-				return cmd.tag == tag
-			}
-			return true
-		case *MultiSearchCommand:
-			if tag != "" {
-				return cmd.tag == tag
-			}
-			return true
+	var tag string
+	spRead := c.dec.SP()
+	if spRead && c.dec.NextByteIs('(') {
+		var err error
+		if tag, err = readSearchCorrelator(c.dec, data); err != nil {
+			return err
 		}
-		return false
-	})
-	if cmd == nil {
+		spRead = false
+	}
+	// RFC 4466 section 2.6.2 and RFC 9051 section 7.3.4: without a
+	// correlator the response was not caused by a particular command, even
+	// if only one command is pending. Still parse it to consume the response.
+	var cmd command
+	if tag != "" {
+		cmd = c.findPendingCmdFunc(func(cmd command) bool {
+			switch cmd.(type) {
+			case *SearchCommand, *MultiSearchCommand, *SortCommand:
+				return cmd.base().tag == tag
+			default:
+				return false
+			}
+		})
+	}
+	if sortCmd, ok := cmd.(*SortCommand); ok {
 		// RFC 5267 §3.1: an extended SORT is answered with ESEARCH too. Its ALL
 		// is in sort order, which a SearchData cannot hold, so it is read the
 		// way an ESORT response is.
-		sortCmd, _ := c.findPendingCmdFunc(func(anyCmd command) bool {
-			cmd, ok := anyCmd.(*SortCommand)
-			return ok && (tag == "" || cmd.tag == tag)
-		}).(*SortCommand)
-		if sortCmd != nil {
-			return c.readESortData(sortCmd)
-		}
+		return c.readESortData(sortCmd, spRead)
 	}
-	if err := readESearchReturnData(c.dec, data); err != nil {
+	if err := readESearchReturnData(c.dec, data, spRead); err != nil {
 		return err
 	}
 	if cmd != nil {
@@ -435,9 +435,11 @@ func readSearchCorrelator(dec *imapwire.Decoder, data *imap.SearchData) (tag str
 
 // readESearchReturnData reads the return data that follows the
 // search-correlator of an ESEARCH response.
-func readESearchReturnData(dec *imapwire.Decoder, data *imap.SearchData) error {
+//
+// spRead reports that the SP in front of the first item has been read.
+func readESearchReturnData(dec *imapwire.Decoder, data *imap.SearchData, spRead bool) error {
 	var name string
-	if !dec.SP() {
+	if !spRead && !dec.SP() {
 		return nil
 	} else if !dec.ExpectAtom(&name) {
 		return dec.Err()
