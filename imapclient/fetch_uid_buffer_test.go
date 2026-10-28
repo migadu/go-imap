@@ -332,57 +332,164 @@ func TestUIDFetchBufferUIDFirstStillStreams(t *testing.T) {
 // SELECT's QRESYNC updates use the same FETCH parser. Delaying UID FETCH
 // delivery must preserve the full FLAGS/UID/MODSEQ update in every order.
 func TestUIDFetchBufferPreservesQResyncUpdates(t *testing.T) {
-	for _, attrs := range []string{
-		`UID 42 FLAGS (\Seen) MODSEQ (9)`,
-		`UID 42 MODSEQ (9) FLAGS (\Seen)`,
-		`FLAGS (\Seen) UID 42 MODSEQ (9)`,
-		`FLAGS (\Seen) MODSEQ (9) UID 42`,
-		`MODSEQ (9) UID 42 FLAGS (\Seen)`,
-		`MODSEQ (9) FLAGS (\Seen) UID 42`,
-	} {
-		t.Run(attrs, func(t *testing.T) {
-			client := newUIDFetchWireClient(t, nil, func(conn net.Conn, reader *bufio.Reader) error {
-				line, err := reader.ReadString('\n')
-				if err != nil {
-					return err
-				}
-				tag, command, _ := strings.Cut(line, " ")
-				if command != "ENABLE QRESYNC\r\n" {
-					return fmt.Errorf("expected ENABLE QRESYNC, got %q", line)
-				}
-				if _, err := fmt.Fprintf(conn, "* ENABLED QRESYNC\r\n%s OK enabled\r\n", tag); err != nil {
-					return err
-				}
-				line, err = reader.ReadString('\n')
-				if err != nil {
-					return err
-				}
-				tag, command, _ = strings.Cut(line, " ")
-				if !strings.HasPrefix(command, "SELECT ") || !strings.Contains(command, "(QRESYNC (1 1))") {
-					return fmt.Errorf("expected QRESYNC SELECT, got %q", line)
-				}
-				_, err = fmt.Fprintf(conn, "* 1 FETCH (%s)\r\n* 2 FETCH (MODSEQ (10) FLAGS () UID 43)\r\n* 2 EXISTS\r\n* OK [UIDVALIDITY 1] valid\r\n* OK [HIGHESTMODSEQ 10] current\r\n%s OK [READ-WRITE] selected\r\n", attrs, tag)
-				return err
-			})
-			if _, err := client.Enable(imap.CapQResync).Wait(); err != nil {
-				t.Fatal(err)
-			}
-			data, err := client.Select("INBOX", &imap.SelectOptions{QResync: &imap.QResyncData{UIDValidity: 1, ModSeq: 1}}).Wait()
-			if err != nil {
-				t.Fatalf("SELECT: %v", err)
-			}
-			want := []imap.SelectModifiedData{
-				{SeqNum: 1, UID: 42, Flags: []imap.Flag{imap.FlagSeen}, ModSeq: 9},
-				{SeqNum: 2, UID: 43, ModSeq: 10},
-			}
-			if !reflect.DeepEqual(data.Modified, want) {
-				t.Errorf("Modified = %+v, want %+v", data.Modified, want)
+	for _, pipeline := range []bool{false, true} {
+		mode := "SELECT alone"
+		if pipeline {
+			// RFC 9051 section 5.5 requires dependent commands to execute in
+			// order. The server finishes SELECT before the pipelined UID FETCH.
+			mode = "rev2 pipelined UID FETCH"
+		}
+		t.Run(mode, func(t *testing.T) {
+			for _, attrs := range []string{
+				`UID 42 FLAGS (\Seen) MODSEQ (9)`,
+				`UID 42 MODSEQ (9) FLAGS (\Seen)`,
+				`FLAGS (\Seen) UID 42 MODSEQ (9)`,
+				`FLAGS (\Seen) MODSEQ (9) UID 42`,
+				`MODSEQ (9) UID 42 FLAGS (\Seen)`,
+				`MODSEQ (9) FLAGS (\Seen) UID 42`,
+			} {
+				t.Run(attrs, func(t *testing.T) {
+					enabled := "QRESYNC"
+					caps := []imap.Cap{imap.CapQResync}
+					if pipeline {
+						enabled = "IMAP4rev2 QRESYNC"
+						caps = []imap.Cap{imap.CapIMAP4rev2, imap.CapQResync}
+					}
+					client := newUIDFetchWireClientWithGreeting(t, nil, "* PREAUTH [CAPABILITY IMAP4rev1 IMAP4rev2 ENABLE CONDSTORE QRESYNC] ready\r\n", func(conn net.Conn, reader *bufio.Reader) error {
+						line, err := reader.ReadString('\n')
+						if err != nil {
+							return err
+						}
+						tag, command, _ := strings.Cut(line, " ")
+						if command != "ENABLE "+enabled+"\r\n" {
+							return fmt.Errorf("expected ENABLE %s, got %q", enabled, line)
+						}
+						if _, err := fmt.Fprintf(conn, "* ENABLED %s\r\n%s OK enabled\r\n", enabled, tag); err != nil {
+							return err
+						}
+						line, err = reader.ReadString('\n')
+						if err != nil {
+							return err
+						}
+						tag, command, _ = strings.Cut(line, " ")
+						if !strings.HasPrefix(command, "SELECT ") || !strings.Contains(command, "(QRESYNC (1 1))") {
+							return fmt.Errorf("expected QRESYNC SELECT, got %q", line)
+						}
+						var fetchTag string
+						if pipeline {
+							fetchTag, err = readUIDFetchWireCommand(reader)
+							if err != nil {
+								return err
+							}
+						}
+						_, err = fmt.Fprintf(conn, "* 1 FETCH (%s)\r\n* 2 FETCH (MODSEQ (10) FLAGS () UID 43)\r\n* 2 EXISTS\r\n* FLAGS (\\Seen)\r\n* OK [PERMANENTFLAGS (\\Seen)] flags\r\n* OK [UIDNEXT 44] next\r\n* OK [UIDVALIDITY 1] valid\r\n* OK [HIGHESTMODSEQ 10] current\r\n* LIST () \"/\" INBOX\r\n%s OK [READ-WRITE] selected\r\n", attrs, tag)
+						if err != nil || !pipeline {
+							return err
+						}
+						_, err = fmt.Fprintf(conn, "* 1 FETCH (UID 42 BODY[] {4}\r\ndata)\r\n%s OK fetched\r\n", fetchTag)
+						return err
+					})
+					if _, err := client.Enable(caps...).Wait(); err != nil {
+						t.Fatal(err)
+					}
+					selectCmd := client.Select("INBOX", &imap.SelectOptions{QResync: &imap.QResyncData{UIDValidity: 1, ModSeq: 1}})
+					var fetchCmd *imapclient.FetchCommand
+					if pipeline {
+						fetchCmd = client.Fetch(imap.UIDSetNum(42), &imap.FetchOptions{BodySection: []*imap.FetchItemBodySection{{}}})
+						defer fetchCmd.Close()
+					}
+					data, err := selectCmd.Wait()
+					if err != nil {
+						t.Fatalf("SELECT: %v", err)
+					}
+					want := []imap.SelectModifiedData{
+						{SeqNum: 1, UID: 42, Flags: []imap.Flag{imap.FlagSeen}, ModSeq: 9},
+						{SeqNum: 2, UID: 43, ModSeq: 10},
+					}
+					if !reflect.DeepEqual(data.Modified, want) {
+						t.Errorf("Modified = %+v, want %+v", data.Modified, want)
+					}
+					if fetchCmd != nil {
+						messages, err := fetchCmd.Collect()
+						if err != nil || len(messages) != 1 {
+							t.Fatalf("UID FETCH returned %d messages, %v", len(messages), err)
+						}
+						if got := messages[0]; got.UID != 42 || string(got.FindBodySection(&imap.FetchItemBodySection{})) != "data" {
+							t.Errorf("UID FETCH got UID %d, body %q; want UID 42, body data", got.UID, got.FindBodySection(&imap.FetchItemBodySection{}))
+						}
+					}
+				})
 			}
 		})
 	}
 }
 
+// SELECT metadata is staged even without a UID FETCH in flight, and even
+// after UID has arrived. Its literal payloads must share the same byte budget.
+func TestUIDFetchBufferSelectMetadataLimit(t *testing.T) {
+	for _, uidFirst := range []bool{false, true} {
+		for _, limit := range []int64{6, 7} {
+			t.Run(fmt.Sprintf("UID first %v/limit %d", uidFirst, limit), func(t *testing.T) {
+				client := newUIDFetchWireClientWithGreeting(t, &imapclient.Options{MaxFetchBufferSize: limit}, "* PREAUTH [CAPABILITY IMAP4rev2 ENABLE CONDSTORE QRESYNC] ready\r\n", func(conn net.Conn, reader *bufio.Reader) error {
+					line, err := reader.ReadString('\n')
+					if err != nil {
+						return err
+					}
+					tag, command, _ := strings.Cut(line, " ")
+					if command != "ENABLE QRESYNC\r\n" {
+						return fmt.Errorf("expected ENABLE QRESYNC, got %q", line)
+					}
+					if _, err := fmt.Fprintf(conn, "* ENABLED QRESYNC\r\n%s OK enabled\r\n", tag); err != nil {
+						return err
+					}
+					line, err = reader.ReadString('\n')
+					if err != nil {
+						return err
+					}
+					tag, command, _ = strings.Cut(line, " ")
+					if !strings.HasPrefix(command, "SELECT ") {
+						return fmt.Errorf("expected SELECT, got %q", line)
+					}
+					attrs := "ENVELOPE (NIL {3}\r\none NIL NIL NIL NIL NIL NIL NIL NIL) BODYSTRUCTURE ({4}\r\nTEXT \"PLAIN\" NIL NIL NIL \"7BIT\" 0 0)"
+					if uidFirst {
+						attrs = "UID 42 " + attrs
+					} else {
+						attrs += " UID 42"
+					}
+					_, err = fmt.Fprintf(conn, "* 1 FETCH (%s MODSEQ (9) FLAGS (\\Seen))\r\n* 1 EXISTS\r\n* FLAGS (\\Seen)\r\n* OK [PERMANENTFLAGS (\\Seen)] flags\r\n* OK [UIDVALIDITY 1] valid\r\n* OK [UIDNEXT 43] next\r\n* OK [HIGHESTMODSEQ 9] current\r\n* LIST () \"/\" INBOX\r\n%s OK [READ-WRITE] selected\r\n", attrs, tag)
+					if limit < 7 {
+						return nil // The limit rejection may interrupt this write.
+					}
+					return err
+				})
+				if _, err := client.Enable(imap.CapQResync).Wait(); err != nil {
+					t.Fatal(err)
+				}
+				data, err := client.Select("INBOX", &imap.SelectOptions{QResync: &imap.QResyncData{UIDValidity: 1, ModSeq: 1}}).Wait()
+				if limit < 7 {
+					if err == nil || !strings.Contains(err.Error(), "MaxFetchBufferSize") {
+						t.Fatalf("SELECT error = %v, want MaxFetchBufferSize rejection", err)
+					}
+					return
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				want := []imap.SelectModifiedData{{SeqNum: 1, UID: 42, Flags: []imap.Flag{imap.FlagSeen}, ModSeq: 9}}
+				if !reflect.DeepEqual(data.Modified, want) {
+					t.Errorf("Modified = %+v, want %+v", data.Modified, want)
+				}
+			})
+		}
+	}
+}
+
 func newUIDFetchWireClient(t *testing.T, options *imapclient.Options, script func(net.Conn, *bufio.Reader) error) *imapclient.Client {
+	t.Helper()
+	return newUIDFetchWireClientWithGreeting(t, options, "* OK [CAPABILITY IMAP4rev1 BINARY ENABLE CONDSTORE QRESYNC] ready\r\n", script)
+}
+
+func newUIDFetchWireClientWithGreeting(t *testing.T, options *imapclient.Options, greeting string, script func(net.Conn, *bufio.Reader) error) *imapclient.Client {
 	t.Helper()
 	clientConn, serverConn := net.Pipe()
 	serverDone := make(chan error, 1)
@@ -391,7 +498,7 @@ func newUIDFetchWireClient(t *testing.T, options *imapclient.Options, script fun
 	}
 	go func() {
 		defer serverConn.Close()
-		if _, err := io.WriteString(serverConn, "* OK [CAPABILITY IMAP4rev1 BINARY ENABLE CONDSTORE QRESYNC] ready\r\n"); err != nil {
+		if _, err := io.WriteString(serverConn, greeting); err != nil {
 			serverDone <- err
 			return
 		}

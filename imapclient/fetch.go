@@ -18,7 +18,7 @@ import (
 
 var errLiteralTooLarge = errors.New("imapclient: literal exceeds MaxLiteralSize")
 
-var errFetchBufferTooLarge = errors.New("imapclient: FETCH data before UID exceeds MaxFetchBufferSize")
+var errFetchBufferTooLarge = errors.New("imapclient: buffered FETCH data exceeds MaxFetchBufferSize")
 
 // Empty bodies and metadata need a bound independent of the payload budget.
 const maxFetchBufferedItems = 4096
@@ -732,8 +732,10 @@ func (c *Client) handleFetch(seqNum uint32) (err error) {
 	var uid imap.UID
 	var flags []imap.Flag
 	var modSeq uint64
+	selectCmd := findPendingCmdByType[*SelectCommand](c)
 	handled := false
 	shouldBuffer := func() bool { return needsUID && !handled && uid == 0 }
+	shouldBufferMetadata := func() bool { return shouldBuffer() || (!handled && selectCmd != nil) }
 	var bufferedBytes int64
 	reserve := func(size int64) error {
 		if size > c.options.maxFetchBufferSize()-bufferedBytes {
@@ -754,7 +756,7 @@ func (c *Client) handleFetch(seqNum uint32) (err error) {
 				return err
 			}
 		}
-		if shouldBuffer() && !readingBody {
+		if shouldBufferMetadata() && !readingBody {
 			return reserve(size)
 		}
 		return nil
@@ -771,7 +773,6 @@ func (c *Client) handleFetch(seqNum uint32) (err error) {
 		}
 
 		// Check if this is a QRESYNC SELECT response
-		selectCmd := findPendingCmdByType[*SelectCommand](c)
 		if selectCmd != nil && uid != 0 && modSeq != 0 {
 			// This is a Modified message during QRESYNC SELECT
 			// Note: flags can be empty (nil), so we only check uid and modSeq
@@ -815,7 +816,10 @@ func (c *Client) handleFetch(seqNum uint32) (err error) {
 				return net.ErrClosed
 			}
 		} else if handler := c.options.unilateralDataHandler().Fetch; handler != nil {
-			go handler(msg)
+			go func() {
+				defer msg.discard()
+				handler(msg)
+			}()
 		} else {
 			go msg.discard()
 		}
@@ -1076,9 +1080,13 @@ func (c *Client) handleFetch(seqNum uint32) (err error) {
 
 		numAtts++
 		entry := pendingItem{data: item, done: done}
-		if shouldBuffer() {
+		// A later pipelined UID FETCH must not claim a SELECT's QRESYNC
+		// update before all of its UID, MODSEQ and FLAGS have been parsed.
+		// Keep metadata private through the end of that response; actual
+		// streaming literals retain the normal dispatch path once UID is known.
+		if shouldBuffer() || (shouldBufferMetadata() && done == nil) {
 			if len(buffered) >= maxFetchBufferedItems {
-				return fmt.Errorf("imapclient: FETCH data before UID exceeds %d items", maxFetchBufferedItems)
+				return fmt.Errorf("imapclient: buffered FETCH data exceeds %d items", maxFetchBufferedItems)
 			}
 			buffered = append(buffered, entry)
 			return nil

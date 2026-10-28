@@ -480,3 +480,157 @@ func TestUIDFetchBufferMetadataConsumptionRestoresDeadline(t *testing.T) {
 		t.Fatalf("slow local consumption caused a wire error: %v", err)
 	}
 }
+
+// Returning from an unsolicited FETCH callback releases any unread response
+// data, including the acknowledgement needed for a buffered metadata response.
+func TestUIDFetchBufferUnilateralHandlerReturnsEarly(t *testing.T) {
+	for _, tc := range []struct {
+		name, attrs string
+		body, read  bool
+	}{
+		{"metadata unread", "ENVELOPE (NIL {4}\r\nnote NIL NIL NIL NIL NIL NIL NIL NIL)", false, false},
+		{"metadata partial", "ENVELOPE (NIL {4}\r\nnote NIL NIL NIL NIL NIL NIL NIL NIL)", false, true},
+		{"body unread", "BODY[] {4}\r\ndata", true, false},
+		{"body partial", "BODY[] {4}\r\ndata", true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			callbackReturned := make(chan error, 1)
+			client := newUIDBufferLimitClient(t, &imapclient.Options{
+				MaxFetchBufferSize: 4,
+				UnilateralDataHandler: &imapclient.UnilateralDataHandler{
+					Fetch: func(msg *imapclient.FetchMessageData) {
+						if msg.SeqNum != 9 {
+							callbackReturned <- fmt.Errorf("unsolicited sequence number = %d, want 9", msg.SeqNum)
+							return
+						}
+						if !tc.read {
+							callbackReturned <- nil
+							return
+						}
+						item := msg.Next()
+						if tc.body {
+							body, ok := item.(imapclient.FetchItemDataBodySection)
+							if !ok {
+								callbackReturned <- fmt.Errorf("first item = %T, want body section", item)
+								return
+							}
+							var prefix [1]byte
+							_, err := io.ReadFull(body.Literal, prefix[:])
+							if err != nil || prefix[0] != 'd' {
+								callbackReturned <- fmt.Errorf("body prefix = %q, %v; want d", prefix, err)
+								return
+							}
+						} else if envelope, ok := item.(imapclient.FetchItemDataEnvelope); !ok || envelope.Envelope.Subject != "note" {
+							callbackReturned <- fmt.Errorf("first item = %+v, want envelope with subject note", item)
+							return
+						}
+						// The body remainder and/or the UID item remain unread.
+						callbackReturned <- nil
+					},
+				},
+			}, func(conn net.Conn, reader *bufio.Reader) error {
+				tag, err := readUIDFetchWireCommand(reader)
+				if err != nil {
+					return err
+				}
+				if _, err := fmt.Fprintf(conn, "* 9 FETCH (%s UID 99)\r\n* 1 FETCH (UID 42 FLAGS (\\Seen))\r\n%s OK fetched\r\n", tc.attrs, tag); err != nil {
+					return err
+				}
+				line, err := reader.ReadString('\n')
+				if err != nil {
+					return err
+				}
+				tag, command, _ := strings.Cut(line, " ")
+				if command != "NOOP\r\n" {
+					return fmt.Errorf("expected NOOP after FETCH, got %q", line)
+				}
+				_, err = fmt.Fprintf(conn, "%s OK still usable\r\n", tag)
+				return err
+			})
+			cmd := client.Fetch(imap.UIDSetNum(42), &imap.FetchOptions{Flags: true})
+			completed := make(chan error, 1)
+			go func() {
+				messages, err := cmd.Collect()
+				if err == nil && (len(messages) != 1 || messages[0].UID != 42) {
+					err = fmt.Errorf("matched FETCH response = %+v, want one message with UID 42", messages)
+				}
+				completed <- err
+			}()
+			select {
+			case err := <-callbackReturned:
+				if err != nil {
+					t.Fatal(err)
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("unsolicited FETCH callback did not return")
+			}
+			select {
+			case err := <-completed:
+				if err != nil {
+					t.Fatal(err)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("reader stalled after the unsolicited FETCH callback returned")
+			}
+			if err := client.Noop().Wait(); err != nil {
+				t.Fatalf("connection unusable after callback returned: %v", err)
+			}
+		})
+	}
+}
+
+// A callback may collect data for another worker. Leaving the collected buffer
+// queued must neither hold up the decoder nor let callback cleanup erase it.
+func TestUIDFetchBufferUnilateralHandlerHandsOffCollectedData(t *testing.T) {
+	type result struct {
+		msg *imapclient.FetchMessageBuffer
+		err error
+	}
+	queued := make(chan result, 1)
+	client := newUIDBufferLimitClient(t, &imapclient.Options{
+		MaxFetchBufferSize: 8,
+		UnilateralDataHandler: &imapclient.UnilateralDataHandler{
+			Fetch: func(msg *imapclient.FetchMessageData) {
+				buf, err := msg.Collect()
+				queued <- result{buf, err}
+			},
+		},
+	}, func(conn net.Conn, reader *bufio.Reader) error {
+		tag, err := readUIDFetchWireCommand(reader)
+		if err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintf(conn, "* 9 FETCH (BODY[] {4}\r\ndata ENVELOPE (NIL {4}\r\nnote NIL NIL NIL NIL NIL NIL NIL NIL) UID 99)\r\n* 1 FETCH (UID 42 FLAGS (\\Seen))\r\n%s OK fetched\r\n", tag); err != nil {
+			return err
+		}
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			return err
+		}
+		tag, command, _ := strings.Cut(line, " ")
+		if command != "NOOP\r\n" {
+			return fmt.Errorf("expected NOOP after FETCH, got %q", line)
+		}
+		_, err = fmt.Fprintf(conn, "%s OK still usable\r\n", tag)
+		return err
+	})
+	messages, err := client.Fetch(imap.UIDSetNum(42), &imap.FetchOptions{Flags: true}).Collect()
+	if err != nil || len(messages) != 1 || messages[0].UID != 42 {
+		t.Fatalf("matched FETCH response = %+v, %v; want UID 42", messages, err)
+	}
+	if err := client.Noop().Wait(); err != nil {
+		t.Fatalf("queued collected data blocked later command: %v", err)
+	}
+	// Consume the handed-off data only after later responses have been read.
+	select {
+	case got := <-queued:
+		if got.err != nil {
+			t.Fatal(got.err)
+		}
+		if got.msg.UID != 99 || got.msg.SeqNum != 9 || got.msg.Envelope == nil || got.msg.Envelope.Subject != "note" || string(got.msg.FindBodySection(&imap.FetchItemBodySection{})) != "data" {
+			t.Fatalf("handed-off response lost data: %+v", got.msg)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("callback did not queue its collected response")
+	}
+}
