@@ -93,6 +93,11 @@ func TestListReferenceInterpretedByServer(t *testing.T) {
 		// The same interpretations can contain wildcard patterns.
 		{"foo/bar", "rag/*", "foo/barrag/baz"},
 		{"foo/bar", "rag/%", "foo/rag/baz"},
+		// A reference without a delimiter can be resolved relative to its
+		// empty parent. These valid replies need the pattern-only fallback,
+		// even though the same names could also be unsolicited notifications.
+		{"Archive", "*", "INBOX"},
+		{"Archive", "%", "INBOX"},
 	} {
 		for _, name := range []string{"LIST", "LSUB"} {
 			t.Run(name+" "+tc.ref+" "+tc.pattern, func(t *testing.T) {
