@@ -195,6 +195,23 @@ func TestSort(t *testing.T) {
 		}
 	})
 
+	t.Run("ESORT REVERSE", func(t *testing.T) {
+		options := &imapclient.SortOptions{
+			SortCriteria:   []imap.SortCriterion{{Key: imap.SortKeyArrival, Reverse: true}},
+			SearchCriteria: allMsgs,
+			Return:         imap.SortOptions{ReturnAll: true},
+		}
+		data, err := client.Sort(options).Wait()
+		if err != nil {
+			t.Fatalf("Sort() failed: %v", err)
+		}
+		// RFC 5267 §3.1: ALL lists the messages in sort order.
+		wantSeqNums := []uint32{3, 2, 1}
+		if !reflect.DeepEqual(data.SeqNums, wantSeqNums) {
+			t.Errorf("Sort() SeqNums = %v, want %v", data.SeqNums, wantSeqNums)
+		}
+	})
+
 	t.Run("Empty result", func(t *testing.T) {
 		// Search for a non-existent message
 		options := &imapclient.SortOptions{
