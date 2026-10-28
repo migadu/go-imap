@@ -1193,6 +1193,11 @@ func (c *Client) readResponseData(typ string) error {
 			return c.dec.Err()
 		}
 		return c.handleList()
+	case "LSUB":
+		if !c.dec.ExpectSP() {
+			return c.dec.Err()
+		}
+		return c.handleLsub()
 	case "STATUS":
 		if !c.dec.ExpectSP() {
 			return c.dec.Err()
