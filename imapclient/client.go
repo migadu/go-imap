@@ -92,6 +92,14 @@ type Options struct {
 	// buffer in memory (e.g., for FetchMessageBuffer.Collect). Larger
 	// literals must be consumed via the streaming API. Default 64 MiB.
 	MaxLiteralSize int64
+	// MaxFetchBufferSize caps the combined literal payload buffered to route a
+	// FETCH response: BODY, BINARY and metadata read before its UID, plus
+	// metadata held until SELECT updates are complete. Zero or negative values
+	// use the default of 64 MiB. At most 4096 items may be buffered, including
+	// empty body sections.
+	// Exceeding the limit fails the connection and its pending commands.
+	// Responses with UID before their bodies keep streaming without this cap.
+	MaxFetchBufferSize int64
 	// ResponseTimeout bounds how long to wait for a response while a command
 	// is in flight, including the wait for its first byte. This is the window
 	// in which an unresponsive server is detected. If zero, 30 seconds is used.
@@ -153,6 +161,13 @@ func (options *Options) maxLiteralSize() int64 {
 	return 64 * 1024 * 1024 // 64 MiB default
 }
 
+func (options *Options) maxFetchBufferSize() int64 {
+	if options.MaxFetchBufferSize > 0 {
+		return options.MaxFetchBufferSize
+	}
+	return 64 * 1024 * 1024
+}
+
 func (options *Options) decodeText(s string) (string, error) {
 	wordDecoder := options.WordDecoder
 	if wordDecoder == nil {
@@ -211,8 +226,9 @@ type Client struct {
 	greetingRecv bool
 	greetingErr  error
 
-	decCh  chan struct{}
-	decErr error
+	decCh   chan struct{}
+	decErr  error
+	closeCh chan struct{} // closed by Close to interrupt FETCH delivery
 
 	mutex       sync.Mutex
 	state       imap.ConnState
@@ -257,6 +273,7 @@ func New(conn net.Conn, options *Options) *Client {
 		dec:        dec,
 		greetingCh: make(chan struct{}),
 		decCh:      make(chan struct{}),
+		closeCh:    make(chan struct{}),
 		state:      imap.ConnStateNone,
 		enabled:    make(imap.CapSet),
 	}
@@ -519,6 +536,9 @@ func (c *Client) Close() error {
 	c.mutex.Lock()
 	alreadyClosed := c.closed
 	c.closed = true
+	if !alreadyClosed {
+		close(c.closeCh)
+	}
 	c.mutex.Unlock()
 
 	// Ignore net.ErrClosed here, because we also call conn.Close in c.read
@@ -1479,12 +1499,14 @@ type UnilateralDataMailbox struct {
 
 // UnilateralDataHandler handles unilateral data.
 //
-// The Fetch handler is invoked in a separate goroutine and will not block
-// the client. Other handlers (Expunge, Mailbox, Vanished) are invoked
-// synchronously and will block the client while running.
+// The Fetch handler is invoked in a separate goroutine. Reading further
+// responses can wait for it to consume message data or return. Other handlers
+// (Expunge, Mailbox, Vanished) are invoked synchronously and will block the
+// client while running.
 //
 // If the caller intends to perform slow operations in any handler, a buffered
-// channel and a separate goroutine should be used.
+// channel and a separate goroutine should be used. For Fetch, collect or copy
+// the needed data inside the callback and pass that data to the worker.
 //
 // These handlers are important when using the IDLE or NOTIFY commands, as the
 // server will send unsolicited STATUS, FETCH, and EXPUNGE responses for
@@ -1498,6 +1520,11 @@ type UnilateralDataHandler struct {
 	// Fetch is called for an unsolicited FETCH response, such as the flag
 	// update a NOTIFY FlagChange event produces for the selected mailbox
 	// (RFC 5465 §5.1).
+	//
+	// The message and its literal readers are valid only during the callback.
+	// Any unread data is discarded after it returns. For asynchronous work,
+	// call msg.Collect inside the callback and pass the resulting buffer to
+	// the worker instead of handing off msg or its literal readers.
 	//
 	// One case is not routed here: a FETCH command is in flight and the
 	// notification concerns a message inside its set. Nothing distinguishes

@@ -1,9 +1,11 @@
 package imapclient
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	netmail "net/mail"
 	"strings"
 	"time"
@@ -15,6 +17,11 @@ import (
 )
 
 var errLiteralTooLarge = errors.New("imapclient: literal exceeds MaxLiteralSize")
+
+var errFetchBufferTooLarge = errors.New("imapclient: buffered FETCH data exceeds MaxFetchBufferSize")
+
+// Empty bodies and metadata need a bound independent of the payload budget.
+const maxFetchBufferedItems = 4096
 
 // boundedBuf is a Writer that grows a byte slice up to a maximum size.
 type boundedBuf struct {
@@ -369,6 +376,7 @@ type FetchMessageData struct {
 	items chan FetchItemData
 	prev  FetchItemData
 	opts  *Options
+	done  chan struct{} // signals consumption of a response buffered before UID
 }
 
 // Next advances to the next data item for this message.
@@ -382,6 +390,10 @@ func (data *FetchMessageData) Next() FetchItemData {
 
 	item := <-data.items
 	data.prev = item
+	if item == nil && data.done != nil {
+		close(data.done)
+		data.done = nil
+	}
 	return item
 }
 
@@ -684,30 +696,83 @@ func (buf *FetchMessageBuffer) FindBinarySectionSize(part []int) (uint32, bool) 
 	return 0, false
 }
 
-func (c *Client) handleFetch(seqNum uint32) error {
+func (c *Client) handleFetch(seqNum uint32) (err error) {
 	dec := c.dec
 
 	items := make(chan FetchItemData, 32)
-	defer close(items)
+	var consumed chan struct{}
+	defer func() {
+		close(items)
+		if err == nil && consumed != nil {
+			// Metadata literals also occupy the buffer. Wait for the whole
+			// message to be consumed so the pending-command queue cannot
+			// retain one full buffer for every response.
+			select {
+			case <-consumed:
+				c.setReadTimeout(c.options.responseTimeout())
+			case <-c.closeCh:
+				err = net.ErrClosed
+			}
+		}
+	}()
 
 	msg := &FetchMessageData{SeqNum: seqNum, items: items, opts: &c.options}
 
-	// We're in a tricky situation: to know whether this FETCH response needs
-	// to be handled by a pending command, we may need to look at the UID in
-	// the response data. But the response data comes in in a streaming
-	// fashion: it can contain literals. Assume that the UID will be returned
-	// before any literal.
+	// UID FETCH responses may put their UID after body literals. Until the
+	// UID is known, keep the data private instead of assigning it to an
+	// arbitrary command (or treating it as unsolicited).
+	needsUID := c.findPendingCmdFunc(func(cmd command) bool {
+		fetch, ok := cmd.(*FetchCommand)
+		if !ok {
+			return false
+		}
+		_, ok = fetch.numSet.(imap.UIDSet)
+		return ok
+	}) != nil
 	var uid imap.UID
 	var flags []imap.Flag
 	var modSeq uint64
+	selectCmd := findPendingCmdByType[*SelectCommand](c)
 	handled := false
-	handleMsg := func() {
+	shouldBuffer := func() bool { return needsUID && !handled && uid == 0 }
+	shouldBufferMetadata := func() bool { return shouldBuffer() || (!handled && selectCmd != nil) }
+	var bufferedBytes int64
+	reserve := func(size int64) error {
+		if size > c.options.maxFetchBufferSize()-bufferedBytes {
+			return errFetchBufferTooLarge
+		}
+		bufferedBytes += size
+		return nil
+	}
+
+	// Metadata can contain literals too. Count them before the decoder
+	// buffers them, retaining its separate per-literal and syntax limits.
+	// BODY/BINARY are counted below, including their quoted-string forms.
+	readingBody := false
+	previousCheck := dec.CheckLiteralFunc
+	dec.CheckLiteralFunc = func(size int64) error {
+		if previousCheck != nil {
+			if err := previousCheck(size); err != nil {
+				return err
+			}
+		}
+		if shouldBufferMetadata() && !readingBody {
+			return reserve(size)
+		}
+		return nil
+	}
+	defer func() { dec.CheckLiteralFunc = previousCheck }()
+
+	handleMsg := func() error {
 		if handled {
-			return
+			return nil
+		}
+		if bufferedBytes > 0 {
+			consumed = make(chan struct{})
+			msg.done = consumed
 		}
 
 		// Check if this is a QRESYNC SELECT response
-		selectCmd := findPendingCmdByType[*SelectCommand](c)
 		if selectCmd != nil && uid != 0 && modSeq != 0 {
 			// This is a Modified message during QRESYNC SELECT
 			// Note: flags can be empty (nil), so we only check uid and modSeq
@@ -719,7 +784,7 @@ func (c *Client) handleFetch(seqNum uint32) error {
 			})
 			handled = true
 			go msg.discard() // Discard remaining data
-			return
+			return nil
 		}
 
 		cmd := c.findPendingCmdFunc(func(anyCmd command) bool {
@@ -745,16 +810,69 @@ func (c *Client) handleFetch(seqNum uint32) error {
 		})
 		if cmd != nil {
 			cmd := cmd.(*FetchCommand)
-			cmd.msgs <- msg
+			select {
+			case cmd.msgs <- msg:
+			case <-c.closeCh:
+				return net.ErrClosed
+			}
 		} else if handler := c.options.unilateralDataHandler().Fetch; handler != nil {
-			go handler(msg)
+			go func() {
+				defer msg.discard()
+				handler(msg)
+			}()
 		} else {
 			go msg.discard()
 		}
 
 		handled = true
+		return nil
 	}
-	defer handleMsg()
+
+	type pendingItem struct {
+		data FetchItemData
+		done chan struct{}
+	}
+	var buffered []pendingItem
+	sendItem := func(item pendingItem) error {
+		if item.done != nil {
+			c.setReadTimeout(c.options.literalTimeout())
+			defer c.setReadTimeout(c.options.responseTimeout())
+		}
+		select {
+		case items <- item.data:
+		case <-c.closeCh:
+			return net.ErrClosed
+		}
+		if item.done != nil {
+			// Buffered bodies retain streaming's backpressure: don't let the
+			// message queue accumulate another full buffer per response.
+			select {
+			case <-item.done:
+			case <-c.closeCh:
+				return net.ErrClosed
+			}
+		}
+		return nil
+	}
+	flushBuffered := func() error {
+		for i, item := range buffered {
+			if err := sendItem(item); err != nil {
+				return err
+			}
+			buffered[i] = pendingItem{}
+		}
+		buffered = nil
+		// Delivery can wait for the caller when more than a channel's worth
+		// of metadata precedes UID, even without any literal payload.
+		c.setReadTimeout(c.options.responseTimeout())
+		return nil
+	}
+	finish := func() error {
+		if err := handleMsg(); err != nil {
+			return err
+		}
+		return flushBuffered()
+	}
 
 	numAtts := 0
 	emptyLiteral := false
@@ -860,23 +978,39 @@ func (c *Client) handleFetch(seqNum uint32) error {
 					dec.Special('~')
 				}
 
+				readingBody = true
 				lit, _, ok := dec.ExpectNStringReader()
+				readingBody = false
 				if !ok {
 					return dec.Err()
 				}
 
 				var fetchLit imap.LiteralReader
 				if lit != nil && lit.Size() == 0 {
-					// Nothing to stream, so read it now and queue the item like
-					// any other: the message is then handed over after the rest
-					// of the response, UID included. A UID FETCH can claim a
-					// message only by its UID, which a server may send after an
-					// empty body (issue #774).
+					// Release the decoder's empty literal now; retain a non-nil
+					// reader to distinguish an empty section from NIL.
 					emptyLiteral = true
 					if _, err := io.Copy(io.Discard, lit); err != nil {
 						return err
 					}
 					fetchLit = lit
+				} else if lit != nil && shouldBuffer() {
+					if err := reserve(lit.Size()); err != nil {
+						return err
+					}
+					b := make([]byte, lit.Size())
+					c.setReadTimeout(c.options.literalTimeout())
+					_, err := io.ReadFull(lit, b)
+					if err == nil {
+						// Read through EOF to release the decoder's literal.
+						_, err = io.Copy(io.Discard, lit)
+					}
+					c.setReadTimeout(c.options.responseTimeout())
+					if err != nil {
+						return err
+					}
+					done = make(chan struct{})
+					fetchLit = &fetchLiteralReader{LiteralReader: bytes.NewReader(b), ch: done}
 				} else if lit != nil {
 					done = make(chan struct{})
 					fetchLit = &fetchLiteralReader{
@@ -945,35 +1079,48 @@ func (c *Client) handleFetch(seqNum uint32) error {
 		}
 
 		numAtts++
+		entry := pendingItem{data: item, done: done}
+		// A later pipelined UID FETCH must not claim a SELECT's QRESYNC
+		// update before all of its UID, MODSEQ and FLAGS have been parsed.
+		// Keep metadata private through the end of that response; actual
+		// streaming literals retain the normal dispatch path once UID is known.
+		if shouldBuffer() || (shouldBufferMetadata() && done == nil) {
+			if len(buffered) >= maxFetchBufferedItems {
+				return fmt.Errorf("imapclient: buffered FETCH data exceeds %d items", maxFetchBufferedItems)
+			}
+			buffered = append(buffered, entry)
+			return nil
+		}
+		if len(buffered) != 0 {
+			if err := handleMsg(); err != nil {
+				return err
+			}
+			if err := flushBuffered(); err != nil {
+				return err
+			}
+		}
 		if numAtts > cap(items) || done != nil {
 			// To avoid deadlocking we need to ask the message handler to
 			// consume the data
-			handleMsg()
+			if err := handleMsg(); err != nil {
+				return err
+			}
 		}
-
-		if done != nil {
-			c.setReadTimeout(c.options.literalTimeout())
-		}
-		items <- item
-		if done != nil {
-			<-done
-			c.setReadTimeout(c.options.responseTimeout())
-		}
-		return nil
+		return sendItem(entry)
 	}
 
 	if !dec.ExpectSpecial('(') {
 		return dec.Err()
 	}
 	if dec.Special(')') {
-		return nil
+		return finish()
 	}
 	for {
 		if err := readItem(); err != nil {
 			return err
 		}
 		if dec.Special(')') {
-			return nil
+			return finish()
 		}
 		// Workaround: some servers (e.g. Open-Xchange) omit the SP after an
 		// empty literal, e.g. "BODY[HEADER.FIELDS (REFERENCES)] {0}\r\nUID 42".
@@ -1542,7 +1689,7 @@ func readSectionPart(dec *imapwire.Decoder) (part []int, dot bool) {
 }
 
 type fetchLiteralReader struct {
-	*imapwire.LiteralReader
+	imap.LiteralReader
 	ch chan<- struct{}
 }
 

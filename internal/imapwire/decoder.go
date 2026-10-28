@@ -49,6 +49,9 @@ func (err *DecoderExpectError) Error() string {
 //   - "Expect" methods do the same, but set the decoder error (see Err) on
 //     failure.
 type Decoder struct {
+	// CheckLiteralFunc is called before reading any literal payload, including
+	// streamed literals. An error refuses the literal and stops decoding.
+	CheckLiteralFunc func(size int64) error
 	// CheckBufferedLiteralFunc is called when a literal is about to be decoded
 	// and needs to be fully buffered in memory.
 	CheckBufferedLiteralFunc func(size int64, nonSync bool) error
@@ -894,6 +897,12 @@ func (dec *Decoder) LiteralReader() (lit *LiteralReader, nonSync, ok bool) {
 		size:    size,
 		nonSync: nonSync,
 		r:       newLimitReader(dec.r, size),
+	}
+	if dec.CheckLiteralFunc != nil {
+		if err := dec.CheckLiteralFunc(size); err != nil {
+			lit.cancel(nil)
+			return nil, nonSync, dec.returnErr(err)
+		}
 	}
 	return lit, nonSync, true
 }
