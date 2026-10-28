@@ -204,13 +204,20 @@ func (c *Client) handleSearch() error {
 }
 
 func (c *Client) handleESearch() error {
-	if !c.dec.ExpectSP() {
-		return c.dec.Err()
-	}
+	// esearch-response = "ESEARCH" [search-correlator] [SP "UID"]
+	// *(SP search-return-data), and search-correlator = SP "(" ... ")". All
+	// of it is optional, and one byte of lookahead cannot tell the
+	// correlator's SP from the next item's, so read the SP here and tell the
+	// readers below whether they still have to.
 	data := &imap.SearchData{}
-	tag, err := readSearchCorrelator(c.dec, data)
-	if err != nil {
-		return err
+	var tag string
+	spRead := c.dec.SP()
+	if spRead && c.dec.NextByteIs('(') {
+		var err error
+		if tag, err = readSearchCorrelator(c.dec, data); err != nil {
+			return err
+		}
+		spRead = false
 	}
 	cmd := c.findPendingCmdFunc(func(anyCmd command) bool {
 		switch cmd := anyCmd.(type) {
@@ -236,10 +243,10 @@ func (c *Client) handleESearch() error {
 			return ok && (tag == "" || cmd.tag == tag)
 		}).(*SortCommand)
 		if sortCmd != nil {
-			return c.readESortData(sortCmd)
+			return c.readESortData(sortCmd, spRead)
 		}
 	}
-	if err := readESearchReturnData(c.dec, data); err != nil {
+	if err := readESearchReturnData(c.dec, data, spRead); err != nil {
 		return err
 	}
 	if cmd != nil {
@@ -435,9 +442,11 @@ func readSearchCorrelator(dec *imapwire.Decoder, data *imap.SearchData) (tag str
 
 // readESearchReturnData reads the return data that follows the
 // search-correlator of an ESEARCH response.
-func readESearchReturnData(dec *imapwire.Decoder, data *imap.SearchData) error {
+//
+// spRead reports that the SP in front of the first item has been read.
+func readESearchReturnData(dec *imapwire.Decoder, data *imap.SearchData, spRead bool) error {
 	var name string
-	if !dec.SP() {
+	if !spRead && !dec.SP() {
 		return nil
 	} else if !dec.ExpectAtom(&name) {
 		return dec.Err()
