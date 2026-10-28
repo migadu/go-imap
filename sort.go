@@ -36,4 +36,9 @@ type SortData struct {
 	Min   uint32
 	Max   uint32
 	Count uint32
+
+	// ModSeq is the highest mod-sequence of the returned messages, or zero if
+	// none are returned. The server sends it only when the search criteria use
+	// MODSEQ (RFC 7162 §3.1.9, §3.1.10), so a session may always set it.
+	ModSeq uint64 // requires CONDSTORE
 }

@@ -534,10 +534,13 @@ func (mbox *MailboxView) Sort(ctx context.Context, kind imapserver.NumKind, sort
 		if kind == imapserver.NumKindUID {
 			data.All = append(data.All, uint32(msg.uid))
 		} else {
-			if seqNum, ok := uidToSeq[msg.uid]; ok && seqNum > 0 {
-				data.All = append(data.All, seqNum)
+			seqNum, ok := uidToSeq[msg.uid]
+			if !ok || seqNum == 0 {
+				continue
 			}
+			data.All = append(data.All, seqNum)
 		}
+		data.ModSeq = max(data.ModSeq, msg.modSeq)
 	}
 
 	// 4. Calculate MIN, MAX, COUNT for ESORT
