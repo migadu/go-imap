@@ -234,12 +234,39 @@ func (cmd *ListCommand) matches(data *imap.ListData) bool {
 	// to upper case in both directions (RFC 9051 §6.3.9 has the server match
 	// and report the uppercase spelling), so compare the canonical forms.
 	ref, pattern := canonicalMailbox(cmd.ref), canonicalMailbox(cmd.pattern)
-	// RFC 9051 §6.3.9 leaves the reading of the reference to the server. Its
-	// examples read it either before the pattern or not at all, when the
-	// pattern names an absolute path ("~smith/Mail/" "/usr/doc/foo" lists
-	// /usr/doc/foo), so a response that matches either reading is claimed.
-	return internal.MatchList(data.Mailbox, data.Delim, ref, pattern) ||
-		internal.MatchPattern(data.Mailbox, data.Delim, pattern)
+	if internal.MatchList(data.Mailbox, data.Delim, ref, pattern) {
+		return true
+	}
+	if ref != "" && data.Delim != 0 {
+		delim := string(data.Delim)
+		if strings.HasSuffix(ref, delim) {
+			// A wildcard-leading pattern stays in the reference's hierarchy.
+			// Matching it against the whole name would absorb unrelated LIST
+			// notifications (e.g. INBOX while listing "Archive/" "*").
+			if pattern[0] == '*' || pattern[0] == '%' {
+				return false
+			}
+		} else {
+			// RFC 9051 §6.3.9 gives three interpretations of "foo/bar" +
+			// "rag/baz": the child path above, direct concatenation, or a
+			// path relative to "foo/". Accept the latter two as well. Strip
+			// the reference literally: its '*' and '%' are not wildcards.
+			prefixes := []string{ref}
+			if i := strings.LastIndex(ref, delim); i >= 0 {
+				prefixes = append(prefixes, ref[:i+len(delim)])
+			}
+			for _, prefix := range prefixes {
+				if suffix, ok := strings.CutPrefix(data.Mailbox, prefix); ok &&
+					internal.MatchPattern(suffix, data.Delim, pattern) {
+					return true
+				}
+			}
+		}
+	}
+	// Breakout characters are server-defined, so literal-leading patterns
+	// may override the reference. Do not restrict this to known /, ~ or #
+	// prefixes, or attempt to reproduce the server's full canonicalization.
+	return internal.MatchPattern(data.Mailbox, data.Delim, pattern)
 }
 
 // canonicalMailbox spells a mailbox name the way the encoder puts it on the
