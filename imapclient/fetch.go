@@ -1048,12 +1048,13 @@ func (c *Client) handleFetch(seqNum uint32) (err error) {
 				var fetchLit imap.LiteralReader
 				if lit != nil && lit.Size() == 0 {
 					// Release the decoder's empty literal now; retain a non-nil
-					// reader to distinguish an empty section from NIL.
+					// reader to distinguish an empty section from NIL. It still
+					// needs the callback lifetime guard, but no consumption wait.
 					emptyLiteral = true
 					if _, err := io.Copy(io.Discard, lit); err != nil {
 						return err
 					}
-					fetchLit = lit
+					fetchLit = &fetchLiteralReader{LiteralReader: lit, msg: msg}
 				} else if lit != nil && shouldBuffer() {
 					if err := reserve(lit.Size()); err != nil {
 						return err
