@@ -264,7 +264,9 @@ func readSearchReturnOpts(dec *imapwire.Decoder, options *imap.SearchOptions) er
 		case "SAVE":
 			options.ReturnSave = true
 		default:
-			// RFC 4731: A server MUST ignore any unrecognized return options.
+			// RFC 4466 §2.6.1: "Any options not defined by extensions that the
+			// server supports must be rejected with a BAD response."
+			return newClientBugError(fmt.Sprintf("Unknown SEARCH return option: %v", name))
 		}
 		return nil
 	})

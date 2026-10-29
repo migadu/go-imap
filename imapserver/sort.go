@@ -272,14 +272,18 @@ func readSortReturnOpts(dec *imapwire.Decoder, options *imap.SortOptions) error 
 			options.ReturnCount = true
 			numRecognizedOpts++
 		default:
-			// RFC 5267: Servers MUST ignore any unknown sort-return-opt
+			// The extended SORT is "otherwise identical in its behaviour to the
+			// extended SEARCH command" (RFC 5267 §3), which rejects options the
+			// server does not support with BAD (RFC 4466 §2.6.1). SAVE is
+			// SEARCH's only (RFC 5182).
+			return newClientBugError(fmt.Sprintf("Unknown SORT return option: %v", name))
 		}
 		return nil
 	}); err != nil {
 		return err
 	}
-	// RFC 5267: If the list of return options is present but empty (or only has unknown options),
-	// then the server provides the ALL return data item
+	// RFC 5267 §3.3: "If the list of return options is present but empty, then
+	// the server provides the ALL return data item"
 	if numRecognizedOpts == 0 {
 		options.ReturnAll = true
 	}
