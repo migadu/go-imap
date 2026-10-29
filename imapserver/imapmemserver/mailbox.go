@@ -738,7 +738,7 @@ func writeStoreFetchResponse(w *imapserver.FetchWriter, mod modifiedMessageData,
 }
 
 func (mbox *MailboxView) Store(ctx context.Context, w *imapserver.FetchWriter, numSet imap.NumSet, flags *imap.StoreFlags, options *imap.StoreOptions) error {
-	// RFC 7162 §3.1.3.1: an absent UNCHANGEDSINCE modifier means an
+	// RFC 7162 §3.1.3: an absent UNCHANGEDSINCE modifier means an
 	// unconditional store, while an explicit "UNCHANGEDSINCE 0" is the
 	// always-fail probe, which must fail for every message that carries a
 	// modification sequence. Conditional folds presence and value into the one

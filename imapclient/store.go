@@ -12,7 +12,7 @@ import (
 // Unless StoreFlags.Silent is set, the server will return the updated values.
 //
 // A nil options pointer is equivalent to a zero options value. The
-// UNCHANGEDSINCE modifier (RFC 7162 §3.1.3.1) is sent when
+// UNCHANGEDSINCE modifier (RFC 7162 §3.1.3) is sent when
 // options.Conditional() reports it as present; note that
 // StoreOptions.UnchangedSinceSet must be set to issue the always-fail probe
 // "UNCHANGEDSINCE 0", since a zero UnchangedSince alone means "no modifier".
