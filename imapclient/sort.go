@@ -138,8 +138,29 @@ func (c *Client) readESortData(cmd *SortCommand, spRead bool) error {
 		spRead = false
 		var s string
 		if c.dec.Special('(') {
-			var key, tag string
-			if !c.dec.ExpectAtom(&key) || !strings.EqualFold(key, "TAG") || !c.dec.ExpectSP() || !c.dec.ExpectAString(&tag) || !c.dec.ExpectSpecial(')') {
+			// An ESORT response's search-correlator, or "(MODSEQ n)", which
+			// some servers send instead of the bare form and which
+			// readESearchReturnData accepts on SEARCH too.
+			var key string
+			if !c.dec.ExpectAtom(&key) {
+				return c.dec.Err()
+			}
+			switch strings.ToUpper(key) {
+			case "TAG":
+				var tag string
+				if !c.dec.ExpectSP() || !c.dec.ExpectAString(&tag) {
+					return c.dec.Err()
+				}
+			case "MODSEQ":
+				if !c.dec.ExpectSP() || !c.dec.ExpectModSeq(&cmd.data.ModSeq) {
+					return c.dec.Err()
+				}
+			default:
+				if c.dec.SP() && !c.dec.DiscardValue() {
+					return c.dec.Err()
+				}
+			}
+			if !c.dec.ExpectSpecial(')') {
 				return c.dec.Err()
 			}
 			continue
