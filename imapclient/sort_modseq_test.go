@@ -18,43 +18,7 @@ func TestSort_ModSeqReturnOptions(t *testing.T) {
 	defer client.Close()
 	defer server.Close()
 
-	const mboxName = "SORT-MODSEQ"
-	if err := client.Create(mboxName, nil).Wait(); err != nil {
-		t.Fatalf("Create() = %v", err)
-	}
-	if _, err := client.Select(mboxName, nil).Wait(); err != nil {
-		t.Fatalf("Select() = %v", err)
-	}
-	for i := 0; i < 3; i++ {
-		msg := []byte("Subject: m\r\n\r\nbody")
-		cmd := client.Append(mboxName, int64(len(msg)), nil)
-		if _, err := cmd.Write(msg); err != nil {
-			t.Fatalf("Append.Write() = %v", err)
-		}
-		if err := cmd.Close(); err != nil {
-			t.Fatalf("Append.Close() = %v", err)
-		}
-		if _, err := cmd.Wait(); err != nil {
-			t.Fatalf("Append.Wait() = %v", err)
-		}
-		time.Sleep(10 * time.Millisecond) // distinct arrival times
-	}
-	// Give the middle message (in ARRIVAL order) the highest mod-sequence.
-	store := client.Store(imap.SeqSetNum(2), &imap.StoreFlags{Op: imap.StoreFlagsAdd, Flags: []imap.Flag{imap.FlagFlagged}}, nil)
-	if err := store.Close(); err != nil {
-		t.Fatalf("Store() = %v", err)
-	}
-	msgs, err := client.Fetch(imap.SeqSetNum(1, 2, 3), &imap.FetchOptions{ModSeq: true}).Collect()
-	if err != nil {
-		t.Fatalf("Fetch() = %v", err)
-	}
-	modSeq := map[uint32]uint64{}
-	for _, msg := range msgs {
-		modSeq[msg.SeqNum] = msg.ModSeq
-	}
-	if !(modSeq[2] > modSeq[1] && modSeq[2] > modSeq[3]) {
-		t.Fatalf("mod-sequences %v: want message 2 highest", modSeq)
-	}
+	modSeq := selectModSeqMailbox(t, client, "SORT-MODSEQ")
 
 	for _, tc := range []struct {
 		name       string
@@ -163,4 +127,48 @@ func TestSort_ModSeq(t *testing.T) {
 			})
 		}
 	}
+}
+
+// selectModSeqMailbox creates and selects mboxName holding three messages in
+// ARRIVAL order, flags the second so that it has the highest mod-sequence, and
+// returns each message's mod-sequence by sequence number.
+func selectModSeqMailbox(t *testing.T, client *imapclient.Client, mboxName string) map[uint32]uint64 {
+	t.Helper()
+	if err := client.Create(mboxName, nil).Wait(); err != nil {
+		t.Fatalf("Create() = %v", err)
+	}
+	if _, err := client.Select(mboxName, nil).Wait(); err != nil {
+		t.Fatalf("Select() = %v", err)
+	}
+	for i := 0; i < 3; i++ {
+		msg := []byte("Subject: m\r\n\r\nbody")
+		cmd := client.Append(mboxName, int64(len(msg)), nil)
+		if _, err := cmd.Write(msg); err != nil {
+			t.Fatalf("Append.Write() = %v", err)
+		}
+		if err := cmd.Close(); err != nil {
+			t.Fatalf("Append.Close() = %v", err)
+		}
+		if _, err := cmd.Wait(); err != nil {
+			t.Fatalf("Append.Wait() = %v", err)
+		}
+		time.Sleep(10 * time.Millisecond) // distinct arrival times
+	}
+	// Give the middle message (in ARRIVAL order) the highest mod-sequence.
+	store := client.Store(imap.SeqSetNum(2), &imap.StoreFlags{Op: imap.StoreFlagsAdd, Flags: []imap.Flag{imap.FlagFlagged}}, nil)
+	if err := store.Close(); err != nil {
+		t.Fatalf("Store() = %v", err)
+	}
+	msgs, err := client.Fetch(imap.SeqSetNum(1, 2, 3), &imap.FetchOptions{ModSeq: true}).Collect()
+	if err != nil {
+		t.Fatalf("Fetch() = %v", err)
+	}
+	modSeq := map[uint32]uint64{}
+	for _, msg := range msgs {
+		modSeq[msg.SeqNum] = msg.ModSeq
+	}
+	if !(modSeq[2] > modSeq[1] && modSeq[2] > modSeq[3]) {
+		t.Fatalf("mod-sequences %v: want message 2 highest", modSeq)
+	}
+	return modSeq
 }

@@ -82,9 +82,21 @@ func (c *Conn) handleSearch(tag string, dec *imapwire.Decoder, numKind NumKind) 
 		options.ReturnAll = true
 	}
 
+	// Read before the session can rewrite the criteria. readSearchKey keeps a
+	// MODSEQ key only when CONDSTORE is supported.
+	hasModSeq := searchCriteriaHasModSeq(&criteria)
+
 	data, err := c.session.Search(c.ctx, numKind, &criteria, &options)
 	if err != nil {
 		return err
+	}
+
+	// RFC 7162 §3.1.5 and §3.1.6: the response carries the highest
+	// mod-sequence of the result only when the criteria use MODSEQ, as for
+	// SORT (handleSort). A client that did not ask cannot be expected to
+	// parse it.
+	if !hasModSeq {
+		data.ModSeq = 0
 	}
 
 	var supportsESEARCH bool
@@ -193,6 +205,7 @@ func (c *Conn) writeSearch(numSet imap.NumSet, modSeq uint64) error {
 
 	enc.Atom("*").SP().Atom("SEARCH")
 
+	written := 0
 	if numSet != nil {
 		var ok bool
 		switch numSet := numSet.(type) {
@@ -202,22 +215,25 @@ func (c *Conn) writeSearch(numSet imap.NumSet, modSeq uint64) error {
 			for _, num := range nums {
 				enc.SP().Number(num)
 			}
+			written = len(nums)
 		case imap.UIDSet:
 			var uids []imap.UID
 			uids, ok = numSet.Nums()
 			for _, uid := range uids {
 				enc.SP().UID(uid)
 			}
+			written = len(uids)
 		}
 		if !ok {
 			return fmt.Errorf("imapserver: failed to enumerate message numbers in SEARCH response (dynamic set?)")
 		}
 	}
 
-	// RFC 7162 §3.4: append the highest mod-sequence of the matched messages to
-	// the untagged SEARCH response, e.g. "* SEARCH 2 5 6 (MODSEQ 917162500)".
-	// Gated identically to the ESEARCH path (writeESearch).
-	if modSeq > 0 && c.supportsCondStore() {
+	// RFC 7162 §3.1.5: append the highest mod-sequence of the matched messages
+	// to the untagged SEARCH response, e.g. "* SEARCH 2 5 6 (MODSEQ 917162500)".
+	// Unlike the ESEARCH path (writeESearch), RFC 7162 §7 allows it only after
+	// at least one number, as writeSort does.
+	if modSeq > 0 && written > 0 && c.supportsCondStore() {
 		enc.SP().Special('(').Atom("MODSEQ").SP().ModSeq(modSeq).Special(')')
 	}
 

@@ -148,8 +148,14 @@ type SearchData struct {
 	// correlator (RFC 7377 §2.1) so returned UIDs are unambiguous across mailboxes
 	UIDValidity uint32
 
-	// requires CONDSTORE
-	ModSeq uint64
+	// ModSeq is the highest mod-sequence of the messages the response returns,
+	// or zero if there are none (RFC 7162 §3.1.5). Following RFC 4731 §3.2,
+	// with MIN or MAX alone it is that message's, and with MIN and MAX but no
+	// ALL or COUNT the higher of the two.
+	//
+	// The server sends it only when the search criteria use MODSEQ, so a
+	// session may always set it.
+	ModSeq uint64 // requires CONDSTORE
 }
 
 // SearchSource describes the set of mailboxes an ESEARCH command operates on,

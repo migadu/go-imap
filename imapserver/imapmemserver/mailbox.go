@@ -451,6 +451,8 @@ func (mbox *MailboxView) Search(ctx context.Context, numKind imapserver.NumKind,
 		data   imap.SearchData
 		seqSet imap.SeqSet
 		uidSet imap.UIDSet
+		// Mod-sequences of all matches, and of the MIN and MAX messages.
+		allModSeq, minModSeq, maxModSeq uint64
 	)
 	for i, msg := range mbox.l {
 		seqNum := mbox.tracker.EncodeSeqNum(uint32(i) + 1)
@@ -474,11 +476,12 @@ func (mbox *MailboxView) Search(ctx context.Context, numKind imapserver.NumKind,
 			num = uint32(msg.uid)
 		}
 		if data.Min == 0 || num < data.Min {
-			data.Min = num
+			data.Min, minModSeq = num, msg.modSeq
 		}
 		if data.Max == 0 || num > data.Max {
-			data.Max = num
+			data.Max, maxModSeq = num, msg.modSeq
 		}
+		allModSeq = max(allModSeq, msg.modSeq)
 		data.Count++
 	}
 
@@ -489,7 +492,19 @@ func (mbox *MailboxView) Search(ctx context.Context, numKind imapserver.NumKind,
 		data.All = uidSet
 	}
 
-	data.ModSeq = mbox.highestModSeq
+	// RFC 7162 §3.1.5: the highest mod-sequence of the messages returned, not
+	// of the mailbox. RFC 4731 §3.2 narrows it for MIN and MAX without ALL or
+	// COUNT.
+	if options.ReturnAll || options.ReturnCount || !(options.ReturnMin || options.ReturnMax) {
+		data.ModSeq = allModSeq
+	} else {
+		if options.ReturnMin {
+			data.ModSeq = minModSeq
+		}
+		if options.ReturnMax {
+			data.ModSeq = max(data.ModSeq, maxModSeq)
+		}
+	}
 	if options.ReturnSave {
 		mbox.searchRes = uidSet
 	}
@@ -555,8 +570,9 @@ func (mbox *MailboxView) Sort(ctx context.Context, kind imapserver.NumKind, sort
 		data.Min, data.Max = data.All[0], data.All[n-1]
 
 		// RFC 4731 §3.2 (RFC 7162 §3.1.10 for SORT): MODSEQ covers only the
-		// messages the response returns.
-		if options == nil || options.ReturnAll || options.ReturnCount {
+		// messages the response returns. No return option means ALL, as in
+		// Search.
+		if options == nil || options.ReturnAll || options.ReturnCount || !(options.ReturnMin || options.ReturnMax) {
 			data.ModSeq = slices.Max(modSeqs)
 		} else {
 			if options.ReturnMin {
