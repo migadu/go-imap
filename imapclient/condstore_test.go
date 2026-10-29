@@ -277,10 +277,10 @@ func TestSearch_ModSeq(t *testing.T) {
 // in the ESEARCH response when a MODSEQ search criterion is used, and that the
 // client correctly parses it.
 //
-// RFC 7162 §3.4 requires MODSEQ to be a bare "MODSEQ <value>" item in the
-// ESEARCH response (no wrapping parentheses).  Before the fix the server
-// emitted the non-RFC "(MODSEQ <value>)" form; this test ensures the
-// RFC-correct format works end-to-end.
+// RFC 7162 §3.1.10 and RFC 4731 §3.2 require MODSEQ to be a bare
+// "MODSEQ <value>" item in the ESEARCH response (no wrapping parentheses).
+// Before the fix the server emitted the non-RFC "(MODSEQ <value>)" form; this
+// test ensures the RFC-correct format works end-to-end.
 func TestSearch_ESearch_ModSeq(t *testing.T) {
 	client, server := newClientServerPair(t, imap.ConnStateSelected)
 	defer client.Close()
@@ -298,7 +298,7 @@ func TestSearch_ESearch_ModSeq(t *testing.T) {
 		t.Fatalf("Search() = %v", err)
 	}
 	if results.ModSeq == 0 {
-		t.Errorf("SearchData.ModSeq = 0, want non-zero: MODSEQ must be present in ESEARCH response when MODSEQ criterion is used (RFC 7162 §3.4)")
+		t.Errorf("SearchData.ModSeq = 0, want non-zero: MODSEQ must be present in ESEARCH response when MODSEQ criterion is used (RFC 7162 §3.1.10)")
 	}
 }
 

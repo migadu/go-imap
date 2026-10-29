@@ -155,7 +155,7 @@ func TestUIDFetch_Vanished(t *testing.T) {
 // that emits untagged FETCH responses during a QRESYNC SELECT for messages
 // that were modified since the supplied mod-sequence.
 //
-// RFC 7162 §2.3.2 requires MODSEQ to be formatted as "MODSEQ (value)" in
+// RFC 7162 §3.1.4 requires MODSEQ to be formatted as "MODSEQ (value)" in
 // FETCH responses.  Without the fix, writeQResyncFetch emits "MODSEQ value"
 // (without the mandatory parentheses), which the imapclient FETCH parser
 // rejects, causing Select().Wait() to return a parse error.

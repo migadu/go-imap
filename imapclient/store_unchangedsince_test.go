@@ -26,7 +26,7 @@ func appendExtraMessages(t *testing.T, client *imapclient.Client, n int) {
 }
 
 // TestStore_UnchangedSinceZero is an end-to-end check of the always-fail probe
-// of RFC 7162 §3.1.3.1, exercising every hop: the client must put an explicit
+// of RFC 7162 §3.1.3, exercising every hop: the client must put an explicit
 // "UNCHANGEDSINCE 0" on the wire (a zero UnchangedSince alone used to be
 // indistinguishable from an absent modifier), the server must parse it as
 // present, the backend must fail every message that carries a modification

@@ -509,8 +509,8 @@ func readESearchReturnData(dec *imapwire.Decoder, data *imap.SearchData, spRead 
 			}
 			data.Count = num
 		case "MODSEQ":
-			// RFC 7162 §3.4: MODSEQ appears as a bare "MODSEQ <value>" item
-			// in an ESEARCH response.
+			// RFC 4731 §3.2: MODSEQ appears as a bare "MODSEQ <value>" item
+			// in an ESEARCH response (required by RFC 7162 §3.1.10).
 			var modSeq uint64
 			if !dec.ExpectModSeq(&modSeq) {
 				return dec.Err()

@@ -32,13 +32,13 @@ func (c *Conn) handleStore(dec *imapwire.Decoder, numKind NumKind) error {
 			// A modifier the server does not support for this client must be
 			// rejected with a tagged BAD (RFC 4466 §2.5). Silently dropping it
 			// instead would invert the request's meaning: an explicit
-			// "UNCHANGEDSINCE 0" is the always-fail probe (RFC 7162 §3.1.3.1),
+			// "UNCHANGEDSINCE 0" is the always-fail probe (RFC 7162 §3.1.3),
 			// and running it as an unconditional store would modify exactly the
 			// messages the client asked never to touch.
 			if !c.supportsCondStore() {
 				return newClientBugError("UNCHANGEDSINCE requires CONDSTORE")
 			}
-			// Record presence separately from the value: RFC 7162 §3.1.3.1 gives
+			// Record presence separately from the value: RFC 7162 §3.1.3 gives
 			// an absent modifier (unconditional store) and an explicit
 			// "UNCHANGEDSINCE 0" (always-fail probe) opposite meanings, and the
 			// value alone cannot tell them apart.

@@ -13,11 +13,11 @@ import (
 // advertised but then silently disabled) and the underlying server-side protocol
 // bugs that originally caused iOS compatibility issues have since been fixed:
 //   - MODSEQ in FETCH responses now correctly uses the "MODSEQ (value)" form
-//     (RFC 7162 §2.3.2).
-//   - ESEARCH MODSEQ result now uses the bare "MODSEQ value" form (RFC 7162
-//     §3.4).
+//     (RFC 7162 §3.1.4).
+//   - ESEARCH MODSEQ result now uses the bare "MODSEQ value" form (RFC 4731
+//     §3.2, RFC 7162 §3.1.10).
 //   - UID FETCH CHANGEDSINCE+VANISHED now uses the canonical parenthesised
-//     form (RFC 4466 §2.2 / RFC 7162 §6).
+//     form (RFC 4466 §2.4 / RFC 7162 §3.2.6).
 func (c *Conn) supportsCondStore() bool {
 	if capSession, ok := c.session.(SessionCapabilities); ok {
 		sessionCaps := capSession.GetCapabilities()

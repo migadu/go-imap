@@ -217,7 +217,7 @@ func newStoreTestConn(t *testing.T, caps imap.CapSet, numMessages int) *storeTes
 	return c
 }
 
-// TestStoreUnchangedSincePresence pins the distinction RFC 7162 §3.1.3.1 draws
+// TestStoreUnchangedSincePresence pins the distinction RFC 7162 §3.1.3 draws
 // between an absent UNCHANGEDSINCE modifier (unconditional store) and an
 // explicit "UNCHANGEDSINCE 0" (the always-fail probe). Both reach the backend
 // with UnchangedSince == 0, so only StoreOptions.UnchangedSinceSet separates
