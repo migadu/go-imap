@@ -1348,6 +1348,23 @@ func (c *Client) handleVanished() error {
 		return c.dec.Err()
 	}
 
+	// RFC 7162 §3.2.10.2: unlike VANISHED (EARLIER), a VANISHED response
+	// removes its messages from the selected mailbox, one per UID, as EXPUNGE
+	// does, and the server need not send EXISTS for the new count. A set with
+	// "*" names no countable number of messages, so it leaves the count alone.
+	if !data.Earlier && !data.UIDs.Dynamic() {
+		c.mutex.Lock()
+		if c.state == imap.ConnStateSelected {
+			c.mailbox = c.mailbox.copy()
+			if n := data.UIDs.Cardinality(); n < uint64(c.mailbox.NumMessages) {
+				c.mailbox.NumMessages -= uint32(n)
+			} else {
+				c.mailbox.NumMessages = 0
+			}
+		}
+		c.mutex.Unlock()
+	}
+
 	// Check if there's a pending SELECT command
 	cmd := findPendingCmdByType[*SelectCommand](c)
 	if cmd != nil && data.Earlier {
