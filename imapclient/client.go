@@ -714,6 +714,7 @@ func (c *Client) completeCommand(cmd command, err error) {
 			c.mutex.Unlock()
 		}
 	case *SelectCommand:
+		var imapErr *imap.Error
 		if err == nil {
 			c.mutex.Lock()
 			c.state = imap.ConnStateSelected
@@ -723,6 +724,18 @@ func (c *Client) completeCommand(cmd command, err error) {
 				Flags:          cmd.data.Flags,
 				PermanentFlags: cmd.data.PermanentFlags,
 				ReadOnly:       cmd.data.ReadOnly,
+			}
+			c.mutex.Unlock()
+		} else if errors.As(err, &imapErr) && imapErr.Type == imap.StatusResponseTypeNo {
+			// RFC 3501 §6.3.1, RFC 9051 §6.3.2: a SELECT or EXAMINE refused
+			// with NO leaves no mailbox selected, whether or not the server
+			// sent [CLOSED]. BAD rejects the command unread, so the mailbox
+			// stays selected. NO says nothing about authentication: only
+			// leave the selected state.
+			c.mutex.Lock()
+			if c.state == imap.ConnStateSelected {
+				c.state = imap.ConnStateAuthenticated
+				c.mailbox = nil
 			}
 			c.mutex.Unlock()
 		}
