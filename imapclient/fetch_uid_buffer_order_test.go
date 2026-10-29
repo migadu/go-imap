@@ -12,11 +12,12 @@ import (
 	"github.com/emersion/go-imap/v2/imapclient"
 )
 
-// Commands are answered in the order they were sent, so a sequence FETCH can
-// only claim a response by number when no UID command precedes it. Here the
-// UID FETCH was sent first and its response puts the body before the UID: it
-// must still go to the UID FETCH, not to the later FETCH 1 (FLAGS), whose own
-// response would then be dropped as a duplicate.
+// RFC 9051 §5.5 forbids this pipeline: a client must wait for a UID command to
+// complete before sending one that uses sequence numbers. Callers can still
+// send it, so a sequence FETCH claims a response by number only when no UID
+// command precedes it. Here the UID FETCH was sent first and its response puts
+// the body before the UID: it must still go to the UID FETCH, not to the later
+// FETCH 1 (FLAGS), whose own response would then be dropped as a duplicate.
 func TestUIDFetchBufferEarlierUIDFetchKeepsItsResponse(t *testing.T) {
 	client := newUIDBufferLimitClient(t, nil, func(conn net.Conn, reader *bufio.Reader) error {
 		var tags []string
