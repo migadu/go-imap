@@ -714,3 +714,39 @@ func TestUIDFetchBufferUndrainedMetadataDoesNotBlockReader(t *testing.T) {
 		t.Errorf("Close() = %v", err)
 	}
 }
+
+// An unsolicited message is valid only during its UnilateralDataHandler.Fetch
+// callback. A worker that reads it after the callback returns must get an
+// error, not race with the release that drains it and see an empty message
+// (issue #83). Run with -race.
+func TestUnilateralFetchUsedAfterCallbackFailsLoudly(t *testing.T) {
+	work := make(chan *imapclient.FetchMessageData, 1)
+	client := newUIDBufferLimitClient(t, &imapclient.Options{
+		UnilateralDataHandler: &imapclient.UnilateralDataHandler{
+			Fetch: func(msg *imapclient.FetchMessageData) { work <- msg },
+		},
+	}, func(conn net.Conn, reader *bufio.Reader) error {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			return err
+		}
+		tag, command, _ := strings.Cut(line, " ")
+		if command != "NOOP\r\n" {
+			return fmt.Errorf("expected NOOP, got %q", line)
+		}
+		_, err = fmt.Fprintf(conn, "* 2 FETCH (UID 6 BODY[] {4}\r\ndata)\r\n%s OK noop\r\n", tag)
+		return err
+	})
+	// The body streams, so NOOP completes only once the callback's release
+	// has drained it: the worker below runs strictly after the release.
+	if err := client.Noop().Wait(); err != nil {
+		t.Fatalf("Noop() = %v", err)
+	}
+	msg := <-work
+	if item := msg.Next(); item != nil {
+		t.Errorf("Next() after the callback = %T, want nil", item)
+	}
+	if _, err := msg.Collect(); err == nil || !strings.Contains(err.Error(), "callback") {
+		t.Errorf("Collect() after the callback = %v, want an error saying the callback returned", err)
+	}
+}

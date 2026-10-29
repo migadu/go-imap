@@ -1532,9 +1532,11 @@ type UnilateralDataHandler struct {
 	// (RFC 5465 §5.1).
 	//
 	// The message and its literal readers are valid only during the callback.
-	// Any unread data is discarded after it returns. For asynchronous work,
-	// call msg.Collect inside the callback and pass the resulting buffer to
-	// the worker instead of handing off msg or its literal readers.
+	// Any unread data is discarded after it returns. Used afterwards, Next
+	// returns nil and Collect and the literal readers return an error. For
+	// asynchronous work, call msg.Collect inside the callback and pass the
+	// resulting buffer to the worker instead of handing off msg or its literal
+	// readers.
 	//
 	// One case is not routed here: a FETCH command is in flight and the
 	// notification concerns a message inside its set. Nothing distinguishes
