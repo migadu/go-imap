@@ -722,7 +722,9 @@ func (c *Client) handleFetch(seqNum uint32) (err error) {
 	// UID is known, keep the data private instead of assigning it to an
 	// arbitrary command (or treating it as unsolicited). A pending
 	// sequence-number FETCH that still expects this number claims the
-	// response by it (handleMsg), so it streams as before (issue #82).
+	// response by it (handleMsg), so it streams as before (issue #82) --
+	// but only if no UID command was sent before it: commands are answered
+	// in order, and the scan below visits them in that order.
 	var uidPending, seqClaimed bool
 	c.findPendingCmdFunc(func(cmd command) bool {
 		fetch, ok := cmd.(*FetchCommand)
@@ -733,7 +735,7 @@ func (c *Client) handleFetch(seqNum uint32) (err error) {
 		case imap.UIDSet:
 			uidPending = true
 		case imap.SeqSet:
-			if seqNum != 0 && set.Contains(seqNum) && !fetch.recvSeqSet.Contains(seqNum) {
+			if !uidPending && seqNum != 0 && set.Contains(seqNum) && !fetch.recvSeqSet.Contains(seqNum) {
 				seqClaimed = true
 			}
 		}
