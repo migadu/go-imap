@@ -17,13 +17,25 @@ import (
 func TestListUnrelatedResponseStaysUnsolicited(t *testing.T) {
 	for _, tc := range []struct {
 		ref, pattern, wanted, unrelated string
+		nilDelim                        bool
 	}{
-		{"", "INBOX", "INBOX", "Archive/2024"},
-		{"Archive/", "*", "Archive/2024", "INBOX"},
-		{"Archive/", "%", "Archive/2024", "INBOX"},
-		{"fo*o/bar", "rag/baz", "fo*o/rag/baz", "fooo/rag/baz"},
+		{ref: "", pattern: "INBOX", wanted: "INBOX", unrelated: "Archive/2024"},
+		{ref: "Archive/", pattern: "*", wanted: "Archive/2024", unrelated: "INBOX"},
+		{ref: "Archive/", pattern: "%", wanted: "Archive/2024", unrelated: "INBOX"},
+		{ref: "fo*o/bar", pattern: "rag/baz", wanted: "fo*o/rag/baz", unrelated: "fooo/rag/baz"},
+		// Without a hierarchy delimiter a reference has no parent to resolve
+		// against, so a wildcard-leading pattern stays under the reference
+		// whatever the reference's form.
+		{ref: "Archive/", pattern: "*", wanted: "Archive/2024", unrelated: "INBOX", nilDelim: true},
+		{ref: "Archive", pattern: "*", wanted: "Archive/2024", unrelated: "INBOX", nilDelim: true},
 	} {
-		t.Run(tc.ref+" "+tc.pattern, func(t *testing.T) {
+		name := tc.ref + " " + tc.pattern
+		delim := `"/"`
+		if tc.nilDelim {
+			name += " NIL delimiter"
+			delim = "NIL"
+		}
+		t.Run(name, func(t *testing.T) {
 			clientConn, serverConn := net.Pipe()
 			defer serverConn.Close()
 			serverConn.SetDeadline(time.Now().Add(5 * time.Second))
@@ -36,8 +48,8 @@ func TestListUnrelatedResponseStaysUnsolicited(t *testing.T) {
 					return
 				}
 				tag, _, _ := strings.Cut(line, " ")
-				fmt.Fprintf(serverConn, "* LIST () \"/\" %q\r\n", tc.unrelated)
-				fmt.Fprintf(serverConn, "* LIST () \"/\" %q\r\n", tc.wanted)
+				fmt.Fprintf(serverConn, "* LIST () %s %q\r\n", delim, tc.unrelated)
+				fmt.Fprintf(serverConn, "* LIST () %s %q\r\n", delim, tc.wanted)
 				fmt.Fprintf(serverConn, "%s OK LIST completed\r\n", tag)
 			}()
 
