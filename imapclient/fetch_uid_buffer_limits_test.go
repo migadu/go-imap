@@ -667,3 +667,50 @@ func TestUIDFetchBufferSkipsResponsesClaimedBySeqNum(t *testing.T) {
 		t.Errorf("STORE: %v", err)
 	}
 }
+
+// A message whose buffered data is all in memory does not hold the reader
+// while the budget has room (issue #84): an ENVELOPE subject sent as a literal
+// before UID must not keep a later command from completing.
+func TestUIDFetchBufferUndrainedMetadataDoesNotBlockReader(t *testing.T) {
+	client := newUIDBufferLimitClient(t, nil, func(conn net.Conn, reader *bufio.Reader) error {
+		tag, err := readUIDFetchWireCommand(reader)
+		if err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintf(conn, "* 1 FETCH (ENVELOPE (NIL {7}\r\nsubject NIL NIL NIL NIL NIL NIL NIL NIL) UID 5)\r\n%s OK fetched\r\n", tag); err != nil {
+			return err
+		}
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			return err
+		}
+		tag, command, _ := strings.Cut(line, " ")
+		if command != "NOOP\r\n" {
+			return fmt.Errorf("expected NOOP, got %q", line)
+		}
+		_, err = fmt.Fprintf(conn, "%s OK noop\r\n", tag)
+		return err
+	})
+	cmd := client.Fetch(imap.UIDSetNum(5), &imap.FetchOptions{Envelope: true, UID: true})
+	msg := cmd.Next()
+	if msg == nil {
+		t.Fatalf("Next() = nil: %v", cmd.Close())
+	}
+	noop := make(chan error, 1)
+	go func() { noop <- client.Noop().Wait() }()
+	select {
+	case err := <-noop:
+		if err != nil {
+			t.Fatalf("Noop() = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Noop() blocked behind an undrained metadata-only FETCH message")
+	}
+	buf, err := msg.Collect()
+	if err != nil || buf.UID != 5 || buf.Envelope == nil || buf.Envelope.Subject != "subject" {
+		t.Fatalf("Collect() = %+v, %v; want UID 5 with subject", buf, err)
+	}
+	if err := cmd.Close(); err != nil {
+		t.Errorf("Close() = %v", err)
+	}
+}
