@@ -570,8 +570,9 @@ func (mbox *MailboxView) Sort(ctx context.Context, kind imapserver.NumKind, sort
 		data.Min, data.Max = data.All[0], data.All[n-1]
 
 		// RFC 4731 §3.2 (RFC 7162 §3.1.10 for SORT): MODSEQ covers only the
-		// messages the response returns.
-		if options == nil || options.ReturnAll || options.ReturnCount {
+		// messages the response returns. No return option means ALL, as in
+		// Search.
+		if options == nil || options.ReturnAll || options.ReturnCount || !(options.ReturnMin || options.ReturnMax) {
 			data.ModSeq = slices.Max(modSeqs)
 		} else {
 			if options.ReturnMin {
