@@ -229,10 +229,10 @@ func (c *Conn) writeSearch(numSet imap.NumSet, modSeq uint64) error {
 		}
 	}
 
-	// RFC 7162 §3.4: append the highest mod-sequence of the matched messages to
-	// the untagged SEARCH response, e.g. "* SEARCH 2 5 6 (MODSEQ 917162500)".
-	// Gated identically to the ESEARCH path (writeESearch). RFC 7162 §7 allows
-	// it only after at least one number, as writeSort does.
+	// RFC 7162 §3.1.5: append the highest mod-sequence of the matched messages
+	// to the untagged SEARCH response, e.g. "* SEARCH 2 5 6 (MODSEQ 917162500)".
+	// Unlike the ESEARCH path (writeESearch), RFC 7162 §7 allows it only after
+	// at least one number, as writeSort does.
 	if modSeq > 0 && written > 0 && c.supportsCondStore() {
 		enc.SP().Special('(').Atom("MODSEQ").SP().ModSeq(modSeq).Special(')')
 	}
