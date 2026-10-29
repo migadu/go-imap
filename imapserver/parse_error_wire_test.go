@@ -40,7 +40,7 @@ func dialParseServer(t *testing.T, newSession func(imapserver.Session) imapserve
 			return s, nil, nil
 		},
 		InsecureAuth: true,
-		Caps:         imap.CapSet{imap.CapIMAP4rev1: struct{}{}},
+		Caps:         imap.CapSet{imap.CapIMAP4rev1: struct{}{}, imap.CapSort: {}, imap.CapESort: {}},
 	})
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

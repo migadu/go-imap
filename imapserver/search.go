@@ -77,6 +77,17 @@ func (c *Conn) handleSearch(tag string, dec *imapwire.Decoder, numKind NumKind) 
 		return err
 	}
 
+	// RFC 4466 §2.6.1: "Any options not defined by extensions that the server
+	// supports must be rejected with a BAD response." The result options are
+	// ESEARCH's (RFC 4731), SAVE included: a SEARCHRES server "MUST also
+	// implement the [ESEARCH] extension" (RFC 5182 §2.1). The session cannot do
+	// this itself, since a plain SEARCH reaches it as RETURN (ALL) (below). An
+	// empty RETURN () holds no option and gets the SEARCH response.
+	supportsESEARCH := c.supportsESearch()
+	if !supportsESEARCH && (options.ReturnMin || options.ReturnMax || options.ReturnAll || options.ReturnCount || options.ReturnSave) {
+		return newClientBugError("SEARCH result options require ESEARCH")
+	}
+
 	// If no return option is specified, ALL is assumed
 	if !options.ReturnMin && !options.ReturnMax && !options.ReturnAll && !options.ReturnCount {
 		options.ReturnAll = true
@@ -97,14 +108,6 @@ func (c *Conn) handleSearch(tag string, dec *imapwire.Decoder, numKind NumKind) 
 	// parse it.
 	if !hasModSeq {
 		data.ModSeq = 0
-	}
-
-	var supportsESEARCH bool
-	if capSession, ok := c.session.(SessionCapabilities); ok {
-		sessionCaps := capSession.GetCapabilities()
-		supportsESEARCH = sessionCaps.Has(imap.CapESearch) || sessionCaps.Has(imap.CapIMAP4rev2)
-	} else {
-		supportsESEARCH = c.availableCapsSet().Has(imap.CapESearch) || c.availableCapsSet().Has(imap.CapIMAP4rev2)
 	}
 
 	// Use the ESEARCH format when the session supports it AND either the client

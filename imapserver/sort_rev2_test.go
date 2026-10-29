@@ -16,8 +16,9 @@ func TestSortRev2PlainSortKeepsSortResponse(t *testing.T) {
 		caps   imap.CapSet
 		enable bool
 	}{
-		{"dual stack, ENABLE IMAP4rev2", dualStackCaps(), true},
-		{"rev2-only server", imap.CapSet{imap.CapIMAP4rev2: {}}, false},
+		// IMAP4rev2 does not include ESORT, which the extended SORT below needs.
+		{"dual stack, ENABLE IMAP4rev2", imap.CapSet{imap.CapIMAP4rev1: {}, imap.CapIMAP4rev2: {}, imap.CapESort: {}}, true},
+		{"rev2-only server", imap.CapSet{imap.CapIMAP4rev2: {}, imap.CapESort: {}}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rc := newSearchRev2Conn(t, tc.caps)
