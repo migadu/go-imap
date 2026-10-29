@@ -720,15 +720,30 @@ func (c *Client) handleFetch(seqNum uint32) (err error) {
 
 	// UID FETCH responses may put their UID after body literals. Until the
 	// UID is known, keep the data private instead of assigning it to an
-	// arbitrary command (or treating it as unsolicited).
-	needsUID := c.findPendingCmdFunc(func(cmd command) bool {
+	// arbitrary command (or treating it as unsolicited). A pending
+	// sequence-number FETCH that still expects this number claims the
+	// response by it (handleMsg), so it streams as before (issue #82) --
+	// but only if no UID command was sent before it. RFC 9051 §5.5 forbids
+	// sending a sequence-number command while a UID command is in progress;
+	// if a caller does anyway, the response stays with the earlier UID
+	// command. The scan below visits commands in the order they were sent.
+	var uidPending, seqClaimed bool
+	c.findPendingCmdFunc(func(cmd command) bool {
 		fetch, ok := cmd.(*FetchCommand)
 		if !ok {
 			return false
 		}
-		_, ok = fetch.numSet.(imap.UIDSet)
-		return ok
-	}) != nil
+		switch set := fetch.numSet.(type) {
+		case imap.UIDSet:
+			uidPending = true
+		case imap.SeqSet:
+			if !uidPending && seqNum != 0 && set.Contains(seqNum) && !fetch.recvSeqSet.Contains(seqNum) {
+				seqClaimed = true
+			}
+		}
+		return false
+	})
+	needsUID := uidPending && !seqClaimed
 	var uid imap.UID
 	var flags []imap.Flag
 	var modSeq uint64
