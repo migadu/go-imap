@@ -131,12 +131,9 @@ func (set CapSet) Has(c Cap) bool {
 		return true
 	}
 
-	// IMAP4rev2 implies QRESYNC, which in turn implies CONDSTORE.
-	isQResync := set.has(CapQResync) || set.has(CapIMAP4rev2)
-	if c == CapQResync && isQResync {
-		return true
-	}
-	if c == CapCondStore && isQResync {
+	// QRESYNC implies CONDSTORE (RFC 7162 §3.2). IMAP4rev2 implies neither:
+	// RFC 9051 lists both among the other recommended extensions (Appendix F).
+	if c == CapCondStore && set.has(CapQResync) {
 		return true
 	}
 	if c == CapUTF8Accept && set.has(CapUTF8Only) {

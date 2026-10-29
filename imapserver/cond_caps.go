@@ -5,8 +5,10 @@ import (
 )
 
 // supportsCondStore returns true if the connection supports CONDSTORE extension.
-// This checks both session-specific capabilities (if available) and server capabilities,
-// as well as enabled capabilities.
+// This checks session-specific capabilities (if available), or else server
+// capabilities. QRESYNC implies CONDSTORE; IMAP4rev2 does not (RFC 9051
+// Appendix F), so a server that offers CONDSTORE lists it, and what this
+// accepts is what CAPABILITY advertises.
 //
 // Note: the previous iOS Mail workaround that disabled CONDSTORE for iOS clients
 // has been removed.  That workaround caused a capability lie (CONDSTORE was
@@ -20,8 +22,7 @@ import (
 //     form (RFC 4466 §2.4 / RFC 7162 §3.2.6).
 func (c *Conn) supportsCondStore() bool {
 	if capSession, ok := c.session.(SessionCapabilities); ok {
-		sessionCaps := capSession.GetCapabilities()
-		return sessionCaps.Has(imap.CapCondStore) || sessionCaps.Has(imap.CapIMAP4rev2)
+		return capSession.GetCapabilities().Has(imap.CapCondStore)
 	}
 	// Read the server's configured capabilities directly rather than
 	// availableCapsSet(), which is connection-state dependent and reads
@@ -29,11 +30,10 @@ func (c *Conn) supportsCondStore() bool {
 	// from the NOTIFY pump goroutine (via WriteMessageFlags and
 	// UpdateWriter.CondStoreEnabled) concurrently with command-goroutine state
 	// transitions; the configured CapSet is immutable after construction and
-	// CONDSTORE/IMAP4rev2 are backend-support capabilities that do not vary by
-	// state, so this is both race-free and equivalent in the authenticated/
-	// selected states where the pump runs. c.enabledHas already locks c.mutex.
-	serverCaps := c.server.options.caps()
-	return c.enabledHas(imap.CapIMAP4rev2) || serverCaps.Has(imap.CapCondStore) || serverCaps.Has(imap.CapIMAP4rev2)
+	// CONDSTORE is a backend-support capability that does not vary by state,
+	// so this is both race-free and equivalent in the authenticated/selected
+	// states where the pump runs.
+	return c.server.options.caps().Has(imap.CapCondStore)
 }
 
 // markCondStoreEnabled records that the client has issued a CONDSTORE-enabling
