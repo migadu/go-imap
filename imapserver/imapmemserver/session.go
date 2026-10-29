@@ -361,11 +361,20 @@ func (sess *UserSession) MultiSearch(ctx context.Context, source *imap.SearchSou
 			// Skip mailboxes that don't exist (e.g. resolved from a scope verb).
 			continue
 		}
-		view := mbox.NewView()
+		// A selected-only search shares the session's SEARCHRES variable.
+		// Saving into a temporary view would discard the result before a
+		// subsequent command can reference it with $.
+		view := sess.mailbox
+		temporary := !source.SelectedOnly() || view == nil || view.Mailbox != mbox
+		if temporary {
+			view = mbox.NewView()
+		}
 
 		// RFC 7377: ESEARCH always reports UIDs, never message numbers.
 		data, err := view.Search(ctx, imapserver.NumKindUID, criteria, options)
-		view.Close()
+		if temporary {
+			view.Close()
+		}
 		if err != nil {
 			return nil, err
 		}

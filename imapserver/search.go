@@ -87,8 +87,15 @@ func (c *Conn) handleSearch(tag string, dec *imapwire.Decoder, numKind NumKind) 
 	if !supportsESEARCH && (options.ReturnMin || options.ReturnMax || options.ReturnAll || options.ReturnCount || options.ReturnSave) {
 		return newClientBugError("SEARCH result options require ESEARCH")
 	}
+	if options.ReturnSave && !c.supportsSearchRes() {
+		return newClientBugError("SEARCH SAVE requires SEARCHRES")
+	}
 
-	// If no return option is specified, ALL is assumed
+	// SAVE alone suppresses result responses (RFC 5182 §1, RFC 9051 §6.4.4).
+	// Capture that before normalizing options: the backend still receives ALL
+	// so it computes and saves the full match set, as it did before.
+	saveOnly := options.ReturnSave && !options.ReturnMin && !options.ReturnMax && !options.ReturnAll && !options.ReturnCount
+	// If no output option is specified, ALL is assumed for the backend.
 	if !options.ReturnMin && !options.ReturnMax && !options.ReturnAll && !options.ReturnCount {
 		options.ReturnAll = true
 	}
@@ -100,6 +107,9 @@ func (c *Conn) handleSearch(tag string, dec *imapwire.Decoder, numKind NumKind) 
 	data, err := c.session.Search(c.ctx, numKind, &criteria, &options)
 	if err != nil {
 		return err
+	}
+	if saveOnly {
+		return nil
 	}
 
 	// RFC 7162 §3.1.5 and §3.1.6: the response carries the highest
@@ -264,7 +274,8 @@ func readSearchReturnOpts(dec *imapwire.Decoder, options *imap.SearchOptions) er
 		case "SAVE":
 			options.ReturnSave = true
 		default:
-			// RFC 4731: A server MUST ignore any unrecognized return options.
+			// RFC 4466 §2.6.1 requires rejecting unsupported result options.
+			return newClientBugError(fmt.Sprintf("Unknown SEARCH return option: %q", name))
 		}
 		return nil
 	})

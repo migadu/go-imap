@@ -22,6 +22,8 @@ type SessionMultiSearch interface {
 	// enumerate the user's mailboxes) and MUST populate SearchData.Mailbox and
 	// SearchData.UIDValidity on every result (RFC 7377 §2.1). Because message
 	// numbers are meaningless for unselected mailboxes, results are always UIDs.
+	// With ReturnSave, source is selected-only and the backend must update the
+	// selected session's SEARCHRES variable, as for Session.Search.
 	MultiSearch(ctx context.Context, source *imap.SearchSource, criteria *imap.SearchCriteria, options *imap.SearchOptions) ([]*imap.SearchData, error)
 }
 
@@ -128,6 +130,18 @@ func (c *Conn) handleESearch(tag string, dec *imapwire.Decoder) error {
 		return err
 	}
 
+	if options.ReturnSave {
+		if !c.supportsSearchRes() {
+			return newClientBugError("SEARCH SAVE requires SEARCHRES")
+		}
+		// RFC 7377 §2.2 permits SAVE only when selected is the sole source,
+		// even if a different source happens to resolve to the same mailbox.
+		if !source.SelectedOnly() {
+			return newClientBugError("ESEARCH SAVE requires the selected source")
+		}
+	}
+	saveOnly := options.ReturnSave && !options.ReturnMin && !options.ReturnMax && !options.ReturnAll && !options.ReturnCount
+
 	// If no return option is specified, ALL is assumed.
 	if !options.ReturnMin && !options.ReturnMax && !options.ReturnAll && !options.ReturnCount {
 		options.ReturnAll = true
@@ -147,6 +161,10 @@ func (c *Conn) handleESearch(tag string, dec *imapwire.Decoder) error {
 	results, err := sessionMultiSearch.MultiSearch(c.ctx, &source, &criteria, &options)
 	if err != nil {
 		return err
+	}
+	if saveOnly {
+		// SAVE still runs the backend, but emits no search result response.
+		return nil
 	}
 
 	for _, data := range results {
