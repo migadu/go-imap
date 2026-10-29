@@ -73,6 +73,12 @@ func (c *Conn) supportsESearch() bool {
 	return c.availableCapsSet().Has(imap.CapESearch) || c.availableCapsSet().Has(imap.CapIMAP4rev2)
 }
 
+// supportsSearchRes reports whether SAVE is supported (RFC 5182). Has includes
+// SEARCHRES when the session supports IMAP4rev2 (RFC 9051 Appendix E).
+func (c *Conn) supportsSearchRes() bool {
+	return c.configuredCaps().Has(imap.CapSearchRes)
+}
+
 // supportsESort reports whether the session supports ESORT (RFC 5267), which
 // IMAP4rev2 does not include.
 func (c *Conn) supportsESort() bool {
