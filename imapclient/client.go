@@ -1348,8 +1348,30 @@ func (c *Client) handleVanished() error {
 		return c.dec.Err()
 	}
 
-	// Check if there's a pending SELECT command
 	cmd := findPendingCmdByType[*SelectCommand](c)
+
+	// RFC 7162 §3.2.10.2: unlike VANISHED (EARLIER), a VANISHED response
+	// removes its messages from the selected mailbox, one per UID, as EXPUNGE
+	// does, and the server need not send EXISTS for the new count. A set with
+	// "*" names no countable number of messages, so it leaves the count alone.
+	if !data.Earlier && !data.UIDs.Dynamic() {
+		n := data.UIDs.Cardinality()
+		if cmd != nil {
+			// EXISTS records the pending selection's count before its tagged
+			// completion publishes c.mailbox. Live removals must adjust that
+			// count too. Any provisional old-mailbox count before CLOSED is
+			// replaced by the new selection's required EXISTS response.
+			cmd.data.NumMessages -= uint32(min(n, uint64(cmd.data.NumMessages)))
+		}
+
+		c.mutex.Lock()
+		if c.state == imap.ConnStateSelected {
+			c.mailbox = c.mailbox.copy()
+			c.mailbox.NumMessages -= uint32(min(n, uint64(c.mailbox.NumMessages)))
+		}
+		c.mutex.Unlock()
+	}
+
 	if cmd != nil && data.Earlier {
 		// VANISHED (EARLIER) during SELECT should populate SelectData.
 		// Accumulate: a resynchronization can arrive in more than one
