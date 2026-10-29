@@ -93,6 +93,11 @@ func TestListReferenceInterpretedByServer(t *testing.T) {
 		// The same interpretations can contain wildcard patterns.
 		{"foo/bar", "rag/*", "foo/barrag/baz"},
 		{"foo/bar", "rag/%", "foo/rag/baz"},
+		// A reference without a delimiter can be resolved relative to its
+		// empty parent. These valid replies need the pattern-only fallback,
+		// even though the same names could also be unsolicited notifications.
+		{"Archive", "*", "INBOX"},
+		{"Archive", "%", "INBOX"},
 	} {
 		for _, name := range []string{"LIST", "LSUB"} {
 			t.Run(name+" "+tc.ref+" "+tc.pattern, func(t *testing.T) {
@@ -131,6 +136,45 @@ func TestListReferenceInterpretedByServer(t *testing.T) {
 						got = append(got, mbox.Mailbox)
 					}
 					t.Errorf("%s %q %q = %q, want [%q]", name, tc.ref, tc.pattern, got, tc.mailbox)
+				}
+			})
+		}
+	}
+}
+
+// A NIL hierarchy delimiter only says the names are flat (RFC 9051 §7.3.1).
+// No reference can end with a delimiter then, so RFC 9051 §6.3.9 leaves every
+// non-empty one to the server, which can read it as its whole namespace: the
+// empty parent again, with or without a trailing "/".
+func TestListReferenceUnderNilDelimiter(t *testing.T) {
+	for _, ref := range []string{"Archive", "Archive/"} {
+		for _, pattern := range []string{"*", "%"} {
+			t.Run(ref+" "+pattern, func(t *testing.T) {
+				clientConn, serverConn := net.Pipe()
+				defer serverConn.Close()
+				serverConn.SetDeadline(time.Now().Add(5 * time.Second))
+				clientConn.SetDeadline(time.Now().Add(5 * time.Second))
+
+				go func() {
+					fmt.Fprint(serverConn, "* OK [CAPABILITY IMAP4rev1] ready\r\n")
+					line, err := bufio.NewReader(serverConn).ReadString('\n')
+					if err != nil {
+						return
+					}
+					tag, _, _ := strings.Cut(line, " ")
+					fmt.Fprint(serverConn, "* LIST (\\NoInferiors) NIL INBOX\r\n")
+					fmt.Fprintf(serverConn, "%s OK LIST completed\r\n", tag)
+				}()
+
+				client := imapclient.New(clientConn, nil)
+				defer client.Close()
+
+				mailboxes, err := client.List(ref, pattern, nil).Collect()
+				if err != nil {
+					t.Fatalf("Collect() = %v", err)
+				}
+				if len(mailboxes) != 1 || mailboxes[0].Mailbox != "INBOX" {
+					t.Errorf("List(%q, %q) = %q, want [INBOX]", ref, pattern, mailboxNames(mailboxes))
 				}
 			})
 		}

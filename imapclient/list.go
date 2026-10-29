@@ -263,6 +263,14 @@ func (cmd *ListCommand) matches(data *imap.ListData) bool {
 			}
 		}
 	}
+	// Keep the pattern-only fallback for references without a trailing
+	// delimiter. RFC 9051 §6.3.9 leaves their interpretation to the server:
+	// resolving "Archive" relative to its parent can give an empty prefix,
+	// so "*" or "%" can legitimately match "INBOX". The prefix loop above
+	// cannot cover that empty parent. Rejecting wildcard-leading patterns
+	// here would lose valid replies; such replies cannot be distinguished
+	// from unsolicited notifications using these ambiguous arguments.
+	//
 	// Breakout characters are server-defined, so literal-leading patterns
 	// may override the reference. Do not restrict this to known /, ~ or #
 	// prefixes, or attempt to reproduce the server's full canonicalization.
