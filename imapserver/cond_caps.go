@@ -63,6 +63,25 @@ func (c *Conn) CondStoreEnabled() bool {
 	return c.condStore || c.enabled.Has(imap.CapCondStore) || c.enabled.Has(imap.CapQResync)
 }
 
+// supportsESearch reports whether the session supports ESEARCH (RFC 4731),
+// which IMAP4rev2 includes.
+func (c *Conn) supportsESearch() bool {
+	if capSession, ok := c.session.(SessionCapabilities); ok {
+		sessionCaps := capSession.GetCapabilities()
+		return sessionCaps.Has(imap.CapESearch) || sessionCaps.Has(imap.CapIMAP4rev2)
+	}
+	return c.availableCapsSet().Has(imap.CapESearch) || c.availableCapsSet().Has(imap.CapIMAP4rev2)
+}
+
+// supportsESort reports whether the session supports ESORT (RFC 5267), which
+// IMAP4rev2 does not include.
+func (c *Conn) supportsESort() bool {
+	if capSession, ok := c.session.(SessionCapabilities); ok {
+		return capSession.GetCapabilities().Has(imap.CapESort)
+	}
+	return c.availableCapsSet().Has(imap.CapESort)
+}
+
 // supportsQResync returns true if the connection supports QRESYNC extension.
 // This checks both session-specific capabilities (if available) and server capabilities.
 func (c *Conn) supportsQResync() bool {

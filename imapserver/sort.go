@@ -124,6 +124,14 @@ func (c *Conn) handleSort(tag string, dec *imapwire.Decoder, numKind NumKind) er
 		return err
 	}
 
+	// RETURN after SORT is ESORT's syntax (RFC 5267 §3); RFC 5256 has none, so
+	// without ESORT even an empty RETURN () is an argument the server does not
+	// support, which gets BAD as for SEARCH (RFC 4466 §2.6.1). The session cannot
+	// do this itself, since a plain SORT reaches it as RETURN (ALL) (below).
+	if extended && !c.supportsESort() {
+		return newClientBugError("SORT RETURN requires ESORT")
+	}
+
 	// If no return option is specified, ALL is assumed
 	if !options.ReturnMin && !options.ReturnMax && !options.ReturnAll && !options.ReturnCount {
 		options.ReturnAll = true

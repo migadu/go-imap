@@ -107,6 +107,8 @@ func newMemClientServerPair(t *testing.T) (net.Conn, io.Closer) {
 			imap.CapQResync:                   {},
 			imap.CapMetadata:                  {},
 			imap.CapNotify:                    {},
+			imap.CapSort:                      {},
+			imap.CapESort:                     {},
 			imap.Cap("THREAD=REFERENCES"):     {},
 			imap.Cap("THREAD=ORDEREDSUBJECT"): {},
 			imap.Cap("MULTISEARCH"):           {},
