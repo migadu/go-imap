@@ -263,13 +263,6 @@ func (cmd *ListCommand) matches(data *imap.ListData) bool {
 			}
 		}
 	}
-	// Without a hierarchy delimiter a reference has no parent to resolve
-	// against, so a reply must match reference and pattern concatenated
-	// (MatchList above). A wildcard-leading pattern cannot name an absolute
-	// path either, so it does not get the fallback below.
-	if ref != "" && data.Delim == 0 && (pattern[0] == '*' || pattern[0] == '%') {
-		return false
-	}
 	// Keep the pattern-only fallback for references without a trailing
 	// delimiter. RFC 9051 §6.3.9 leaves their interpretation to the server:
 	// resolving "Archive" relative to its parent can give an empty prefix,
