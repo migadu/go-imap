@@ -25,7 +25,9 @@ func (c *Conn) handleSearch(tag string, dec *imapwire.Decoder, numKind NumKind) 
 	backendCalled := false
 	defer func() {
 		if !backendCalled {
-			c.resetSearchResOnFailure(&options, err)
+			err = c.failSearchBeforeBackend(err, &options, func() error {
+				return c.checkSearchReturnOpts(&options)
+			})
 		}
 	}()
 	if maybeReadSearchKeyAtom(dec, &atom) && strings.EqualFold(atom, "RETURN") {
@@ -75,19 +77,8 @@ func (c *Conn) handleSearch(tag string, dec *imapwire.Decoder, numKind NumKind) 
 	if err := c.checkState(imap.ConnStateSelected); err != nil {
 		return err
 	}
-
-	// RFC 4466 §2.6.1: "Any options not defined by extensions that the server
-	// supports must be rejected with a BAD response." The result options are
-	// ESEARCH's (RFC 4731), SAVE included: a SEARCHRES server "MUST also
-	// implement the [ESEARCH] extension" (RFC 5182 §2.1). The session cannot do
-	// this itself, since a plain SEARCH reaches it as RETURN (ALL) (below). An
-	// empty RETURN () holds no option and gets the SEARCH response.
-	supportsESEARCH := c.supportsESearch()
-	if !supportsESEARCH && (options.ReturnMin || options.ReturnMax || options.ReturnAll || options.ReturnCount || options.ReturnSave) {
-		return newClientBugError("SEARCH result options require ESEARCH")
-	}
-	if options.ReturnSave && !c.supportsSearchRes() {
-		return newClientBugError("SEARCH SAVE requires SEARCHRES")
+	if err := c.checkSearchReturnOpts(&options); err != nil {
+		return err
 	}
 	if badCharset {
 		return badSearchCharsetError()
@@ -147,6 +138,7 @@ func (c *Conn) handleSearch(tag string, dec *imapwire.Decoder, numKind NumKind) 
 	// wire form it knows how to parse. supportsESEARCH is kept as the outer
 	// guard so the response form can never outrun what the session reports it
 	// can do via SessionCapabilities.
+	supportsESEARCH := c.supportsESearch()
 	if supportsESEARCH && (extended || c.isIMAP4rev2()) {
 		return c.writeESearch(tag, data, &options, numKind)
 	} else {
@@ -293,19 +285,47 @@ func searchCharsetSupported(charset string) bool {
 	}
 }
 
-// resetSearchResOnFailure handles NO errors returned before Search or
-// MultiSearch runs, including literal refusals while parsing the command.
+// checkSearchReturnOpts rejects the result options of a SEARCH that the
+// server does not support.
+//
+// RFC 4466 §2.6.1: "Any options not defined by extensions that the server
+// supports must be rejected with a BAD response." The result options are
+// ESEARCH's (RFC 4731), SAVE included: a SEARCHRES server "MUST also implement
+// the [ESEARCH] extension" (RFC 5182 §2.1). The session cannot do this itself,
+// since a plain SEARCH reaches it as RETURN (ALL) (handleSearch). An empty
+// RETURN () holds no option and gets the SEARCH response.
+func (c *Conn) checkSearchReturnOpts(options *imap.SearchOptions) error {
+	if !c.supportsESearch() && (options.ReturnMin || options.ReturnMax || options.ReturnAll || options.ReturnCount || options.ReturnSave) {
+		return newClientBugError("SEARCH result options require ESEARCH")
+	}
+	if options.ReturnSave && !c.supportsSearchRes() {
+		return newClientBugError("SEARCH SAVE requires SEARCHRES")
+	}
+	return nil
+}
+
+// failSearchBeforeBackend settles a SEARCH or ESEARCH that fails before Search
+// or MultiSearch runs. Once the backend is called, it owns resets.
+//
 // A SAVE search answered NO empties "$"; BAD and searches without SAVE leave
-// it unchanged (RFC 5182 section 2.1). Once called, the backend owns resets.
-func (c *Conn) resetSearchResOnFailure(options *imap.SearchOptions, err error) {
+// it unchanged (RFC 5182 section 2.1). A NO raised while the command is still
+// being read, such as a refused literal, comes before the checks that answer
+// BAD. IN and RETURN precede the search program, so checkBAD can still run
+// those checks on what was read; if one rejects the SAVE, the command gets
+// that BAD instead of the NO.
+func (c *Conn) failSearchBeforeBackend(err error, options *imap.SearchOptions, checkBAD func() error) error {
 	var imapErr *imap.Error
 	if !options.ReturnSave || c.state != imap.ConnStateSelected ||
 		!errors.As(err, &imapErr) || imapErr.Type != imap.StatusResponseTypeNo {
-		return
+		return err
+	}
+	if badErr := checkBAD(); badErr != nil {
+		return badErr
 	}
 	if sess, ok := c.session.(SessionSearchRes); ok {
 		sess.ResetSearchRes()
 	}
+	return err
 }
 
 // The handlers defer BADCHARSET until the command has been parsed and checked
