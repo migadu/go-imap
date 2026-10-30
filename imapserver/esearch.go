@@ -47,7 +47,10 @@ func (c *Conn) handleESearch(tag string, dec *imapwire.Decoder) (err error) {
 	backendCalled := false
 	defer func() {
 		if !backendCalled {
-			c.resetSearchResOnFailure(&options, err)
+			err = c.failSearchBeforeBackend(err, &options, func() error {
+				_, badErr := c.checkESearch(&source, &options)
+				return badErr
+			})
 		}
 	}()
 
@@ -127,16 +130,9 @@ func (c *Conn) handleESearch(tag string, dec *imapwire.Decoder) (err error) {
 	if err := c.checkState(requiredState); err != nil {
 		return err
 	}
-
-	if options.ReturnSave {
-		if !c.supportsSearchRes() {
-			return newClientBugError("SEARCH SAVE requires SEARCHRES")
-		}
-		// RFC 7377 §2.2 permits SAVE only when selected is the sole source,
-		// even if a different source happens to resolve to the same mailbox.
-		if !source.SelectedOnly() {
-			return newClientBugError("ESEARCH SAVE requires the selected source")
-		}
+	sessionMultiSearch, err := c.checkESearch(&source, &options)
+	if err != nil {
+		return err
 	}
 	saveOnly := options.ReturnSave && !options.ReturnMin && !options.ReturnMax && !options.ReturnAll && !options.ReturnCount
 
@@ -145,13 +141,6 @@ func (c *Conn) handleESearch(tag string, dec *imapwire.Decoder) (err error) {
 		options.ReturnAll = true
 	}
 
-	sessionMultiSearch, ok := c.session.(SessionMultiSearch)
-	if !ok {
-		return &imap.Error{
-			Type: imap.StatusResponseTypeBad,
-			Text: "MULTISEARCH not supported",
-		}
-	}
 	if badCharset {
 		return badSearchCharsetError()
 	}
@@ -185,6 +174,32 @@ func (c *Conn) handleESearch(tag string, dec *imapwire.Decoder) (err error) {
 	}
 
 	return nil
+}
+
+// checkESearch rejects with BAD an ESEARCH that this connection cannot run
+// for a reason other than its state: SAVE needs SEARCHRES and "selected" as
+// the sole source, and the session must implement SessionMultiSearch. A zero
+// source is the default "selected" (RFC 7377 §2.1), so the check also holds
+// while the command is still being read.
+func (c *Conn) checkESearch(source *imap.SearchSource, options *imap.SearchOptions) (SessionMultiSearch, error) {
+	if options.ReturnSave {
+		if !c.supportsSearchRes() {
+			return nil, newClientBugError("SEARCH SAVE requires SEARCHRES")
+		}
+		// RFC 7377 §2.2 permits SAVE only when selected is the sole source,
+		// even if a different source happens to resolve to the same mailbox.
+		if !source.IsZero() && !source.SelectedOnly() {
+			return nil, newClientBugError("ESEARCH SAVE requires the selected source")
+		}
+	}
+	sessionMultiSearch, ok := c.session.(SessionMultiSearch)
+	if !ok {
+		return nil, &imap.Error{
+			Type: imap.StatusResponseTypeBad,
+			Text: "MULTISEARCH not supported",
+		}
+	}
+	return sessionMultiSearch, nil
 }
 
 // multiSearchDataIsEmpty reports whether a per-mailbox multi-search result
