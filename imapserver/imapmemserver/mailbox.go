@@ -512,6 +512,14 @@ func (mbox *MailboxView) Search(ctx context.Context, numKind imapserver.NumKind,
 	return &data, nil
 }
 
+// ResetSearchRes empties the SEARCHRES variable "$".
+func (mbox *MailboxView) ResetSearchRes() {
+	mbox.mutex.Lock()
+	defer mbox.mutex.Unlock()
+
+	mbox.searchRes = nil
+}
+
 func (mbox *MailboxView) Sort(ctx context.Context, kind imapserver.NumKind, sortCriteria []imap.SortCriterion, charset string, searchCriteria *imap.SearchCriteria, options *imap.SortOptions) (*imap.SortData, error) {
 	mbox.mutex.Lock()
 	defer mbox.mutex.Unlock()

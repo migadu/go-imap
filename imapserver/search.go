@@ -32,21 +32,13 @@ func (c *Conn) handleSearch(tag string, dec *imapwire.Decoder, numKind NumKind) 
 		atom = ""
 		maybeReadSearchKeyAtom(dec, &atom)
 	}
+	var badCharset bool
 	if strings.EqualFold(atom, "CHARSET") {
 		var charset string
 		if !dec.ExpectSP() || !dec.ExpectAString(&charset) || !dec.ExpectSP() {
 			return dec.Err()
 		}
-		switch strings.ToUpper(charset) {
-		case "US-ASCII", "UTF-8":
-			// nothing to do
-		default:
-			return &imap.Error{
-				Type: imap.StatusResponseTypeNo,
-				Code: imap.ResponseCodeBadCharset, // TODO: return list of supported charsets
-				Text: "Only US-ASCII and UTF-8 are supported SEARCH charsets",
-			}
-		}
+		badCharset = !searchCharsetSupported(charset)
 		atom = ""
 		maybeReadSearchKeyAtom(dec, &atom)
 	}
@@ -89,6 +81,9 @@ func (c *Conn) handleSearch(tag string, dec *imapwire.Decoder, numKind NumKind) 
 	}
 	if options.ReturnSave && !c.supportsSearchRes() {
 		return newClientBugError("SEARCH SAVE requires SEARCHRES")
+	}
+	if badCharset {
+		return c.badSearchCharsetError(&options)
 	}
 
 	// SAVE alone suppresses result responses (RFC 5182 §1, RFC 9051 §6.4.4).
@@ -279,6 +274,34 @@ func readSearchReturnOpts(dec *imapwire.Decoder, options *imap.SearchOptions) er
 		}
 		return nil
 	})
+}
+
+func searchCharsetSupported(charset string) bool {
+	switch strings.ToUpper(charset) {
+	case "US-ASCII", "UTF-8":
+		return true
+	default:
+		return false
+	}
+}
+
+// badSearchCharsetError fails a SEARCH or ESEARCH that names an unsupported
+// CHARSET. The handlers return it only once the whole command has been read
+// and every check that answers BAD has passed: a BAD leaves "$" as it was,
+// while a NO to a SAVE search sets it to the empty sequence (RFC 5182 §2.1).
+// The session keeps "$" but is not called for this command, so it is told
+// through SessionSearchRes.
+func (c *Conn) badSearchCharsetError(options *imap.SearchOptions) error {
+	if options.ReturnSave {
+		if sess, ok := c.session.(SessionSearchRes); ok {
+			sess.ResetSearchRes()
+		}
+	}
+	return &imap.Error{
+		Type: imap.StatusResponseTypeNo,
+		Code: imap.ResponseCodeBadCharset, // TODO: return list of supported charsets
+		Text: "Only US-ASCII and UTF-8 are supported SEARCH charsets",
+	}
 }
 
 func maybeReadSearchKeyAtom(dec *imapwire.Decoder, ptr *string) bool {

@@ -73,21 +73,13 @@ func (c *Conn) handleESearch(tag string, dec *imapwire.Decoder) error {
 	}
 
 	// Optional CHARSET.
+	var badCharset bool
 	if strings.EqualFold(atom, "CHARSET") {
 		var charset string
 		if !dec.ExpectSP() || !dec.ExpectAString(&charset) || !dec.ExpectSP() {
 			return dec.Err()
 		}
-		switch strings.ToUpper(charset) {
-		case "US-ASCII", "UTF-8":
-			// nothing to do
-		default:
-			return &imap.Error{
-				Type: imap.StatusResponseTypeNo,
-				Code: imap.ResponseCodeBadCharset,
-				Text: "Only US-ASCII and UTF-8 are supported SEARCH charsets",
-			}
-		}
+		badCharset = !searchCharsetSupported(charset)
 		atom = ""
 		maybeReadSearchKeyAtom(dec, &atom)
 	}
@@ -153,6 +145,9 @@ func (c *Conn) handleESearch(tag string, dec *imapwire.Decoder) error {
 			Type: imap.StatusResponseTypeBad,
 			Text: "MULTISEARCH not supported",
 		}
+	}
+	if badCharset {
+		return c.badSearchCharsetError(&options)
 	}
 
 	// Read before the session can rewrite the criteria; see handleSearch.
