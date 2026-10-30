@@ -41,11 +41,12 @@ func (c *Conn) handleSearch(tag string, dec *imapwire.Decoder, numKind NumKind) 
 		case "US-ASCII", "UTF-8":
 			// nothing to do
 		default:
-			return &imap.Error{
-				Type: imap.StatusResponseTypeNo,
-				Code: imap.ResponseCodeBadCharset, // TODO: return list of supported charsets
-				Text: "Only US-ASCII and UTF-8 are supported SEARCH charsets",
+			// What makes the command BAD comes first: a BAD keeps "$" where a
+			// NO empties it (RFC 5182 §2.1).
+			if err := c.checkSearch(&options); err != nil {
+				return err
 			}
+			return c.badCharsetError(&options)
 		}
 		atom = ""
 		maybeReadSearchKeyAtom(dec, &atom)
@@ -73,23 +74,10 @@ func (c *Conn) handleSearch(tag string, dec *imapwire.Decoder, numKind NumKind) 
 		return dec.Err()
 	}
 
-	if err := c.checkState(imap.ConnStateSelected); err != nil {
+	if err := c.checkSearch(&options); err != nil {
 		return err
 	}
-
-	// RFC 4466 §2.6.1: "Any options not defined by extensions that the server
-	// supports must be rejected with a BAD response." The result options are
-	// ESEARCH's (RFC 4731), SAVE included: a SEARCHRES server "MUST also
-	// implement the [ESEARCH] extension" (RFC 5182 §2.1). The session cannot do
-	// this itself, since a plain SEARCH reaches it as RETURN (ALL) (below). An
-	// empty RETURN () holds no option and gets the SEARCH response.
 	supportsESEARCH := c.supportsESearch()
-	if !supportsESEARCH && (options.ReturnMin || options.ReturnMax || options.ReturnAll || options.ReturnCount || options.ReturnSave) {
-		return newClientBugError("SEARCH result options require ESEARCH")
-	}
-	if options.ReturnSave && !c.supportsSearchRes() {
-		return newClientBugError("SEARCH SAVE requires SEARCHRES")
-	}
 
 	// SAVE alone suppresses result responses (RFC 5182 §1, RFC 9051 §6.4.4).
 	// Capture that before normalizing options: the backend still receives ALL
@@ -148,6 +136,46 @@ func (c *Conn) handleSearch(tag string, dec *imapwire.Decoder, numKind NumKind) 
 		return c.writeESearch(tag, data, &options, numKind)
 	} else {
 		return c.writeSearch(data.All, data.ModSeq)
+	}
+}
+
+// checkSearch refuses with BAD a SEARCH that the connection state or its
+// options make invalid, whatever its criteria.
+func (c *Conn) checkSearch(options *imap.SearchOptions) error {
+	if err := c.checkState(imap.ConnStateSelected); err != nil {
+		return err
+	}
+
+	// RFC 4466 §2.6.1: "Any options not defined by extensions that the server
+	// supports must be rejected with a BAD response." The result options are
+	// ESEARCH's (RFC 4731), SAVE included: a SEARCHRES server "MUST also
+	// implement the [ESEARCH] extension" (RFC 5182 §2.1). The session cannot do
+	// this itself, since a plain SEARCH reaches it as RETURN (ALL) (see
+	// handleSearch). An empty RETURN () holds no option and gets the SEARCH
+	// response.
+	if !c.supportsESearch() && (options.ReturnMin || options.ReturnMax || options.ReturnAll || options.ReturnCount || options.ReturnSave) {
+		return newClientBugError("SEARCH result options require ESEARCH")
+	}
+	if options.ReturnSave && !c.supportsSearchRes() {
+		return newClientBugError("SEARCH SAVE requires SEARCHRES")
+	}
+	return nil
+}
+
+// badCharsetError answers a SEARCH or ESEARCH whose CHARSET is unsupported.
+// The session never sees the command, so for a SAVE search it is told to empty
+// "$" here: RFC 5182 §2.1 has a SAVE search answered NO set "$" to the empty
+// sequence.
+func (c *Conn) badCharsetError(options *imap.SearchOptions) error {
+	if options.ReturnSave {
+		if session, ok := c.session.(SessionSearchRes); ok {
+			session.ResetSearchRes()
+		}
+	}
+	return &imap.Error{
+		Type: imap.StatusResponseTypeNo,
+		Code: imap.ResponseCodeBadCharset, // TODO: return list of supported charsets
+		Text: "Only US-ASCII and UTF-8 are supported SEARCH charsets",
 	}
 }
 

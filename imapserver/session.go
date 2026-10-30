@@ -127,6 +127,19 @@ type SessionMove interface {
 	Move(ctx context.Context, w *MoveWriter, numSet imap.NumSet, dest string) error
 }
 
+// SessionSearchRes is an IMAP session which keeps the search result variable
+// "$" that SEARCH RETURN (SAVE) sets (RFC 5182).
+type SessionSearchRes interface {
+	Session
+
+	// ResetSearchRes empties "$". The server calls it when it answers a SEARCH
+	// or ESEARCH with the SAVE result option NO itself, without calling Search
+	// or MultiSearch; RFC 5182 §2.1 has such a NO set "$" to the empty
+	// sequence. A NO that Search or MultiSearch returns is the session's own
+	// to handle.
+	ResetSearchRes()
+}
+
 // SessionIMAP4rev2 is an IMAP session which supports IMAP4rev2.
 type SessionIMAP4rev2 interface {
 	Session

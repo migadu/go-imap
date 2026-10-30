@@ -62,7 +62,18 @@ type UserSession struct {
 var (
 	_ imapserver.SessionIMAP4rev2 = (*UserSession)(nil)
 	_ imapserver.SessionACL       = (*UserSession)(nil)
+	_ imapserver.SessionSearchRes = (*UserSession)(nil)
 )
+
+// ResetSearchRes empties "$" in the selected mailbox.
+func (sess *UserSession) ResetSearchRes() {
+	if sess.mailbox == nil {
+		return
+	}
+	sess.mailbox.mutex.Lock()
+	sess.mailbox.searchRes = nil
+	sess.mailbox.mutex.Unlock()
+}
 
 // NewUserSession creates a new user session.
 func NewUserSession(user *User) *UserSession {
