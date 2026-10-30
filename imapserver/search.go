@@ -1,6 +1,7 @@
 package imapserver
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -12,7 +13,7 @@ import (
 	"golang.org/x/text/language"
 )
 
-func (c *Conn) handleSearch(tag string, dec *imapwire.Decoder, numKind NumKind) error {
+func (c *Conn) handleSearch(tag string, dec *imapwire.Decoder, numKind NumKind) (err error) {
 	if !dec.ExpectSP() {
 		return dec.Err()
 	}
@@ -21,6 +22,12 @@ func (c *Conn) handleSearch(tag string, dec *imapwire.Decoder, numKind NumKind) 
 		options  imap.SearchOptions
 		extended bool
 	)
+	backendCalled := false
+	defer func() {
+		if !backendCalled {
+			c.resetSearchResOnFailure(&options, err)
+		}
+	}()
 	if maybeReadSearchKeyAtom(dec, &atom) && strings.EqualFold(atom, "RETURN") {
 		if err := readSearchReturnOpts(dec, &options); err != nil {
 			return fmt.Errorf("in search-return-opts: %w", err)
@@ -83,7 +90,7 @@ func (c *Conn) handleSearch(tag string, dec *imapwire.Decoder, numKind NumKind) 
 		return newClientBugError("SEARCH SAVE requires SEARCHRES")
 	}
 	if badCharset {
-		return c.badSearchCharsetError(&options)
+		return badSearchCharsetError()
 	}
 
 	// SAVE alone suppresses result responses (RFC 5182 §1, RFC 9051 §6.4.4).
@@ -99,6 +106,7 @@ func (c *Conn) handleSearch(tag string, dec *imapwire.Decoder, numKind NumKind) 
 	// MODSEQ key only when CONDSTORE is supported.
 	hasModSeq := searchCriteriaHasModSeq(&criteria)
 
+	backendCalled = true
 	data, err := c.session.Search(c.ctx, numKind, &criteria, &options)
 	if err != nil {
 		return err
@@ -285,18 +293,24 @@ func searchCharsetSupported(charset string) bool {
 	}
 }
 
-// badSearchCharsetError fails a SEARCH or ESEARCH that names an unsupported
-// CHARSET. The handlers return it only once the whole command has been read
-// and every check that answers BAD has passed: a BAD leaves "$" as it was,
-// while a NO to a SAVE search sets it to the empty sequence (RFC 5182 §2.1).
-// The session keeps "$" but is not called for this command, so it is told
-// through SessionSearchRes.
-func (c *Conn) badSearchCharsetError(options *imap.SearchOptions) error {
-	if options.ReturnSave {
-		if sess, ok := c.session.(SessionSearchRes); ok {
-			sess.ResetSearchRes()
-		}
+// resetSearchResOnFailure handles NO errors returned before Search or
+// MultiSearch runs, including literal refusals while parsing the command.
+// A SAVE search answered NO empties "$"; BAD and searches without SAVE leave
+// it unchanged (RFC 5182 section 2.1). Once called, the backend owns resets.
+func (c *Conn) resetSearchResOnFailure(options *imap.SearchOptions, err error) {
+	var imapErr *imap.Error
+	if !options.ReturnSave || c.state != imap.ConnStateSelected ||
+		!errors.As(err, &imapErr) || imapErr.Type != imap.StatusResponseTypeNo {
+		return
 	}
+	if sess, ok := c.session.(SessionSearchRes); ok {
+		sess.ResetSearchRes()
+	}
+}
+
+// The handlers defer BADCHARSET until the command has been parsed and checked
+// for BAD errors, which must preserve the saved search result.
+func badSearchCharsetError() error {
 	return &imap.Error{
 		Type: imap.StatusResponseTypeNo,
 		Code: imap.ResponseCodeBadCharset, // TODO: return list of supported charsets

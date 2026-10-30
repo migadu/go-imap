@@ -453,6 +453,8 @@ func (mbox *MailboxView) Search(ctx context.Context, numKind imapserver.NumKind,
 		uidSet imap.UIDSet
 		// Mod-sequences of all matches, and of the MIN and MAX messages.
 		allModSeq, minModSeq, maxModSeq uint64
+		// SAVE stores UIDs even when MIN and MAX are sequence numbers.
+		minUID, maxUID imap.UID
 	)
 	for i, msg := range mbox.l {
 		seqNum := mbox.tracker.EncodeSeqNum(uint32(i) + 1)
@@ -476,10 +478,10 @@ func (mbox *MailboxView) Search(ctx context.Context, numKind imapserver.NumKind,
 			num = uint32(msg.uid)
 		}
 		if data.Min == 0 || num < data.Min {
-			data.Min, minModSeq = num, msg.modSeq
+			data.Min, minModSeq, minUID = num, msg.modSeq, msg.uid
 		}
 		if data.Max == 0 || num > data.Max {
-			data.Max, maxModSeq = num, msg.modSeq
+			data.Max, maxModSeq, maxUID = num, msg.modSeq, msg.uid
 		}
 		allModSeq = max(allModSeq, msg.modSeq)
 		data.Count++
@@ -506,7 +508,21 @@ func (mbox *MailboxView) Search(ctx context.Context, numKind imapserver.NumKind,
 		}
 	}
 	if options.ReturnSave {
-		mbox.searchRes = uidSet
+		// RFC 5182 §2.4 / RFC 9051 §6.4.4.1: MIN/MAX without ALL or
+		// COUNT saves only those endpoint messages; otherwise save all
+		// matches. Keep actual UIDs so "$" works in either number space.
+		if options.ReturnAll || options.ReturnCount || !(options.ReturnMin || options.ReturnMax) {
+			mbox.searchRes = uidSet
+		} else {
+			var saved imap.UIDSet
+			if options.ReturnMin && minUID != 0 {
+				saved.AddNum(minUID)
+			}
+			if options.ReturnMax && maxUID != 0 {
+				saved.AddNum(maxUID)
+			}
+			mbox.searchRes = saved
+		}
 	}
 
 	return &data, nil

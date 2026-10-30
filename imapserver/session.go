@@ -170,7 +170,9 @@ type SessionSearchRes interface {
 	// ResetSearchRes empties "$". The server calls it when it fails a SEARCH
 	// or ESEARCH with the SAVE result option with NO itself, without calling
 	// Search or MultiSearch: RFC 5182 §2.1 has such a command set "$" to the
-	// empty sequence. The only such NO is an unsupported CHARSET.
+	// empty sequence. This includes unsupported CHARSET and literal-size
+	// refusals while parsing. Once Search or MultiSearch is called, the
+	// backend is responsible for handling its own SAVE failures.
 	ResetSearchRes()
 }
 
