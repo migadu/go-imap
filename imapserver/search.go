@@ -26,7 +26,8 @@ func (c *Conn) handleSearch(tag string, dec *imapwire.Decoder, numKind NumKind) 
 	defer func() {
 		if !backendCalled {
 			err = c.failSearchBeforeBackend(err, &options, func() error {
-				return c.checkSearchReturnOpts(&options)
+				_, badErr := c.checkSearchReturnOpts(&options)
+				return badErr
 			})
 		}
 	}()
@@ -77,7 +78,8 @@ func (c *Conn) handleSearch(tag string, dec *imapwire.Decoder, numKind NumKind) 
 	if err := c.checkState(imap.ConnStateSelected); err != nil {
 		return err
 	}
-	if err := c.checkSearchReturnOpts(&options); err != nil {
+	supportsESEARCH, err := c.checkSearchReturnOpts(&options)
+	if err != nil {
 		return err
 	}
 	if badCharset {
@@ -137,8 +139,9 @@ func (c *Conn) handleSearch(tag string, dec *imapwire.Decoder, numKind NumKind) 
 	// IMAP4rev1, and a client that never sent ENABLE keeps receiving the rev1
 	// wire form it knows how to parse. supportsESEARCH is kept as the outer
 	// guard so the response form can never outrun what the session reports it
-	// can do via SessionCapabilities.
-	supportsESEARCH := c.supportsESearch()
+	// can do via SessionCapabilities. It is the value read before Search ran,
+	// which accepted the result options: RFC 4731 §3.1 answers those with
+	// ESEARCH even if the session's capabilities changed since.
 	if supportsESEARCH && (extended || c.isIMAP4rev2()) {
 		return c.writeESearch(tag, data, &options, numKind)
 	} else {
@@ -286,7 +289,8 @@ func searchCharsetSupported(charset string) bool {
 }
 
 // checkSearchReturnOpts rejects the result options of a SEARCH that the
-// server does not support.
+// server does not support. It reports the ESEARCH support it checked them
+// against, which handleSearch keeps to choose the response form.
 //
 // RFC 4466 §2.6.1: "Any options not defined by extensions that the server
 // supports must be rejected with a BAD response." The result options are
@@ -294,14 +298,15 @@ func searchCharsetSupported(charset string) bool {
 // the [ESEARCH] extension" (RFC 5182 §2.1). The session cannot do this itself,
 // since a plain SEARCH reaches it as RETURN (ALL) (handleSearch). An empty
 // RETURN () holds no option and gets the SEARCH response.
-func (c *Conn) checkSearchReturnOpts(options *imap.SearchOptions) error {
-	if !c.supportsESearch() && (options.ReturnMin || options.ReturnMax || options.ReturnAll || options.ReturnCount || options.ReturnSave) {
-		return newClientBugError("SEARCH result options require ESEARCH")
+func (c *Conn) checkSearchReturnOpts(options *imap.SearchOptions) (supportsESEARCH bool, err error) {
+	supportsESEARCH = c.supportsESearch()
+	if !supportsESEARCH && (options.ReturnMin || options.ReturnMax || options.ReturnAll || options.ReturnCount || options.ReturnSave) {
+		return false, newClientBugError("SEARCH result options require ESEARCH")
 	}
 	if options.ReturnSave && !c.supportsSearchRes() {
-		return newClientBugError("SEARCH SAVE requires SEARCHRES")
+		return false, newClientBugError("SEARCH SAVE requires SEARCHRES")
 	}
-	return nil
+	return supportsESEARCH, nil
 }
 
 // failSearchBeforeBackend settles a SEARCH or ESEARCH that fails before Search
