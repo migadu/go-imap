@@ -34,7 +34,7 @@ type SessionMultiSearch interface {
 //
 // ESEARCH always operates in UID space and every response carries the
 // MAILBOX/TAG/UIDVALIDITY correlator. With no IN clause, "selected" is assumed.
-func (c *Conn) handleESearch(tag string, dec *imapwire.Decoder) error {
+func (c *Conn) handleESearch(tag string, dec *imapwire.Decoder) (err error) {
 	if !dec.ExpectSP() {
 		return dec.Err()
 	}
@@ -44,6 +44,12 @@ func (c *Conn) handleESearch(tag string, dec *imapwire.Decoder) error {
 		options imap.SearchOptions
 		source  imap.SearchSource
 	)
+	backendCalled := false
+	defer func() {
+		if !backendCalled {
+			c.resetSearchResOnFailure(&options, err)
+		}
+	}()
 
 	// Optional "IN (source-mbox)".
 	if maybeReadSearchKeyAtom(dec, &atom) && strings.EqualFold(atom, "IN") {
@@ -73,21 +79,13 @@ func (c *Conn) handleESearch(tag string, dec *imapwire.Decoder) error {
 	}
 
 	// Optional CHARSET.
+	var badCharset bool
 	if strings.EqualFold(atom, "CHARSET") {
 		var charset string
 		if !dec.ExpectSP() || !dec.ExpectAString(&charset) || !dec.ExpectSP() {
 			return dec.Err()
 		}
-		switch strings.ToUpper(charset) {
-		case "US-ASCII", "UTF-8":
-			// nothing to do
-		default:
-			return &imap.Error{
-				Type: imap.StatusResponseTypeNo,
-				Code: imap.ResponseCodeBadCharset,
-				Text: "Only US-ASCII and UTF-8 are supported SEARCH charsets",
-			}
-		}
+		badCharset = !searchCharsetSupported(charset)
 		atom = ""
 		maybeReadSearchKeyAtom(dec, &atom)
 	}
@@ -154,10 +152,14 @@ func (c *Conn) handleESearch(tag string, dec *imapwire.Decoder) error {
 			Text: "MULTISEARCH not supported",
 		}
 	}
+	if badCharset {
+		return badSearchCharsetError()
+	}
 
 	// Read before the session can rewrite the criteria; see handleSearch.
 	hasModSeq := searchCriteriaHasModSeq(&criteria)
 
+	backendCalled = true
 	results, err := sessionMultiSearch.MultiSearch(c.ctx, &source, &criteria, &options)
 	if err != nil {
 		return err

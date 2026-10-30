@@ -1,6 +1,7 @@
 package imapserver
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -12,7 +13,7 @@ import (
 	"golang.org/x/text/language"
 )
 
-func (c *Conn) handleSearch(tag string, dec *imapwire.Decoder, numKind NumKind) error {
+func (c *Conn) handleSearch(tag string, dec *imapwire.Decoder, numKind NumKind) (err error) {
 	if !dec.ExpectSP() {
 		return dec.Err()
 	}
@@ -21,6 +22,12 @@ func (c *Conn) handleSearch(tag string, dec *imapwire.Decoder, numKind NumKind) 
 		options  imap.SearchOptions
 		extended bool
 	)
+	backendCalled := false
+	defer func() {
+		if !backendCalled {
+			c.resetSearchResOnFailure(&options, err)
+		}
+	}()
 	if maybeReadSearchKeyAtom(dec, &atom) && strings.EqualFold(atom, "RETURN") {
 		if err := readSearchReturnOpts(dec, &options); err != nil {
 			return fmt.Errorf("in search-return-opts: %w", err)
@@ -32,21 +39,13 @@ func (c *Conn) handleSearch(tag string, dec *imapwire.Decoder, numKind NumKind) 
 		atom = ""
 		maybeReadSearchKeyAtom(dec, &atom)
 	}
+	var badCharset bool
 	if strings.EqualFold(atom, "CHARSET") {
 		var charset string
 		if !dec.ExpectSP() || !dec.ExpectAString(&charset) || !dec.ExpectSP() {
 			return dec.Err()
 		}
-		switch strings.ToUpper(charset) {
-		case "US-ASCII", "UTF-8":
-			// nothing to do
-		default:
-			return &imap.Error{
-				Type: imap.StatusResponseTypeNo,
-				Code: imap.ResponseCodeBadCharset, // TODO: return list of supported charsets
-				Text: "Only US-ASCII and UTF-8 are supported SEARCH charsets",
-			}
-		}
+		badCharset = !searchCharsetSupported(charset)
 		atom = ""
 		maybeReadSearchKeyAtom(dec, &atom)
 	}
@@ -90,6 +89,9 @@ func (c *Conn) handleSearch(tag string, dec *imapwire.Decoder, numKind NumKind) 
 	if options.ReturnSave && !c.supportsSearchRes() {
 		return newClientBugError("SEARCH SAVE requires SEARCHRES")
 	}
+	if badCharset {
+		return badSearchCharsetError()
+	}
 
 	// SAVE alone suppresses result responses (RFC 5182 §1, RFC 9051 §6.4.4).
 	// Capture that before normalizing options: the backend still receives ALL
@@ -104,6 +106,7 @@ func (c *Conn) handleSearch(tag string, dec *imapwire.Decoder, numKind NumKind) 
 	// MODSEQ key only when CONDSTORE is supported.
 	hasModSeq := searchCriteriaHasModSeq(&criteria)
 
+	backendCalled = true
 	data, err := c.session.Search(c.ctx, numKind, &criteria, &options)
 	if err != nil {
 		return err
@@ -279,6 +282,40 @@ func readSearchReturnOpts(dec *imapwire.Decoder, options *imap.SearchOptions) er
 		}
 		return nil
 	})
+}
+
+func searchCharsetSupported(charset string) bool {
+	switch strings.ToUpper(charset) {
+	case "US-ASCII", "UTF-8":
+		return true
+	default:
+		return false
+	}
+}
+
+// resetSearchResOnFailure handles NO errors returned before Search or
+// MultiSearch runs, including literal refusals while parsing the command.
+// A SAVE search answered NO empties "$"; BAD and searches without SAVE leave
+// it unchanged (RFC 5182 section 2.1). Once called, the backend owns resets.
+func (c *Conn) resetSearchResOnFailure(options *imap.SearchOptions, err error) {
+	var imapErr *imap.Error
+	if !options.ReturnSave || c.state != imap.ConnStateSelected ||
+		!errors.As(err, &imapErr) || imapErr.Type != imap.StatusResponseTypeNo {
+		return
+	}
+	if sess, ok := c.session.(SessionSearchRes); ok {
+		sess.ResetSearchRes()
+	}
+}
+
+// The handlers defer BADCHARSET until the command has been parsed and checked
+// for BAD errors, which must preserve the saved search result.
+func badSearchCharsetError() error {
+	return &imap.Error{
+		Type: imap.StatusResponseTypeNo,
+		Code: imap.ResponseCodeBadCharset, // TODO: return list of supported charsets
+		Text: "Only US-ASCII and UTF-8 are supported SEARCH charsets",
+	}
 }
 
 func maybeReadSearchKeyAtom(dec *imapwire.Decoder, ptr *string) bool {

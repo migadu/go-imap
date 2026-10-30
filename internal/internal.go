@@ -47,7 +47,9 @@ func ExpectDate(dec *imapwire.Decoder) (time.Time, error) {
 	}
 	t, err := time.Parse(DateLayout, s)
 	if err != nil {
-		return time.Time{}, fmt.Errorf("in date: %v", err) // use imapwire.DecodeExpectError?
+		return time.Time{}, &imapwire.DecoderExpectError{
+			Message: fmt.Sprintf("invalid date %q", s),
+		}
 	}
 	return t, nil
 }

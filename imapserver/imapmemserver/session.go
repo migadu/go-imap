@@ -62,6 +62,7 @@ type UserSession struct {
 var (
 	_ imapserver.SessionIMAP4rev2 = (*UserSession)(nil)
 	_ imapserver.SessionACL       = (*UserSession)(nil)
+	_ imapserver.SessionSearchRes = (*UserSession)(nil)
 )
 
 // NewUserSession creates a new user session.

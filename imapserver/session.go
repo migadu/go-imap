@@ -160,6 +160,22 @@ type SessionAppendLimit interface {
 	AppendLimit() uint32
 }
 
+// SessionSearchRes is an IMAP session which keeps the SEARCHRES "$" variable
+// (RFC 5182), which Search and MultiSearch set for the SAVE result option.
+type SessionSearchRes interface {
+	Session
+
+	// Selected state
+
+	// ResetSearchRes empties "$". The server calls it when it fails a SEARCH
+	// or ESEARCH with the SAVE result option with NO itself, without calling
+	// Search or MultiSearch: RFC 5182 §2.1 has such a command set "$" to the
+	// empty sequence. This includes unsupported CHARSET and literal-size
+	// refusals while parsing. Once Search or MultiSearch is called, the
+	// backend is responsible for handling its own SAVE failures.
+	ResetSearchRes()
+}
+
 // SessionCapabilities is an IMAP session which can provide its current
 // capabilities for capability filtering.
 type SessionCapabilities interface {
