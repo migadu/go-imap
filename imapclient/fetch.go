@@ -1443,6 +1443,7 @@ func readBodyDepth(dec *imapwire.Decoder, options *Options, depth int) (imap.Bod
 
 	var (
 		mediaType string
+		atom      string
 		token     string
 		bs        imap.BodyStructure
 		err       error
@@ -1467,6 +1468,22 @@ func readBodyDepth(dec *imapwire.Decoder, options *Options, depth int) (imap.Bod
 		} else {
 			token = "body-type-mpart"
 			bs, err = readChildlessBodyTypeMpart(dec, mediaType, hasSP, options)
+		}
+	} else if dec.Atom(&atom) {
+		// Some servers (e.g. QQ Mail) send NIL instead of a media type for a
+		// single part. Treat it as a single part with an empty media type
+		// instead of misinterpreting it as a multipart. Its subtype may be
+		// NIL too.
+		//
+		// The probe is Atom, which reads nothing and records no error when a
+		// "(" comes next, as it does for every multipart. ExpectNIL would
+		// record one, and the decoder reads nothing more after an error.
+		token = "body-type-1part"
+		var subtype string
+		if !dec.Expect(atom == "NIL", "media type") || !dec.ExpectSP() || !dec.ExpectNString(&subtype) {
+			err = dec.Err()
+		} else {
+			bs, err = readBodyType1part(dec, "", subtype, options, depth)
 		}
 	} else {
 		token = "body-type-mpart"
