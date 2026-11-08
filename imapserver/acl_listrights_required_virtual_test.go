@@ -120,7 +120,7 @@ func TestListRightsVirtualRightOfRequiredMembersIsRequired(t *testing.T) {
 			name:     "empty_required",
 			required: imap.RightSet(""),
 			optional: []imap.RightSet{imap.RightSet("lr"), imap.RightSet("kxte")},
-			want:     `* LISTRIGHTS INBOX "owner@example.com" "" "lr" "kxte" "c" "d"`,
+			want:     `* LISTRIGHTS INBOX "owner@example.com" "" "lr" "kxtecd"`,
 		},
 		// (c) Members split between required and optional: still a group of
 		// its own, since granting it grants the optional member.
