@@ -67,13 +67,14 @@ type SessionACL interface {
 //
 // The declaration is the ONE source for everything the server does with the
 // virtual rights: the expansion of an incoming `c`/`d` in SETACL, the `c`/`d`
-// appended to GETACL and MYRIGHTS, and the `c`/`d` groups added to LISTRIGHTS.
-// Reading all three from one place is what keeps them from disagreeing, which
-// is why this is a single method returning both sets rather than one per
-// right. The two sets are normalized before use: the virtual letters
-// themselves and duplicates are dropped, and a right named in both stays in
-// `create` only, since in both RFC families a right is a member of at most one
-// virtual right.
+// appended to GETACL and MYRIGHTS, and the `c`/`d` added to LISTRIGHTS (to the
+// required rights when every member is required, as a group of its own
+// otherwise). Reading all three from one place is what keeps them from
+// disagreeing, which is why this is a single method returning both sets rather
+// than one per right. The two sets are normalized before use: the virtual
+// letters themselves and duplicates are dropped, and a right named in both
+// stays in `create` only, since in both RFC families a right is a member of at
+// most one virtual right.
 //
 // The RIGHTS= capability is deliberately NOT derived from this. RFC 4314 §6's
 // formal syntax fixes it ("new-rights ... MUST include t, e, x, and k"), so it
