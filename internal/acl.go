@@ -1,7 +1,7 @@
 package internal
 
 import (
-	"github.com/emersion/go-imap/v2"
+	"github.com/migadu/go-imap"
 )
 
 func FormatRights(rm imap.RightModification, rs imap.RightSet) string {

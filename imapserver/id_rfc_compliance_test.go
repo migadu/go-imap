@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/emersion/go-imap/v2/internal/imapwire"
+	"github.com/migadu/go-imap/internal/imapwire"
 )
 
 // TestIDCommandRFCCompliance tests all valid ID command formats per RFC 2971

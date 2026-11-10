@@ -11,10 +11,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/emersion/go-imap/v2"
-	"github.com/emersion/go-imap/v2/internal"
-	"github.com/emersion/go-imap/v2/internal/imapwire"
 	"github.com/emersion/go-message/mail"
+	"github.com/migadu/go-imap"
+	"github.com/migadu/go-imap/internal"
+	"github.com/migadu/go-imap/internal/imapwire"
 )
 
 var errLiteralTooLarge = errors.New("imapclient: literal exceeds MaxLiteralSize")

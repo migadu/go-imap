@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/emersion/go-imap/v2"
-	"github.com/emersion/go-imap/v2/imapserver"
-	"github.com/emersion/go-imap/v2/imapserver/imapmemserver"
+	"github.com/migadu/go-imap"
+	"github.com/migadu/go-imap/imapserver"
+	"github.com/migadu/go-imap/imapserver/imapmemserver"
 )
 
 // parseWire is a raw connection to a server: these cases are about the exact

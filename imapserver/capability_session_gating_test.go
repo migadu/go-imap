@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/emersion/go-imap/v2"
+	"github.com/migadu/go-imap"
 )
 
 // rev2CapSession implements SessionIMAP4rev2 (base Session + NAMESPACE + MOVE)

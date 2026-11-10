@@ -9,9 +9,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/emersion/go-imap/v2"
-	"github.com/emersion/go-imap/v2/imapserver"
-	"github.com/emersion/go-imap/v2/imapserver/imapmemserver"
+	"github.com/migadu/go-imap"
+	"github.com/migadu/go-imap/imapserver"
+	"github.com/migadu/go-imap/imapserver/imapmemserver"
 )
 
 func TestList(t *testing.T) {

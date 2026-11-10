@@ -3,7 +3,7 @@ package imapserver
 import (
 	"testing"
 
-	"github.com/emersion/go-imap/v2"
+	"github.com/migadu/go-imap"
 )
 
 // TestUseQuotedUTF8 is a regression test for the rule that UTF-8 mailbox names

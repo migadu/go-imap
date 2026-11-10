@@ -3,9 +3,9 @@ package imapserver
 import (
 	"strings"
 
-	"github.com/emersion/go-imap/v2"
-	"github.com/emersion/go-imap/v2/internal"
-	"github.com/emersion/go-imap/v2/internal/imapwire"
+	"github.com/migadu/go-imap"
+	"github.com/migadu/go-imap/internal"
+	"github.com/migadu/go-imap/internal/imapwire"
 )
 
 func (c *Conn) handleCreate(dec *imapwire.Decoder) error {

@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/emersion/go-imap/v2"
-	"github.com/emersion/go-imap/v2/internal/imapwire"
+	"github.com/migadu/go-imap"
+	"github.com/migadu/go-imap/internal/imapwire"
 )
 
 // The 17 keywords of RFC 9979 section 1, spelled as the "IMAP and JMAP

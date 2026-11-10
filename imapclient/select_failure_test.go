@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/emersion/go-imap/v2"
-	"github.com/emersion/go-imap/v2/imapclient"
+	"github.com/migadu/go-imap"
+	"github.com/migadu/go-imap/imapclient"
 )
 
 // RFC 3501 §6.3.1 and RFC 9051 §6.3.2: "if a mailbox is selected and a SELECT

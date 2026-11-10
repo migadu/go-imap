@@ -7,8 +7,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/emersion/go-imap/v2"
-	"github.com/emersion/go-imap/v2/internal/imapwire"
+	"github.com/migadu/go-imap"
+	"github.com/migadu/go-imap/internal/imapwire"
 )
 
 // L1: deeply nested NOT/OR SEARCH keys must be rejected with a clean error

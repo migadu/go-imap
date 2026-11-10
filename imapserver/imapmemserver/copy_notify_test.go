@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/emersion/go-imap/v2"
+	"github.com/migadu/go-imap"
 )
 
 // COPY cannot target the selected mailbox. It must neither record destination

@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/emersion/go-imap/v2/internal/imapwire"
+	"github.com/migadu/go-imap/internal/imapwire"
 )
 
 // TestReadID covers both forms RFC 2971 §3.1 allows for the ID parameter: NIL,

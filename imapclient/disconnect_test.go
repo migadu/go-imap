@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/emersion/go-imap/v2/imapclient"
+	"github.com/migadu/go-imap/imapclient"
 )
 
 // deadlinelessConn is a net.Conn whose deadline setters do nothing.

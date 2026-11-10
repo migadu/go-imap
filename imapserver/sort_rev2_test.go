@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/emersion/go-imap/v2"
+	"github.com/migadu/go-imap"
 )
 
 // IMAP4rev2 changes SEARCH's answer to ESEARCH (RFC 9051 §6.4.4, Appendix E

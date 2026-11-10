@@ -4,9 +4,9 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/emersion/go-imap/v2"
-	"github.com/emersion/go-imap/v2/internal/imapwire"
 	"github.com/emersion/go-sasl"
+	"github.com/migadu/go-imap"
+	"github.com/migadu/go-imap/internal/imapwire"
 )
 
 var errAuthFailed = &imap.Error{

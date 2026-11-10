@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/emersion/go-imap/v2/internal/imapwire"
+	"github.com/migadu/go-imap/internal/imapwire"
 )
 
 // TestReadID tests the readID function with various valid and invalid inputs

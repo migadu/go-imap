@@ -1,4 +1,4 @@
-module github.com/emersion/go-imap/v2
+module github.com/migadu/go-imap
 
 go 1.25.0
 

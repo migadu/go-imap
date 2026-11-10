@@ -3,7 +3,7 @@ packages:
   - dovecot
   - go
 sources:
-  - https://github.com/emersion/go-imap#v2
+  - https://github.com/migadu/go-imap#main
 tasks:
   - build: |
       cd go-imap

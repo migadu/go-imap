@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/emersion/go-imap/v2"
-	"github.com/emersion/go-imap/v2/internal/imapwire"
+	"github.com/migadu/go-imap"
+	"github.com/migadu/go-imap/internal/imapwire"
 )
 
 var errMetadataLiteralTooLarge = errors.New("imapclient: metadata literal exceeds MaxLiteralSize")

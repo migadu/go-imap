@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/emersion/go-imap/v2/imapclient"
-	"github.com/emersion/go-imap/v2/internal/imapwire"
+	"github.com/migadu/go-imap/imapclient"
+	"github.com/migadu/go-imap/internal/imapwire"
 )
 
 // A malformed ACL response fails the read loop, and the pending command

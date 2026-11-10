@@ -4,10 +4,10 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/emersion/go-imap/v2"
-	"github.com/emersion/go-imap/v2/internal"
-	"github.com/emersion/go-imap/v2/internal/imapwire"
-	"github.com/emersion/go-imap/v2/internal/utf7"
+	"github.com/migadu/go-imap"
+	"github.com/migadu/go-imap/internal"
+	"github.com/migadu/go-imap/internal/imapwire"
+	"github.com/migadu/go-imap/internal/utf7"
 )
 
 func (c *Conn) handleList(dec *imapwire.Decoder) error {

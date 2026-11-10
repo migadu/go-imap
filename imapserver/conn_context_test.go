@@ -5,7 +5,7 @@ import (
 	"net"
 	"testing"
 
-	"github.com/emersion/go-imap/v2"
+	"github.com/migadu/go-imap"
 )
 
 // TestConnContextCancelledByForceClose verifies the M4 plumbing: a connection's

@@ -1,7 +1,7 @@
 package imapserver
 
 import (
-	"github.com/emersion/go-imap/v2"
+	"github.com/migadu/go-imap"
 )
 
 // VanishedWriter writes VANISHED updates for QRESYNC-enabled connections.

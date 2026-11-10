@@ -3,7 +3,7 @@ package imapserver
 import (
 	"testing"
 
-	"github.com/emersion/go-imap/v2"
+	"github.com/migadu/go-imap"
 )
 
 // TestMultiSearchDataIsEmpty locks in RFC 7377 §2.1: an ESEARCH response MUST

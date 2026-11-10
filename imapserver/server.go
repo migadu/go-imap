@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/emersion/go-imap/v2"
+	"github.com/migadu/go-imap"
 )
 
 var errClosed = errors.New("imapserver: server closed")

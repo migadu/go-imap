@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/emersion/go-imap/v2/internal/imapwire"
+	"github.com/migadu/go-imap/internal/imapwire"
 )
 
 // TestReadBodyStructureDepthLimit is a regression test for unbounded recursion

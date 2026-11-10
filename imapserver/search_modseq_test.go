@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/emersion/go-imap/v2"
-	"github.com/emersion/go-imap/v2/imapserver"
+	"github.com/migadu/go-imap"
+	"github.com/migadu/go-imap/imapserver"
 )
 
 // RFC 7162 §3.1.5 and §3.1.6 add the highest mod-sequence to a SEARCH answer

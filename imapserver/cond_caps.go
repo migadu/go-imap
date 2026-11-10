@@ -1,7 +1,7 @@
 package imapserver
 
 import (
-	"github.com/emersion/go-imap/v2"
+	"github.com/migadu/go-imap"
 )
 
 // supportsCondStore returns true if the connection supports CONDSTORE extension.

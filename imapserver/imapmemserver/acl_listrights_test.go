@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/emersion/go-imap/v2"
+	"github.com/migadu/go-imap"
 )
 
 func TestListRightsAdvertisesIndependentGrants(t *testing.T) {

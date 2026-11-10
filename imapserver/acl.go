@@ -3,7 +3,7 @@ package imapserver
 import (
 	"context"
 
-	"github.com/emersion/go-imap/v2"
+	"github.com/migadu/go-imap"
 )
 
 // SessionACL is an IMAP session which supports the ACL extension (RFC 4314).
