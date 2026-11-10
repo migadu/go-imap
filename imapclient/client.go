@@ -556,6 +556,11 @@ func (c *Client) Close() error {
 		return err
 	}
 
+	// The read goroutine fails the pending commands when it exits, but it
+	// cannot exit while a unilateral data handler it called is waiting for
+	// one of them. Fail them here, so that such a handler returns.
+	c.failPendingCmds(net.ErrClosed)
+
 	<-c.decCh
 	if err := c.decErr; err != nil {
 		return err
@@ -780,7 +785,11 @@ func (c *Client) registerContReq(cmd command) *imapwire.ContinuationRequest {
 
 func (c *Client) closeWithError(err error) {
 	c.conn.Close()
+	c.failPendingCmds(err)
+}
 
+// failPendingCmds completes every pending command with err.
+func (c *Client) failPendingCmds(err error) {
 	c.mutex.Lock()
 	c.state = imap.ConnStateLogout
 	pendingCmds := c.pendingCmds
@@ -1536,6 +1545,10 @@ type UnilateralDataMailbox struct {
 // responses can wait for it to consume message data or return. Other handlers
 // (Expunge, Mailbox, Vanished) are invoked synchronously and will block the
 // client while running.
+//
+// A handler must not wait for a command (Wait, Collect and the like): the
+// reply would be read by the goroutine the handler is running on, so the wait
+// only ends when the client is closed. Send commands from another goroutine.
 //
 // If the caller intends to perform slow operations in any handler, a buffered
 // channel and a separate goroutine should be used. For Fetch, collect or copy
