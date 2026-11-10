@@ -388,12 +388,13 @@ func DialStartTLS(address string, options *Options) (*Client, error) {
 // response. A command in flight means the server owes us a reply, so the
 // response timeout applies. With nothing pending, or with IDLE running -- where
 // silence is expected and may last for many minutes -- the idle timeout does.
+// IDLE stops running when DONE is sent (RFC 2177 section 3).
 //
 // c.mutex must be held.
 func (c *Client) readTimeoutLocked() time.Duration {
 	var pending bool
 	for _, cmd := range c.pendingCmds {
-		if _, ok := cmd.(*idleCommand); ok {
+		if idle, ok := cmd.(*idleCommand); ok && !idle.doneSent {
 			return idleReadTimeout
 		}
 		pending = true
