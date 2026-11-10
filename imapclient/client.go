@@ -386,11 +386,19 @@ func DialStartTLS(address string, options *Options) (*Client, error) {
 
 // readTimeoutLocked returns how long to wait for the first byte of the next
 // response. A command in flight means the server owes us a reply, so the
-// response timeout applies. With nothing pending, or with IDLE running -- where
+// response timeout applies; so it does before the greeting. With nothing pending, or with IDLE running -- where
 // silence is expected and may last for many minutes -- the idle timeout does.
 //
 // c.mutex must be held.
 func (c *Client) readTimeoutLocked() time.Duration {
+	// The server opens with a greeting (RFC 9051 section 7.1): until it has
+	// arrived a response is owed, command or not.
+	select {
+	case <-c.greetingCh:
+	default:
+		return c.options.responseTimeout()
+	}
+
 	var pending bool
 	for _, cmd := range c.pendingCmds {
 		if _, ok := cmd.(*idleCommand); ok {
