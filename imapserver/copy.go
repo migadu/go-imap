@@ -30,6 +30,8 @@ func (c *Conn) handleCopy(tag string, dec *imapwire.Decoder, numKind NumKind) er
 }
 
 func (c *Conn) writeCopyOK(tag string, data *imap.CopyData) error {
+	// The mutation already completed. Invalid advisory data must not turn it
+	// into a failure or corrupt the response stream; omit COPYUID instead.
 	enc := newResponseEncoder(c)
 	defer enc.end()
 
@@ -38,9 +40,9 @@ func (c *Conn) writeCopyOK(tag string, data *imap.CopyData) error {
 	}
 
 	enc.Atom(tag).SP().Atom("OK").SP()
-	if data != nil {
+	if data != nil && data.UIDValidity != 0 && data.UIDMapping.Validate() == nil {
 		enc.Special('[')
-		enc.Atom("COPYUID").SP().Number(data.UIDValidity).SP().NumSet(data.SourceUIDs).SP().NumSet(data.DestUIDs)
+		enc.Atom("COPYUID").SP().Number(data.UIDValidity).SP().UIDMapping(data.UIDMapping)
 		enc.Special(']').SP()
 	}
 	enc.Text("COPY completed")

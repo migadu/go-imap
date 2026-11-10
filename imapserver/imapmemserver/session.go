@@ -220,23 +220,19 @@ func (sess *UserSession) Copy(ctx context.Context, numSet imap.NumSet, destName 
 		}
 	}
 
-	var sourceUIDs, destUIDs imap.UIDSet
+	var mapping imap.UIDMapping
 	sess.mailbox.forEach(numSet, func(seqNum uint32, msg *message) {
 		appendData := dest.copyMsg(msg)
-		sourceUIDs.AddNum(msg.uid)
-		destUIDs.AddNum(appendData.UID)
+		mapping.Add(msg.uid, appendData.UID)
 	})
 
-	if uids, ok := destUIDs.Nums(); ok {
-		for _, uid := range uids {
-			sess.recordOwnMessage(destName, uid)
-		}
+	for _, uid := range mapping.All() {
+		sess.recordOwnMessage(destName, uid)
 	}
 
 	return &imap.CopyData{
 		UIDValidity: dest.uidValidity,
-		SourceUIDs:  sourceUIDs,
-		DestUIDs:    destUIDs,
+		UIDMapping:  mapping,
 	}, nil
 }
 
@@ -258,20 +254,18 @@ func (sess *UserSession) Move(ctx context.Context, w *imapserver.MoveWriter, num
 	sess.mailbox.mutex.Lock()
 	defer sess.mailbox.mutex.Unlock()
 
-	var sourceUIDs, destUIDs imap.UIDSet
+	var mapping imap.UIDMapping
 	expunged := make(map[*message]struct{})
 	sess.mailbox.forEachLocked(numSet, func(seqNum uint32, msg *message) {
 		appendData := dest.copyMsg(msg)
-		sourceUIDs.AddNum(msg.uid)
-		destUIDs.AddNum(appendData.UID)
+		mapping.Add(msg.uid, appendData.UID)
 		expunged[msg] = struct{}{}
 	})
 	seqNums := sess.mailbox.expungeLocked(expunged)
 
 	err = w.WriteCopyData(&imap.CopyData{
 		UIDValidity: dest.uidValidity,
-		SourceUIDs:  sourceUIDs,
-		DestUIDs:    destUIDs,
+		UIDMapping:  mapping,
 	})
 	if err != nil {
 		return err

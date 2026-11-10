@@ -69,6 +69,6 @@ func (cmd *MoveCommand) Wait() (*MoveData, error) {
 type MoveData struct {
 	// requires UIDPLUS or IMAP4rev2
 	UIDValidity uint32
-	SourceUIDs  imap.NumSet
-	DestUIDs    imap.NumSet
+	// UIDMapping preserves the source/destination pairs in copying order.
+	UIDMapping imap.UIDMapping
 }
