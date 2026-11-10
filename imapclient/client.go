@@ -120,6 +120,12 @@ type Options struct {
 	// Raise it when fetching large messages over slow links. As with
 	// ResponseTimeout, there is no value meaning "no timeout".
 	LiteralReadTimeout time.Duration
+	// AutoIdle makes the client run IDLE by itself while it has nothing else
+	// to do. Once no command has been in flight for this long, and if the
+	// server supports IDLE, the client starts IDLE; it ends it before the
+	// next command is sent. Mailbox updates the server sends meanwhile reach
+	// UnilateralDataHandler. If zero, the client never idles on its own.
+	AutoIdle time.Duration
 }
 
 // responseTimeout returns ResponseTimeout, or the default if it is unset.
