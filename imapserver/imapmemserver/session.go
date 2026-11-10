@@ -226,10 +226,8 @@ func (sess *UserSession) Copy(ctx context.Context, numSet imap.NumSet, destName 
 		mapping.Add(msg.uid, appendData.UID)
 	})
 
-	for _, uid := range mapping.All() {
-		sess.recordOwnMessage(destName, uid)
-	}
-
+	// COPY to the selected mailbox is rejected above, so none of these UIDs
+	// belongs in its ownMessages notification bookkeeping.
 	return &imap.CopyData{
 		UIDValidity: dest.uidValidity,
 		UIDMapping:  mapping,
