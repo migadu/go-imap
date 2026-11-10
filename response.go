@@ -52,6 +52,9 @@ const (
 	// APPENDLIMIT
 	ResponseCodeTooBig ResponseCode = "TOOBIG"
 
+	// CATENATE (RFC 4469). The server follows the code with the URL.
+	ResponseCodeBadURL ResponseCode = "BADURL"
+
 	// NOTIFY (RFC 5465)
 	ResponseCodeNotificationOverflow ResponseCode = "NOTIFICATIONOVERFLOW"
 	ResponseCodeBadEvent             ResponseCode = "BADEVENT"

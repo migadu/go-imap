@@ -164,6 +164,12 @@ func (c *Conn) availableCaps() []imap.Cap {
 			caps = append(caps, imap.Cap("RIGHTS="+imap.RightSetExtended.String()))
 		}
 
+		// CATENATE requires an optional session interface; advertise it only
+		// when the session implements it.
+		if _, ok := c.session.(SessionCatenate); ok && available.Has(imap.CapCatenate) {
+			caps = append(caps, imap.CapCatenate)
+		}
+
 		if appendLimitSession, ok := c.session.(SessionAppendLimit); ok {
 			limit := appendLimitSession.AppendLimit()
 			caps = append(caps, imap.Cap(fmt.Sprintf("APPENDLIMIT=%d", limit)))
