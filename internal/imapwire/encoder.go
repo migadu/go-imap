@@ -291,11 +291,23 @@ func (enc *Encoder) UID(uid imap.UID) *Encoder {
 // nil to be sent to the channel before writing the literal data. If an error
 // is sent to the channel, the literal will be cancelled.
 func (enc *Encoder) Literal(size int64, sync *ContinuationRequest) io.WriteCloser {
+	return enc.writeLiteral(size, sync, false)
+}
+
+// Literal8 writes a literal8, a literal which may contain NUL octets (RFC
+// 3516). It is otherwise the same as Literal.
+func (enc *Encoder) Literal8(size int64, sync *ContinuationRequest) io.WriteCloser {
+	return enc.writeLiteral(size, sync, true)
+}
+
+func (enc *Encoder) writeLiteral(size int64, sync *ContinuationRequest, binary bool) io.WriteCloser {
 	if sync != nil && enc.side == ConnSideServer {
 		panic("imapwire: sync must be nil on a server-side Encoder.Literal")
 	}
 
-	// TODO: literal8
+	if binary {
+		enc.writeString("~")
+	}
 	enc.writeString("{")
 	enc.Number64(size)
 	if sync == nil && enc.side == ConnSideClient {

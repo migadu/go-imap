@@ -10,8 +10,9 @@ type AppendOptions struct {
 	Time  time.Time
 
 	// Binary sends the message as a literal8, which may contain NUL octets
-	// (RFC 3516 section 4.4). Requires BINARY. On the server side it tells
-	// the session the client used a literal8.
+	// (RFC 3516 section 4.4). Requires BINARY. The server sets it for the
+	// session when the client sent the message that way, so a backend which
+	// cannot store binary content can answer NO [UNKNOWN-CTE].
 	Binary bool
 }
 
