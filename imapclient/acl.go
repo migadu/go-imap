@@ -127,7 +127,7 @@ func (c *Client) handleGetACL() error {
 func (c *Client) handleListRights() error {
 	data, err := readListRights(c.dec)
 	if err != nil {
-		return fmt.Errorf("in listrights-response: %v", err)
+		return fmt.Errorf("in listrights-response: %w", err)
 	}
 	if cmd := findPendingCmdByType[*ListRightsCommand](c); cmd != nil {
 		cmd.data = *data
