@@ -88,7 +88,8 @@ func runListRightsCases(t *testing.T, newSession func() Session, cases []listRig
 //	S: * LISTRIGHTS INBOX "owner@example.com" "lrswipkxtea" "c" "d"
 //
 // When the members are grantable only, or are split between required and
-// optional, the virtual right stays a group of its own, as before.
+// optional, and none is tied to a non-member, the virtual right is a group of
+// its own. TestListRightsTiedVirtualRights covers the tied layouts.
 func TestListRightsVirtualRightOfRequiredMembersIsRequired(t *testing.T) {
 	runListRightsCases(t, func() Session { return &aclRecordingSession{} }, []listRightsCase{
 		// (a) Every member required: the letter joins the required string.
@@ -109,7 +110,8 @@ func TestListRightsVirtualRightOfRequiredMembersIsRequired(t *testing.T) {
 			optional: []imap.RightSet{imap.RightSet("k"), imap.RightSet("x")},
 			want:     `* LISTRIGHTS INBOX "owner@example.com" "lrted" "k" "x" "c"`,
 		},
-		// (b) Members only optional: standalone groups, unchanged.
+		// (b) Members only optional: a group of its own, unless a member is
+		// tied to a non-member, when the letter joins that group.
 		{
 			name:     "members_only_optional",
 			required: imap.RightSet("lr"),
@@ -120,7 +122,7 @@ func TestListRightsVirtualRightOfRequiredMembersIsRequired(t *testing.T) {
 			name:     "empty_required",
 			required: imap.RightSet(""),
 			optional: []imap.RightSet{imap.RightSet("lr"), imap.RightSet("kxte")},
-			want:     `* LISTRIGHTS INBOX "owner@example.com" "" "lr" "kxte" "c" "d"`,
+			want:     `* LISTRIGHTS INBOX "owner@example.com" "" "lr" "kxtecd"`,
 		},
 		// (c) Members split between required and optional: still a group of
 		// its own, since granting it grants the optional member.
@@ -143,8 +145,21 @@ func TestListRightsVirtualRightOfRequiredMembersIsRequired(t *testing.T) {
 			optional: []imap.RightSet{imap.RightSet("s")},
 			want:     `* LISTRIGHTS INBOX "owner@example.com" "lr" "s"`,
 		},
-		// (e) A virtual letter the session already listed is left where it
-		// is and never written a second time.
+		// (d) A member that is neither required nor optional cannot be
+		// granted and does not count: the members on offer decide.
+		{
+			name:     "one_member_required_other_not_offered",
+			required: imap.RightSet("lrk"),
+			want:     `* LISTRIGHTS INBOX "owner@example.com" "lrkc"`,
+		},
+		{
+			name:     "one_member_optional_other_not_offered",
+			required: imap.RightSet("lr"),
+			optional: []imap.RightSet{imap.RightSet("t")},
+			want:     `* LISTRIGHTS INBOX "owner@example.com" "lr" "t" "d"`,
+		},
+		// (e) A virtual letter the session lists is not taken over: the
+		// letter is placed from its members, and never written twice.
 		{
 			name:     "caller_listed_both_in_required",
 			required: imap.RightSet("lrswipkxteacd"),
@@ -154,19 +169,33 @@ func TestListRightsVirtualRightOfRequiredMembersIsRequired(t *testing.T) {
 			name:     "caller_listed_c_as_optional",
 			required: imap.RightSet("lrkx"),
 			optional: []imap.RightSet{imap.RightSet("c")},
-			want:     `* LISTRIGHTS INBOX "owner@example.com" "lrkx" "c"`,
+			want:     `* LISTRIGHTS INBOX "owner@example.com" "lrkxc"`,
 		},
 		{
 			name:     "caller_listed_d_as_optional_c_derived",
 			required: imap.RightSet("lrswipkxtea"),
 			optional: []imap.RightSet{imap.RightSet("d")},
-			want:     `* LISTRIGHTS INBOX "owner@example.com" "lrswipkxteac" "d"`,
+			want:     `* LISTRIGHTS INBOX "owner@example.com" "lrswipkxteacd"`,
 		},
+		{
+			name:     "caller_listed_d_as_required_members_optional",
+			required: imap.RightSet("lrd"),
+			optional: []imap.RightSet{imap.RightSet("t"), imap.RightSet("e")},
+			want:     `* LISTRIGHTS INBOX "owner@example.com" "lr" "t" "e" "d"`,
+		},
+		// §2.1.1: members not tied to a non-member, so the letter "is
+		// returned by itself".
 		{
 			name:     "caller_tied_d_to_its_members",
 			required: imap.RightSet("lrkx"),
 			optional: []imap.RightSet{imap.RightSet("ted")},
-			want:     `* LISTRIGHTS INBOX "owner@example.com" "lrkxc" "ted"`,
+			want:     `* LISTRIGHTS INBOX "owner@example.com" "lrkxc" "te" "d"`,
+		},
+		{
+			name:     "caller_tied_c_to_one_member",
+			required: imap.RightSet("lr"),
+			optional: []imap.RightSet{imap.RightSet("kc"), imap.RightSet("x")},
+			want:     `* LISTRIGHTS INBOX "owner@example.com" "lr" "k" "x" "c"`,
 		},
 	})
 }

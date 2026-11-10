@@ -730,12 +730,17 @@ func (sess *UserSession) ListRights(ctx context.Context, name string, identifier
 		return nil, err
 	}
 
-	// For test purposes, return all rights as optional
+	// SetACL grants each standard right independently. A multi-right group
+	// would instead promise that its rights can only be granted together.
+	optional := make([]imap.RightSet, 0, len(imap.RightSetAll))
+	for _, right := range imap.RightSetAll {
+		optional = append(optional, imap.RightSet{right})
+	}
 	return &imap.ListRightsData{
 		Mailbox:        name,
 		Identifier:     identifier,
 		RequiredRights: imap.RightSet(""),
-		OptionalRights: []imap.RightSet{imap.RightSetAll},
+		OptionalRights: optional,
 	}, nil
 }
 
