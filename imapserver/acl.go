@@ -44,13 +44,18 @@ type SessionACL interface {
 	// Returns required rights (always present) and groups of optional rights (may be granted).
 	// Optional groups must describe ties the backend actually enforces: every
 	// right in a group is granted together or none is granted (RFC 4314 §3.7).
-	// If a virtual c/d member is tied to a non-member, all members of that
-	// virtual right must be in the same optional group (§2.1.1). Membership is
-	// the SessionACLVirtualRights declaration, or the default family.
-	// The server adds c/d to that group, moving a supplied standalone c/d if
-	// needed. A supplied c/d that is required or tied in a different group is
-	// incompatible. Such declarations return a server error rather than
-	// advertising ties between independent groups.
+	//
+	// The virtual c/d rights are the server's to place (§2.1.1), from the
+	// SessionACLVirtualRights declaration or the default family: a c or d
+	// returned here is ignored. A member that is neither required nor optional
+	// counts as not grantable on this mailbox and is left out of the decision.
+	//
+	// One layout is refused with a server error, because §2.1.1 rules it out
+	// and the server cannot mend it without advertising a tie the backend does
+	// not enforce: an optional member of a virtual right grouped with a
+	// non-member while another optional member of the same virtual right is in
+	// a different group. A backend of the RFC's second family ("lr" "k" "xte")
+	// is read that way under the default family and has to declare its own.
 	//
 	// The user must have the 'a' (admin) right on the mailbox.
 	ListRights(ctx context.Context, mailbox string, identifier imap.RightsIdentifier) (*imap.ListRightsData, error)
@@ -77,8 +82,8 @@ type SessionACL interface {
 // The declaration is the ONE source for everything the server does with the
 // virtual rights: the expansion of an incoming `c`/`d` in SETACL, the `c`/`d`
 // appended to GETACL and MYRIGHTS, and the `c`/`d` added to LISTRIGHTS (to the
-// required rights when every member is required, to an existing optional
-// group when members are tied to non-members, as a group of its own
+// required rights when every member on offer is required, to an existing
+// optional group when members are tied to non-members, as a group of its own
 // otherwise). Reading all three from one place is what keeps them from
 // disagreeing, which is why this is a single method returning both sets rather
 // than one per right. The two sets are normalized before use: the virtual

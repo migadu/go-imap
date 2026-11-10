@@ -173,75 +173,74 @@ func (c *Conn) writeListRights(data *imap.ListRightsData) error {
 	return enc.CRLF()
 }
 
-// listRightsWithCompat adds the virtual rights without changing the backend's
-// real rights or ties. Validate before encoding so an incompatible declaration
-// cannot leave a partial LISTRIGHTS response on the wire.
+// listRightsWithCompat returns the required string and the optional groups of
+// a LISTRIGHTS response with the virtual rights placed as RFC 4314 §2.1.1
+// asks. It never changes the backend's real rights or ties, and it runs before
+// anything is encoded, so that a layout it has to refuse cannot leave a
+// partial LISTRIGHTS response on the wire.
+//
+// The virtual rights are derived, not taken from the session: a `c` or `d` in
+// data is dropped and the letter is placed from the declaration alone, the one
+// SETACL expands against. Only the members the identifier is offered count. A
+// member that is neither required nor optional cannot be granted, and the
+// RFC's own first example advertises `d` without `e`. For each virtual right:
+//
+//   - No member is offered: it is not written.
+//   - Every offered member is required: it is always granted too, so it joins
+//     the required string (§3.7).
+//   - No optional member shares a group with a non-member: it "is returned by
+//     itself", as a group of its own. That includes members split between
+//     required and optional, since granting it grants the optional ones.
+//   - An optional member is tied to a non-member: the letter and "all of the
+//     member rights need to be tied to the same non-member right(s)". If one
+//     group holds every optional member, the letter joins that group. If they
+//     are spread over several, the RFC does not allow the layout and it is
+//     refused: merging the groups here would make an all-or-none promise
+//     (§3.7) that the backend's SETACL need not keep.
 func listRightsWithCompat(data *imap.ListRightsData, vr virtualRights) (string, []string, error) {
-	// RFC 4314 §2.1.1: if the identifier can be granted any member of a virtual
-	// right, that obsolete right MUST be advertised. When members are tied to
-	// non-members, the virtual right and ALL members must share that tie. The
-	// backend must already enforce it: merging separate groups here would make
-	// an all-or-none promise (§3.7) that its SETACL implementation need not keep.
-	var all imap.RightSet
-	all = append(all, data.RequiredRights...)
-	groups := make([]string, len(data.OptionalRights))
-	omit := make([]bool, len(groups))
-	for i := range data.OptionalRights {
-		all = append(all, data.OptionalRights[i]...)
-		groups[i] = string(data.OptionalRights[i])
+	required := withoutVirtualRights(data.RequiredRights)
+	var groups []imap.RightSet
+	for _, group := range data.OptionalRights {
+		if group = withoutVirtualRights(group); len(group) > 0 {
+			groups = append(groups, group)
+		}
 	}
-	required := string(data.RequiredRights)
-	var virtualGroups []string
-	addVirtual := func(right imap.Right, members imap.RightSet) error {
-		if len(members) == 0 {
-			return nil
-		}
-		tied := -1
-		for i, group := range data.OptionalRights {
-			var hasMember, hasNonMember bool
-			for _, r := range group {
-				if r == right || containsRight(members, r) {
-					hasMember = true
-				} else {
-					hasNonMember = true
-				}
-			}
-			if hasMember && hasNonMember {
-				if tied != -1 || !allRightsIn(members, group) {
-					return fmt.Errorf("imapserver: LISTRIGHTS virtual %c requires all members in the same optional group as non-members", right)
-				}
-				tied = i
-			}
-		}
-		if tied != -1 {
-			if containsRight(data.RequiredRights, right) {
-				return fmt.Errorf("imapserver: LISTRIGHTS virtual %c is required but its members are optional", right)
-			}
-			for i, group := range data.OptionalRights {
-				if i == tied || !containsRight(group, right) {
-					continue
-				}
-				if len(group) != 1 {
-					return fmt.Errorf("imapserver: LISTRIGHTS virtual %c is tied separately from its members", right)
-				}
-				// A standalone virtual letter adds no real tie. Move it to
-				// the members' group rather than listing it twice (§3.7).
-				omit[i] = true
-			}
-			if !containsRight(data.OptionalRights[tied], right) {
-				groups[tied] += string(right)
-			}
-			return nil
-		}
 
+	requiredOut := string(required)
+	optional := make([]string, len(groups))
+	for i, group := range groups {
+		optional[i] = string(group)
+	}
+	var standalone []string
+	addVirtual := func(right imap.Right, members imap.RightSet) error {
+		// The optional groups holding a member, and whether any of them ties
+		// it to a non-member.
+		var holding []int
+		tied := false
+		for i, group := range groups {
+			if !anyRightIn(members, group) {
+				continue
+			}
+			holding = append(holding, i)
+			if !allRightsIn(group, members) {
+				tied = true
+			}
+		}
 		switch {
-		case containsRight(all, right) || !anyRightIn(members, all):
-			// Already listed, or no member can be granted.
-		case allRightsIn(members, data.RequiredRights):
-			// Every member is always granted, so the macro is required too.
-			required += string(right)
+		case len(holding) == 0:
+			if anyRightIn(members, required) {
+				requiredOut += string(right)
+			}
+		case !tied:
+			standalone = append(standalone, string(right))
+		case len(holding) == 1:
+			optional[holding[0]] += string(right)
 		default:
-			virtualGroups = append(virtualGroups, string(right))
+			split := make([]string, len(holding))
+			for i, g := range holding {
+				split[i] = string(groups[g])
+			}
+			return fmt.Errorf("imapserver: LISTRIGHTS %q: members %q of virtual %c are tied to other rights but split over optional groups %q", data.Mailbox, string(members), right, split)
 		}
 		return nil
 	}
@@ -251,13 +250,7 @@ func listRightsWithCompat(data *imap.ListRightsData, vr virtualRights) (string, 
 	if err := addVirtual(imap.RightDelete, vr.delete); err != nil {
 		return "", nil, err
 	}
-	var optional []string
-	for i, group := range groups {
-		if !omit[i] {
-			optional = append(optional, group)
-		}
-	}
-	return required, append(optional, virtualGroups...), nil
+	return requiredOut, append(optional, standalone...), nil
 }
 
 func (c *Conn) writeMyRights(data *imap.MyRightsData) error {
@@ -346,8 +339,9 @@ func newVirtualRights(create, delete imap.RightSet) virtualRights {
 // replacement that revokes the identifier's entry.
 //
 // formatRightsWithCompat and writeListRights are the inverse and read the same
-// declaration: they append `c` when any create member is held (or grantable)
-// and `d` when any delete member is.
+// declaration: they add `c` when any create member is held (or grantable) and
+// `d` when any delete member is. Where LISTRIGHTS puts the letter is
+// listRightsWithCompat's business.
 func expandVirtualRights(rs imap.RightSet, vr virtualRights) (imap.RightSet, error) {
 	res := make(imap.RightSet, 0, len(rs)+len(vr.create)+len(vr.delete))
 	hasC := false
@@ -393,6 +387,17 @@ func containsRight(rs imap.RightSet, r imap.Right) bool {
 		}
 	}
 	return false
+}
+
+// withoutVirtualRights returns a copy of rs without the virtual `c` and `d`.
+func withoutVirtualRights(rs imap.RightSet) imap.RightSet {
+	res := make(imap.RightSet, 0, len(rs))
+	for _, r := range rs {
+		if r != imap.RightCreate && r != imap.RightDelete {
+			res = append(res, r)
+		}
+	}
+	return res
 }
 
 // anyRightIn reports whether any of members is present in rs.
