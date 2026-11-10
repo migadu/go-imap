@@ -56,3 +56,48 @@ func (cmd *AppendCommand) Close() error {
 func (cmd *AppendCommand) Wait() (*imap.AppendData, error) {
 	return &cmd.data, cmd.wait()
 }
+
+// AppendCatenate sends an APPEND command which has the server assemble the
+// message from parts: literals, and URLs of messages or message parts it
+// already holds.
+//
+// This command requires support for the CATENATE extension (RFC 4469).
+func (c *Client) AppendCatenate(mailbox string, options *imap.AppendOptions) *AppendCatenateCommand {
+	// TODO: not implemented
+	cmd := &AppendCatenateCommand{}
+	cmd.enc = c.beginCommand("APPEND", cmd)
+	cmd.enc.SP().Mailbox(mailbox)
+	return cmd
+}
+
+// AppendCatenateCommand is an APPEND command with the CATENATE extension.
+type AppendCatenateCommand struct {
+	commandBase
+	enc  *commandEncoder
+	data imap.AppendData
+}
+
+// URL adds the octets an IMAP URL (RFC 5092) points to.
+func (cmd *AppendCatenateCommand) URL(url string) {}
+
+type nopWriteCloser struct{ io.Writer }
+
+func (nopWriteCloser) Close() error { return nil }
+
+// Text adds a literal of size octets.
+func (cmd *AppendCatenateCommand) Text(size int64) io.WriteCloser {
+	return nopWriteCloser{io.Discard}
+}
+
+// Close ends the list of parts.
+func (cmd *AppendCatenateCommand) Close() error {
+	if cmd.enc != nil {
+		cmd.enc.end()
+		cmd.enc = nil
+	}
+	return nil
+}
+
+func (cmd *AppendCatenateCommand) Wait() (*imap.AppendData, error) {
+	return &cmd.data, cmd.wait()
+}
