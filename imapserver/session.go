@@ -99,7 +99,13 @@ type Session interface {
 	Search(ctx context.Context, kind NumKind, criteria *imap.SearchCriteria, options *imap.SearchOptions) (*imap.SearchData, error)
 	Sort(ctx context.Context, kind NumKind, sortCriteria []imap.SortCriterion, charset string, searchCriteria *imap.SearchCriteria, options *imap.SortOptions) (*imap.SortData, error)
 	Fetch(ctx context.Context, w *FetchWriter, numSet imap.NumSet, options *imap.FetchOptions) error
-	// Store alters message flags. A conditional store (options.Conditional)
+	// Store alters message flags. The backend must enforce per-flag rights for
+	// every operation, including removals implied by FLAGS replacement. STORE
+	// can reach this method after a READ-ONLY SELECT advertising nonempty
+	// PermanentFlags (for example, private Seen); this is not permission to
+	// change shared flags. EXAMINE still blocks all STORE calls.
+	//
+	// A conditional store (options.Conditional)
 	// that leaves messages untouched because they failed the UNCHANGEDSINCE
 	// precondition reports them by returning an *imap.Error whose Type is
 	// StatusResponseTypeOK (or StatusResponseTypeNo for expunged messages) and

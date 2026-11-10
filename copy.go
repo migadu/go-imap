@@ -4,6 +4,6 @@ package imap
 type CopyData struct {
 	// requires UIDPLUS or IMAP4rev2
 	UIDValidity uint32
-	SourceUIDs  UIDSet
-	DestUIDs    UIDSet
+	// UIDMapping preserves source/destination correspondence in copying order.
+	UIDMapping UIDMapping
 }

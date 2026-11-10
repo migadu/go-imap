@@ -40,7 +40,11 @@ type SelectModifiedData struct {
 type SelectData struct {
 	// Flags defined for this mailbox
 	Flags []Flag
-	// Flags that the client can change permanently
+	// Flags that the client can change permanently. On the server side, a
+	// READ-ONLY SELECT with nonempty PermanentFlags permits STORE to reach the
+	// session for per-user state changes (RFC 9051 §6.3.2). The session must
+	// enforce which flags and operations are authorized. EXAMINE always
+	// rejects STORE, regardless of PermanentFlags.
 	PermanentFlags []Flag
 	// ReadOnly reflects the READ-ONLY vs READ-WRITE response code on the tagged OK
 	// response. On the server side, setting it true makes SELECT return READ-ONLY

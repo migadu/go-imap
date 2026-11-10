@@ -1,6 +1,9 @@
 package imapclient
 
 import (
+	"strconv"
+	"strings"
+
 	"github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/internal/imapwire"
 )
@@ -24,19 +27,27 @@ func (cmd *CopyCommand) Wait() (*imap.CopyData, error) {
 	return &cmd.data, cmd.wait()
 }
 
-func readRespCodeCopyUID(dec *imapwire.Decoder) (uidValidity uint32, srcUIDs, dstUIDs imap.UIDSet, err error) {
-	if !dec.ExpectNumber(&uidValidity) || !dec.ExpectSP() || !dec.ExpectUIDSet(&srcUIDs) || !dec.ExpectSP() || !dec.ExpectUIDSet(&dstUIDs) {
-		return 0, nil, nil, dec.Err()
+func readRespCodeCopyUID(dec *imapwire.Decoder) (imap.CopyData, error) {
+	// Consume advisory metadata before parsing it: an invalid epoch or missing
+	// operand must not poison the decoder or discard the command's status.
+	// Leave ']' for the caller and never cross a response boundary looking for
+	// it. Transport errors, broken framing, and decoder size limits stay fatal.
+	var raw string
+	dec.Func(&raw, func(ch byte) bool { return ch != ']' && ch != '\r' && ch != '\n' })
+	if err := dec.Err(); err != nil {
+		return imap.CopyData{}, err
 	}
-	if srcUIDs.Dynamic() || dstUIDs.Dynamic() {
-		// RFC 4315 forbids "*" in COPYUID UID sets, but some servers
-		// (Purelymail observed in #749) send it anyway after MOVE. The
-		// COPY/MOVE itself already succeeded on the server side; only
-		// the response metadata is malformed. Treat it the same as a
-		// server that doesn't support UIDPLUS at all — return empty UID
-		// mapping and no error — so the read loop doesn't tear down the
-		// whole connection over an advisory field.
-		return 0, nil, nil, nil
+	fields := strings.Fields(raw)
+	if len(fields) != 3 || fields[0][0] < '0' || fields[0][0] > '9' {
+		return imap.CopyData{}, nil
 	}
-	return uidValidity, srcUIDs, dstUIDs, nil
+	uidValidity, err := strconv.ParseUint(fields[0], 10, 32)
+	if err != nil || uidValidity == 0 {
+		return imap.CopyData{}, nil
+	}
+	mapping, err := imapwire.ParseUIDMapping(fields[1], fields[2])
+	if err != nil {
+		return imap.CopyData{}, nil
+	}
+	return imap.CopyData{UIDValidity: uint32(uidValidity), UIDMapping: mapping}, nil
 }

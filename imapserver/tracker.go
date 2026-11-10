@@ -121,7 +121,20 @@ func (t *MailboxTracker) QueueExpunge(seqNum uint32, uid imap.UID) error {
 
 // QueueNumMessages queues a new EXISTS update. It returns an error if n would
 // decrease the tracked message count.
+//
+// Zero is never queued: trackerUpdate uses it to mean "not an EXISTS", so a
+// queued EXISTS 0 reached Poll as an update of no known kind and panicked the
+// session. It is a decrease (an error) unless the mailbox is already empty, in
+// which case it changes nothing and is dropped.
 func (t *MailboxTracker) QueueNumMessages(n uint32) error {
+	if n == 0 {
+		t.mutex.Lock()
+		defer t.mutex.Unlock()
+		if t.numMessages != 0 {
+			return fmt.Errorf("imapserver: cannot decrease mailbox number of messages from %v to 0", t.numMessages)
+		}
+		return nil
+	}
 	// TODO: merge consecutive NumMessages updates
 	return t.queueUpdate(&trackerUpdate{numMessages: n}, nil)
 }

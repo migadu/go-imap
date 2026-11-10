@@ -132,6 +132,7 @@ func (c *Conn) handleSelect(tag string, dec *imapwire.Decoder, readOnly bool) er
 		}
 		c.state = imap.ConnStateAuthenticated
 		c.selectedReadOnly = false
+		c.selectedPrivateStore = false
 		err := c.writeStatusResp("", &imap.StatusResponse{
 			Type: imap.StatusResponseTypeOK,
 			Code: "CLOSED",
@@ -200,6 +201,7 @@ func (c *Conn) handleSelect(tag string, dec *imapwire.Decoder, readOnly bool) er
 
 	c.state = imap.ConnStateSelected
 	c.selectedReadOnly = readOnly || data.ReadOnly
+	c.selectedPrivateStore = !readOnly && data.ReadOnly && len(data.PermanentFlags) > 0
 
 	var (
 		cmdName string
@@ -260,6 +262,7 @@ func (c *Conn) handleUnselect(dec *imapwire.Decoder, expunge bool) error {
 
 	c.state = imap.ConnStateAuthenticated
 	c.selectedReadOnly = false
+	c.selectedPrivateStore = false
 	return nil
 }
 

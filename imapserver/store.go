@@ -105,8 +105,13 @@ func (c *Conn) handleStore(dec *imapwire.Decoder, numKind NumKind) error {
 		return newClientBugError("STORE can only change FLAGS")
 	}
 
-	if err := c.checkWritableMailbox(); err != nil {
+	if err := c.checkState(imap.ConnStateSelected); err != nil {
 		return err
+	}
+	if !c.selectedPrivateStore {
+		if err := c.checkWritableMailbox(); err != nil {
+			return err
+		}
 	}
 
 	w := &FetchWriter{conn: c}
