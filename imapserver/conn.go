@@ -108,6 +108,10 @@ type Conn struct {
 	// read-only (RFC 4314 §5.2). Only touched from the command-loop goroutine,
 	// like state.
 	selectedReadOnly bool
+	// A READ-ONLY SELECT can still permit permanent per-user flags (RFC 9051
+	// §6.3.2). Nonempty PERMANENTFLAGS opt into backend STORE authorization;
+	// EXAMINE never does. Shared mutations still use selectedReadOnly.
+	selectedPrivateStore bool
 
 	// NOTIFY (RFC 5465) pump state. notifyStop/notifyDone are non-nil while a
 	// SessionNotify.NotifyPoll goroutine is running for this connection.
@@ -945,7 +949,7 @@ func (c *Conn) checkState(state imap.ConnState) error {
 // checkWritableMailbox rejects a command that would change the selected
 // mailbox when it was selected read-only.
 //
-// RFC 9051 §6.3.2: EXAMINE selects a mailbox read-only, and "no changes to the
+// RFC 9051 §6.3.3: EXAMINE selects a mailbox read-only, and "no changes to the
 // permanent state of the mailbox, including per-user state, are permitted".
 // Enforcing it here rather than in the session keeps the backend out of a
 // decision it cannot make correctly: it is not told whether an Expunge call
