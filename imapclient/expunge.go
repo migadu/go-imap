@@ -33,7 +33,7 @@ func (c *Client) handleExpunge(seqNum uint32) error {
 	cmd := findPendingCmdByType[*ExpungeCommand](c)
 	if cmd != nil {
 		cmd.seqNums <- seqNum
-	} else if handler := c.options.unilateralDataHandler().Expunge; handler != nil {
+	} else if handler := c.options.unilateralDataHandler().Expunge; handler != nil && !c.ignoresMailboxData() {
 		handler(seqNum)
 	}
 

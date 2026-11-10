@@ -48,6 +48,9 @@ func TestListUnrelatedResponseStaysUnsolicited(t *testing.T) {
 				},
 			})
 			defer client.Close()
+			// Unsolicited LIST responses are for an authenticated session
+			// (RFC 9051 section 11.3).
+			client.SetStateForTest(imap.ConnStateAuthenticated)
 
 			mailboxes, err := client.List(tc.ref, tc.pattern, nil).Collect()
 			if err != nil {

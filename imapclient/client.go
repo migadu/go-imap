@@ -1335,6 +1335,9 @@ func (c *Client) handleVanished() error {
 	if !c.dec.ExpectUIDSet(&data.UIDs) {
 		return c.dec.Err()
 	}
+	if c.ignoresMailboxData() {
+		return nil
+	}
 
 	cmd := findPendingCmdByType[*SelectCommand](c)
 
