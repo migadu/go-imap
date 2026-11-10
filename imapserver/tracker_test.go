@@ -262,3 +262,38 @@ func TestSessionTrackerEncodeNumMessages(t *testing.T) {
 		})
 	}
 }
+
+// A zero EXISTS is the value trackerUpdate reads as "not an EXISTS". Queued, it
+// reached Poll as an update of no known kind and panicked the session, which a
+// backend hit by queuing EXISTS after the expunges that emptied a mailbox.
+// Nothing may enter the queue: dropped when the mailbox is already empty, and
+// refused as a decrease otherwise.
+func TestQueueNumMessagesZero(t *testing.T) {
+	t.Run("emptied by expunges", func(t *testing.T) {
+		mailbox := imapserver.NewMailboxTracker(2)
+		session := mailbox.NewSession()
+		defer session.Close()
+		for i := 0; i < 2; i++ {
+			if err := mailbox.QueueExpunge(1, 0); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := mailbox.QueueNumMessages(0); err != nil {
+			t.Fatalf("EXISTS 0 on an empty mailbox: %v", err)
+		}
+		if got := session.QueuedUpdates(); got != 2 {
+			t.Fatalf("queued %d updates, want the 2 expunges and nothing else", got)
+		}
+	})
+	t.Run("nonempty", func(t *testing.T) {
+		mailbox := imapserver.NewMailboxTracker(2)
+		session := mailbox.NewSession()
+		defer session.Close()
+		if err := mailbox.QueueNumMessages(0); err == nil {
+			t.Fatal("EXISTS 0 on a mailbox of 2 was accepted; it is a decrease")
+		}
+		if got := session.QueuedUpdates(); got != 0 {
+			t.Fatalf("a refused EXISTS 0 queued %d updates", got)
+		}
+	})
+}
