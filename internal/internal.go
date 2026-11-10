@@ -205,6 +205,16 @@ func canonInit() {
 	for _, attr := range mailboxAttrs {
 		canonMailboxAttr[strings.ToLower(string(attr))] = attr
 	}
+	// RFC 9979 section 9.2 says these three have no implied backslash. A
+	// peer that takes it literally sends the bare name; read it as the
+	// attribute it means.
+	for _, attr := range []imap.MailboxAttr{
+		imap.MailboxAttrSnoozed,
+		imap.MailboxAttrScheduled,
+		imap.MailboxAttrMemos,
+	} {
+		canonMailboxAttr[strings.ToLower(strings.TrimPrefix(string(attr), `\`))] = attr
+	}
 }
 
 func canonicalFlag(s string) imap.Flag {

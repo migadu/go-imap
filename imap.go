@@ -75,10 +75,17 @@ const (
 	MailboxAttrTrash     MailboxAttr = "\\Trash"
 	MailboxAttrImportant MailboxAttr = "\\Important" // RFC 8457
 
-	// RFC 9979
-	MailboxAttrSnoozed   MailboxAttr = "Snoozed"
-	MailboxAttrScheduled MailboxAttr = "Scheduled"
-	MailboxAttrMemos     MailboxAttr = "Memos"
+	// RFC 9979 section 8. The registry lists them as Snoozed, Scheduled and
+	// Memos, without a backslash like every other name there (RFC 8457
+	// section 6.2), and the JMAP role is that name in lower case. RFC 9979
+	// section 9.2 also says they have no implied backslash, but IMAP has no
+	// syntax for a mailbox attribute without one: LIST takes "\" atom (RFC
+	// 9051 flag-extension), as does CREATE USE (RFC 6154 use-attr-ext), and
+	// Cyrus sends \Snoozed and \Scheduled. A bare name from a server that
+	// follows section 9.2 literally is read as the same attribute.
+	MailboxAttrSnoozed   MailboxAttr = "\\Snoozed"   // snoozed messages until they reappear
+	MailboxAttrScheduled MailboxAttr = "\\Scheduled" // messages scheduled to be sent later
+	MailboxAttrMemos     MailboxAttr = "\\Memos"     // messages with the $memo keyword
 )
 
 // Flag is a message flag.
@@ -105,10 +112,19 @@ const (
 	// Permanent flags
 	FlagWildcard Flag = "\\*"
 
-	// RFC 9979
-	FlagMailFlagBit0    Flag = "$MailFlagBit0"
-	FlagMailFlagBit1    Flag = "$MailFlagBit1"
-	FlagMailFlagBit2    Flag = "$MailFlagBit2"
+	// RFC 9979 keywords, spelled as registered.
+
+	// Flag color bits (section 3): together they pick one of seven colors
+	// (none set is red; all three set is not assigned). They are ignored
+	// unless \Flagged is set, and a client clears all three when it clears
+	// \Flagged.
+	FlagMailFlagBit0 Flag = "$MailFlagBit0"
+	FlagMailFlagBit1 Flag = "$MailFlagBit1"
+	FlagMailFlagBit2 Flag = "$MailFlagBit2"
+
+	// Sections 4 to 7. $hasattachment and $hasnoattachment are mutually
+	// exclusive, as are $memo and $hasmemo, and $followed and $muted
+	// (a thread with both counts as followed).
 	FlagHasAttachment   Flag = "$hasattachment"
 	FlagHasNoAttachment Flag = "$hasnoattachment"
 	FlagMemo            Flag = "$memo"
