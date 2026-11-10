@@ -230,6 +230,9 @@ type Client struct {
 	bw       *bufio.Writer
 	dec      *imapwire.Decoder
 	encMutex sync.Mutex
+	// autoIdleMutex serializes starting the IDLE the client runs on its own
+	// account with sending any other command. It is taken before encMutex.
+	autoIdleMutex sync.Mutex
 
 	greetingCh   chan struct{}
 	greetingRecv bool
@@ -248,6 +251,13 @@ type Client struct {
 	pendingCmds []command
 	contReqs    []continuationRequest
 	closed      bool
+
+	// autoIdle is the IDLE command the client runs on its own account
+	// (Options.AutoIdle), if any; autoIdleTimer starts it, and
+	// autoIdleRefused is set once the server has refused one.
+	autoIdle        *IdleCommand
+	autoIdleTimer   *time.Timer
+	autoIdleRefused bool
 	// awaitingResp is true while the read goroutine is parked waiting for the
 	// first byte of the next response. Only then may another goroutine retune
 	// the read deadline: once a response is being decoded the deadline belongs
@@ -552,6 +562,9 @@ func (c *Client) Close() error {
 	c.mutex.Lock()
 	alreadyClosed := c.closed
 	c.closed = true
+	if c.autoIdleTimer != nil {
+		c.autoIdleTimer.Stop()
+	}
 	if !alreadyClosed {
 		close(c.closeCh)
 	}
@@ -608,6 +621,18 @@ func (c *Client) beginCommand(name string, cmd command) *commandEncoder {
 	// bounded, and it unblocks early if the connection fails.
 	c.awaitGreeting()
 
+	// The IDLE the client runs on its own makes way for any command but
+	// itself.
+	// Until this command is among the pending ones, which keeps IDLE from
+	// starting, hold off the timer that starts it: IDLE keeps the encoder
+	// for as long as it runs.
+	holdsAutoIdle := false
+	if idle, ok := cmd.(*idleCommand); c.options.AutoIdle > 0 && (!ok || !idle.auto) {
+		c.autoIdleMutex.Lock()
+		holdsAutoIdle = true
+		c.stopAutoIdleLocked()
+	}
+
 	c.encMutex.Lock() // unlocked by commandEncoder.end
 
 	c.mutex.Lock()
@@ -633,6 +658,9 @@ func (c *Client) beginCommand(name string, cmd command) *commandEncoder {
 	literalPlus := c.caps.Has(imap.CapLiteralPlus)
 
 	c.mutex.Unlock()
+	if holdsAutoIdle {
+		c.autoIdleMutex.Unlock()
+	}
 
 	c.setWriteTimeout(cmdWriteTimeout)
 
@@ -704,6 +732,7 @@ func (c *Client) completeCommand(cmd command, err error) {
 		}
 	}
 	c.contReqs = filtered
+	c.armAutoIdleLocked()
 	c.mutex.Unlock()
 
 	switch cmd := cmd.(type) {
