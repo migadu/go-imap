@@ -975,7 +975,11 @@ func (c *Client) readResponseTagged(tag, typ string) (startTLS *startTLSCommand,
 				malformedCode = true
 				break
 			}
-			if cmd, ok := cmd.(*AppendCommand); ok {
+			switch cmd := cmd.(type) {
+			case *AppendCommand:
+				cmd.data.UID = imap.UID(uidNum)
+				cmd.data.UIDValidity = uidValidity
+			case *AppendCatenateCommand:
 				cmd.data.UID = imap.UID(uidNum)
 				cmd.data.UIDValidity = uidValidity
 			}
