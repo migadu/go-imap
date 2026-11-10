@@ -200,6 +200,9 @@ func (msg *message) search(seqNum uint32, criteria *imap.SearchCriteria) bool {
 	if criteria.Smaller != 0 && msg.size >= criteria.Smaller {
 		return false
 	}
+	if !matchWithin(msg.t, criteria.Younger, criteria.Older) {
+		return false
+	}
 
 	header := mail.Header{Header: gomessage.Header{Header: msg.header}}
 
@@ -251,6 +254,24 @@ func matchDate(t, since, before time.Time) bool {
 		return false
 	}
 	if !before.IsZero() && !t.Before(before) {
+		return false
+	}
+	return true
+}
+
+// matchWithin implements the YOUNGER and OLDER search keys. RFC 5032 §2: the
+// target time is the server's current time minus the interval, and the
+// comparison with the internal date is exact to the second.
+func matchWithin(t time.Time, younger, older uint32) bool {
+	if younger == 0 && older == 0 {
+		return true
+	}
+	t = t.Truncate(time.Second)
+	now := time.Now().Truncate(time.Second)
+	if younger != 0 && t.Before(now.Add(-time.Duration(younger)*time.Second)) {
+		return false
+	}
+	if older != 0 && t.After(now.Add(-time.Duration(older)*time.Second)) {
 		return false
 	}
 	return true
