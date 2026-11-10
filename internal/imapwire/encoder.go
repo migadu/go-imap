@@ -36,6 +36,8 @@ type Encoder struct {
 	side    ConnSide
 	err     error
 	literal bool
+	// refused is set when the wait for a continuation request failed.
+	refused bool
 }
 
 // NewEncoder creates a new encoder.
@@ -61,6 +63,14 @@ func (enc *Encoder) writeString(s string) *Encoder {
 		enc.err = err
 	}
 	return enc
+}
+
+// Refused reports whether a synchronizing literal was not sent because its
+// continuation request never came: the peer answered the command instead, or
+// the connection went away. The encoder has written and flushed the line
+// announcing the literal, CRLF included, and nothing after it.
+func (enc *Encoder) Refused() bool {
+	return enc.refused
 }
 
 // CRLF writes a "\r\n" sequence and flushes the buffered writer.
@@ -311,6 +321,7 @@ func (enc *Encoder) Literal(size int64, sync *ContinuationRequest) io.WriteClose
 		}
 		if _, err := sync.Wait(); err != nil {
 			enc.setErr(err)
+			enc.refused = true
 			return errorWriter{err}
 		}
 	}
