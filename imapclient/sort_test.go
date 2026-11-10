@@ -1,7 +1,12 @@
 package imapclient_test
 
 import (
+	"bufio"
+	"fmt"
+	"io"
+	"net"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -193,6 +198,36 @@ func TestSort(t *testing.T) {
 		if !reflect.DeepEqual(data.SeqNums, wantSeqNums) {
 			t.Errorf("ESort() SeqNums = %v, want %v", data.SeqNums, wantSeqNums)
 		}
+
+		// Reverse sort order must be preserved in ALL (3, 2, 1), not sorted back
+		// into ascending numerical order.
+		revOptions := &imapclient.SortOptions{
+			SortCriteria:   []imap.SortCriterion{{Key: imap.SortKeyArrival, Reverse: true}},
+			SearchCriteria: allMsgs,
+			Return: imap.SortOptions{
+				ReturnCount: true,
+				ReturnMin:   true,
+				ReturnMax:   true,
+				ReturnAll:   true,
+			},
+		}
+		revData, err := client.Sort(revOptions).Wait()
+		if err != nil {
+			t.Fatalf("ESort(REVERSE) failed: %v", err)
+		}
+		wantRevSeq := []uint32{3, 2, 1}
+		if !reflect.DeepEqual(revData.SeqNums, wantRevSeq) {
+			t.Errorf("ESort(REVERSE) SeqNums = %v, want %v", revData.SeqNums, wantRevSeq)
+		}
+
+		revUIDData, err := client.UIDSort(revOptions).Wait()
+		if err != nil {
+			t.Fatalf("UIDSort(REVERSE RETURN) failed: %v", err)
+		}
+		wantRevUIDs := []imap.UID{3, 2, 1}
+		if !reflect.DeepEqual(revUIDData.UIDs, wantRevUIDs) {
+			t.Errorf("UIDSort(REVERSE RETURN) UIDs = %v, want %v", revUIDData.UIDs, wantRevUIDs)
+		}
 	})
 
 	t.Run("ESORT REVERSE", func(t *testing.T) {
@@ -242,4 +277,138 @@ func TestSort(t *testing.T) {
 	// - Empty RETURN list defaults to ALL
 	// - Unknown RETURN options are silently ignored
 	// These are tested at the server/protocol level in imapserver package
+}
+
+// TestESortWire verifies RFC 5267 §3.2 ordered ALL range expansion (12:10 is
+// equivalent to 10:12, while comma-separated tokens preserve wire order), and
+// that an uncorrelated ESEARCH, which no command caused (RFC 4466 §2.6.2), is
+// read without desynchronising the stream and without landing in a SORT's
+// result.
+func TestESortWire(t *testing.T) {
+	tests := []struct {
+		name     string
+		uid      bool
+		wireLine func(tag string) string
+		wantUIDs []imap.UID
+		wantSeqs []uint32
+		wantMin  uint32
+		wantMax  uint32
+		wantCnt  uint32
+	}{
+		{
+			name: "correlated UID with descending range token",
+			uid:  true,
+			wireLine: func(tag string) string {
+				return fmt.Sprintf("* ESEARCH (TAG %q) UID ALL 30,12:10,5\r\n", tag)
+			},
+			wantUIDs: []imap.UID{30, 10, 11, 12, 5},
+		},
+		{
+			name: "correlated seqnum with descending range token",
+			uid:  false,
+			wireLine: func(tag string) string {
+				return fmt.Sprintf("* ESEARCH (TAG %q) ALL 12:10\r\n", tag)
+			},
+			wantSeqs: []uint32{10, 11, 12},
+		},
+		{
+			name: "uncorrelated UID with MIN MAX COUNT ALL",
+			uid:  true,
+			wireLine: func(tag string) string {
+				return "* ESEARCH UID MIN 30 MAX 5 COUNT 5 ALL 30,12:10,5\r\n"
+			},
+		},
+		{
+			name: "uncorrelated seqnum with descending range token",
+			uid:  false,
+			wireLine: func(tag string) string {
+				return "* ESEARCH ALL 12:10\r\n"
+			},
+		},
+		{
+			name: "uncorrelated UID empty",
+			uid:  true,
+			wireLine: func(tag string) string {
+				return "* ESEARCH UID\r\n"
+			},
+		},
+		{
+			name: "uncorrelated seqnum empty",
+			uid:  false,
+			wireLine: func(tag string) string {
+				return "* ESEARCH\r\n"
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			clientConn, serverConn := net.Pipe()
+			clientConn.SetDeadline(time.Now().Add(5 * time.Second))
+			serverConn.SetDeadline(time.Now().Add(5 * time.Second))
+			t.Cleanup(func() { clientConn.Close(); serverConn.Close() })
+
+			go func() {
+				defer serverConn.Close()
+				io.WriteString(serverConn, "* PREAUTH [CAPABILITY IMAP4rev1 SORT ESORT] ready\r\n")
+				reader := bufio.NewReader(serverConn)
+				for {
+					line, err := reader.ReadString('\n')
+					if err != nil {
+						return
+					}
+					fields := strings.Fields(line)
+					tag := fields[0]
+					if strings.Contains(line, " SORT ") {
+						io.WriteString(serverConn, tc.wireLine(tag))
+					}
+					fmt.Fprintf(serverConn, "%s OK completed\r\n", tag)
+				}
+			}()
+
+			client := imapclient.New(clientConn, nil)
+			t.Cleanup(func() { client.Close() })
+			if err := client.WaitGreeting(); err != nil {
+				t.Fatalf("WaitGreeting() = %v", err)
+			}
+
+			opts := &imapclient.SortOptions{
+				SortCriteria:   []imap.SortCriterion{{Key: imap.SortKeyArrival}},
+				SearchCriteria: &imap.SearchCriteria{},
+				Return:         imap.SortOptions{ReturnAll: true},
+			}
+			var (
+				data *imapclient.SortData
+				err  error
+			)
+			if tc.uid {
+				data, err = client.UIDSort(opts).Wait()
+			} else {
+				data, err = client.Sort(opts).Wait()
+			}
+			if err != nil {
+				t.Fatalf("Sort().Wait() = %v", err)
+			}
+
+			if data.Min != tc.wantMin {
+				t.Errorf("Min = %d, want %d", data.Min, tc.wantMin)
+			}
+			if data.Max != tc.wantMax {
+				t.Errorf("Max = %d, want %d", data.Max, tc.wantMax)
+			}
+			if data.Count != tc.wantCnt {
+				t.Errorf("Count = %d, want %d", data.Count, tc.wantCnt)
+			}
+			if !reflect.DeepEqual(data.UIDs, tc.wantUIDs) {
+				t.Errorf("UIDs = %v, want %v", data.UIDs, tc.wantUIDs)
+			}
+			if !reflect.DeepEqual(data.SeqNums, tc.wantSeqs) {
+				t.Errorf("SeqNums = %v, want %v", data.SeqNums, tc.wantSeqs)
+			}
+
+			if err := client.Noop().Wait(); err != nil {
+				t.Fatalf("Noop().Wait() after ESORT failed (stream desync): %v", err)
+			}
+		})
+	}
 }

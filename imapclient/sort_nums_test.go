@@ -16,7 +16,10 @@ func TestSortedNums(t *testing.T) {
 		// RFC 5267 §3.2: a range means its numbers in increasing order, either way round.
 		{in: "5,10:12,1", want: []uint32{5, 10, 11, 12, 1}},
 		{in: "12:10,5", want: []uint32{10, 11, 12, 5}},
+		{in: "15,10:12,3:1,20", want: []uint32{15, 10, 11, 12, 1, 2, 3, 20}},
 		{in: "1,2,", wantErr: true},
+		{in: "0:2", wantErr: true},
+		{in: "2:0", wantErr: true},
 		{in: "1:*", wantErr: true},
 		{in: "*", wantErr: true},
 		{in: "0", wantErr: true},
