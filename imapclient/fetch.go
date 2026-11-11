@@ -838,6 +838,10 @@ func (c *Client) handleFetch(seqNum uint32) (err error) {
 	}
 	defer func() { dec.CheckLiteralFunc = previousCheck }()
 
+	// Whether an unsolicited message is dropped. Decided once: the state
+	// cannot change while the response is read.
+	ignored := c.ignoresMailboxData()
+
 	handleMsg := func() error {
 		if handled {
 			return nil
@@ -890,7 +894,7 @@ func (c *Client) handleFetch(seqNum uint32) (err error) {
 			case <-c.closeCh:
 				return net.ErrClosed
 			}
-		} else if handler := c.options.unilateralDataHandler().Fetch; handler != nil {
+		} else if handler := c.options.unilateralDataHandler().Fetch; handler != nil && !ignored {
 			go func() {
 				defer msg.releaseAfterCallback()
 				handler(msg)

@@ -341,6 +341,8 @@ func newUIDBufferLimitClient(t *testing.T, options *imapclient.Options, script f
 		opts.LiteralReadTimeout = 2 * time.Second
 	}
 	client := imapclient.New(cc, &opts)
+	// FETCH responses belong to a selected mailbox (RFC 9051 section 11.3).
+	client.SetStateForTest(imap.ConnStateSelected)
 	t.Cleanup(func() {
 		// Closing the socket alone cannot interrupt local consumption waits.
 		go client.Close()

@@ -511,6 +511,8 @@ func newUIDFetchWireClientWithGreeting(t *testing.T, options *imapclient.Options
 	clientOptions.ResponseTimeout = 5 * time.Second
 	clientOptions.LiteralReadTimeout = 5 * time.Second
 	client := imapclient.New(clientConn, &clientOptions)
+	// FETCH responses belong to a selected mailbox (RFC 9051 section 11.3).
+	client.SetStateForTest(imap.ConnStateSelected)
 	t.Cleanup(func() {
 		go client.Close()
 		clientConn.Close()

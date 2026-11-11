@@ -163,7 +163,7 @@ func (c *Client) handleMetadata() error {
 			cmd.pendingData.Metadata.Entries[k] = v
 		}
 	default:
-		if handler := c.options.unilateralDataHandler().Metadata; handler != nil && len(data.EntryList) > 0 {
+		if handler := c.options.unilateralDataHandler().Metadata; handler != nil && len(data.EntryList) > 0 && !c.ignoresUnsolicitedData() {
 			handler(data.Mailbox, data.EntryList)
 		}
 	}
