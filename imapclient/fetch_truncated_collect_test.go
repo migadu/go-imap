@@ -24,7 +24,7 @@ import (
 //
 // Upstream report: emersion/go-imap#630 by agcom.
 func TestFetchCollectTruncatedMessage(t *testing.T) {
-	client := newCodeServer(t, "* 1 FETCH (UID 63 BODY[] {5}\r\nhello BINARY.SIZE[1] 18446744073709551232)\r\n")
+	client := newSelectedCodeServer(t, "* 1 FETCH (UID 63 BODY[] {5}\r\nhello BINARY.SIZE[1] 18446744073709551232)\r\n")
 
 	cmd := client.Fetch(imap.SeqSetNum(1), &imap.FetchOptions{
 		UID:               true,

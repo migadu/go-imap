@@ -48,6 +48,8 @@ func TestUIDFetchEmptyBodyBeforeUID(t *testing.T) {
 
 			client := imapclient.New(clientConn, nil)
 			defer client.Close()
+			// FETCH responses belong to a selected mailbox (RFC 9051 section 11.3).
+			client.SetStateForTest(imap.ConnStateSelected)
 
 			messages, err := client.Fetch(imap.UIDSetNum(42), &imap.FetchOptions{
 				UID:         true,
@@ -84,6 +86,8 @@ func TestUIDFetchEmptyBodyBeforeUID(t *testing.T) {
 		}()
 		client := imapclient.New(clientConn, nil)
 		defer client.Close()
+		// FETCH responses belong to a selected mailbox (RFC 9051 section 11.3).
+		client.SetStateForTest(imap.ConnStateSelected)
 
 		cmd := client.Fetch(imap.UIDSetNum(42), &imap.FetchOptions{
 			UID:         true,
