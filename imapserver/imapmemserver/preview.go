@@ -33,9 +33,15 @@ func generatePreview(ctx context.Context, r io.Reader) (string, bool, error) {
 	raw := &previewInput{ctx: ctx, r: r, remaining: maxPreviewRawBytes}
 	g := previewGenerator{ctx: ctx, raw: raw}
 	entity, err := gomessage.Read(raw)
-	var text string
+	var (
+		text  string
+		found bool
+	)
 	if err == nil || isUnknownBodyCoding(err) {
-		text, _, err = g.walk(entity, 1, err)
+		text, found, err = g.walk(entity, 1, err)
+	}
+	if found && err == nil {
+		return text, true, nil
 	}
 	// go-message can format reader errors without wrapping them. Retain the
 	// original failure beneath the parser, even if it reported ordinary EOF.
@@ -125,10 +131,14 @@ func (g *previewGenerator) walk(entity *gomessage.Entity, depth int, partErr err
 	// prefix without draining the rest, but check cancellation through buffers.
 	body := previewContextReader{ctx: g.ctx, r: entity.Body}
 	b, _ := io.ReadAll(io.LimitReader(body, maxPreviewTextBytes))
+	text := formatPreviewText(b)
 	if err := g.readError(); err != nil {
+		if errors.Is(err, errPreviewBudget) && g.ctx.Err() == nil && text != "" {
+			return text, true, nil
+		}
 		return "", false, err
 	}
-	return formatPreviewText(b), true, nil
+	return text, true, nil
 }
 
 func formatPreviewText(b []byte) string {

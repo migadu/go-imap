@@ -184,6 +184,43 @@ func TestGeneratePreviewLargePlainPrefix(t *testing.T) {
 			}
 		})
 	}
+	t.Run("chosen plain prefix kept when tail hits raw budget", func(t *testing.T) {
+		att := previewTestEntity("application/octet-stream", "", "attachment", strings.Repeat("x", 220<<10))
+		plain := previewTestEntity("text/plain; charset=utf-8", "", "", "Hello preview! "+strings.Repeat("word ", 10<<10))
+		raw := previewTestMultipart("budgettail", att, plain)
+		if len(raw) <= maxPreviewRawBytes {
+			t.Fatal("fixture must exceed raw budget while reading chosen plain part")
+		}
+		counter := &previewCountingReader{r: strings.NewReader(raw)}
+		text, available, err := generatePreview(context.Background(), counter)
+		if err != nil || !available || !strings.HasPrefix(text, "Hello preview! word ") || len([]rune(text)) != 200 {
+			t.Fatalf("tail-budget preview=(%q,%v,%v), len=%d", text, available, err, len([]rune(text)))
+		}
+		if counter.bytes != maxPreviewRawBytes {
+			t.Errorf("read %d raw bytes, want %d", counter.bytes, maxPreviewRawBytes)
+		}
+	})
+	t.Run("quoted-printable plain hitting raw budget mid-UTF8 rune", func(t *testing.T) {
+		// Each "=09=\r\n" decodes 6 raw bytes into 1 tab byte, so 256 KiB of raw QP
+		// decodes to ~43 KiB (< maxPreviewTextBytes) and hits errPreviewBudget.
+		// Place a 6-byte QP UTF-8 rune ("=C3=A9") across the exact 256 KiB cut.
+		header := "Content-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: quoted-printable\r\n\r\nLead "
+		pad := strings.Repeat("=09=\r\n", (maxPreviewRawBytes-len(header)-3)/6)
+		rem := maxPreviewRawBytes - len(header) - len(pad)
+		if rem < 3 {
+			t.Fatalf("unexpected remainder %d", rem)
+		}
+		// Fill up to maxPreviewRawBytes - 3 with spaces, then "=C3=A9" so only "=C3" fits.
+		raw := header + pad + strings.Repeat(" ", rem-3) + "=C3=A9 tail"
+		counter := &previewCountingReader{r: strings.NewReader(raw)}
+		text, available, err := generatePreview(context.Background(), counter)
+		if err != nil || !available || text != "Lead" {
+			t.Fatalf("qp split-UTF8 preview=(%q,%v,%v), want(\"Lead\",true,nil)", text, available, err)
+		}
+		if counter.bytes != maxPreviewRawBytes {
+			t.Errorf("read %d raw bytes, want %d", counter.bytes, maxPreviewRawBytes)
+		}
+	})
 }
 
 func TestPreviewInputExactRawBoundary(t *testing.T) {

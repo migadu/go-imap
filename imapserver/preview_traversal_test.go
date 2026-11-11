@@ -72,6 +72,15 @@ func previewTraversalFixtures() []previewTraversalFixture {
 		},
 		{name: "normal MIME", raw: previewNormalMIME, want: "Keep this inline text."},
 		{
+			name: "chosen plain prefix kept on raw budget cutoff",
+			raw: "Content-Type: multipart/mixed; boundary=tailbudget\r\n\r\n" +
+				"--tailbudget\r\nContent-Type: application/octet-stream\r\nContent-Disposition: attachment\r\n\r\n" +
+				strings.Repeat("x", 220<<10) + "\r\n" +
+				"--tailbudget\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n" +
+				"Kept prefix. " + strings.Repeat("pad ", 12<<10) + "\r\n--tailbudget--\r\n",
+			want: ("Kept prefix. " + strings.Repeat("pad ", 60))[:200],
+		},
+		{
 			name: "skipped non-UTF-8 HTML sibling",
 			raw: "Content-Type: multipart/alternative; boundary=charset\r\n\r\n" +
 				"--charset\r\nContent-Type: text/html; charset=iso-8859-1\r\n\r\n<p>Caf\xe9</p>\r\n" +
