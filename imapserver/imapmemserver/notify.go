@@ -311,7 +311,7 @@ func (sess *UserSession) NotifyPoll(ctx context.Context, w *imapserver.UpdateWri
 		case <-ctx.Done():
 			return nil
 		case ev := <-ch:
-			if err := sess.handleNotifyEvent(ev, w); err != nil {
+			if err := sess.handleNotifyEvent(ctx, ev, w); err != nil {
 				return err
 			}
 			overflowed, err := sess.checkNotifyOverflow(w)
@@ -357,7 +357,7 @@ func (sess *UserSession) checkNotifyOverflow(w *imapserver.UpdateWriter) (bool, 
 	return true, nil
 }
 
-func (sess *UserSession) handleNotifyEvent(ev memNotifyEvent, w *imapserver.UpdateWriter) error {
+func (sess *UserSession) handleNotifyEvent(ctx context.Context, ev memNotifyEvent, w *imapserver.UpdateWriter) error {
 	sess.notifyMutex.Lock()
 	watch := sess.notifyWatch
 	mailbox := sess.mailbox
@@ -369,7 +369,7 @@ func (sess *UserSession) handleNotifyEvent(ev memNotifyEvent, w *imapserver.Upda
 	// Compare mailbox identity, not names: a concurrent RENAME would both race
 	// the name read and misroute the event.
 	if ev.kind.isMessageEvent() && mailbox != nil && ev.mbox != nil && ev.mbox == mailbox.Mailbox {
-		return sess.handleSelectedNotifyEvent(ev, watch, mailbox, w)
+		return sess.handleSelectedNotifyEvent(ctx, ev, watch, mailbox, w)
 	}
 
 	// RFC 5465 sections 5.7 and 8: ServerMetadataChange is a <user-event>, not
@@ -414,7 +414,7 @@ func (sess *UserSession) handleNotifyEvent(ev memNotifyEvent, w *imapserver.Upda
 // selected mailbox: pending tracker updates (EXISTS, EXPUNGE, FETCH) are
 // flushed, and MessageNew fetch attributes are honored (RFC 5465 section
 // 5.2).
-func (sess *UserSession) handleSelectedNotifyEvent(ev memNotifyEvent, watch *notifyWatch, mailbox *MailboxView, w *imapserver.UpdateWriter) error {
+func (sess *UserSession) handleSelectedNotifyEvent(ctx context.Context, ev memNotifyEvent, watch *notifyWatch, mailbox *MailboxView, w *imapserver.UpdateWriter) error {
 	// RFC 5465 section 3.1: message events for the selected mailbox are
 	// only reported when requested with the SELECTED/SELECTED-DELAYED
 	// specifier. Without it, updates stay queued until the next command.
@@ -440,7 +440,7 @@ func (sess *UserSession) handleSelectedNotifyEvent(ev memNotifyEvent, watch *not
 	// just delivered.
 	var after func() error
 	if watch.selected.MessageNewFetch != nil {
-		after = func() error { return sess.writeNotifyNewMessages(watch, mailbox, w) }
+		after = func() error { return sess.writeNotifyNewMessages(ctx, watch, mailbox, w) }
 	}
 	return mailbox.tracker.PollWith(w, allowExpunge, after)
 }
@@ -450,7 +450,7 @@ func (sess *UserSession) handleSelectedNotifyEvent(ev memNotifyEvent, watch *not
 // number. It is called from the per-command sync point as well as from the
 // pump, because the sync point is what releases those queued updates and the
 // pump only wakes on new events.
-func (sess *UserSession) notifyPendingFetch(w *imapserver.UpdateWriter) error {
+func (sess *UserSession) notifyPendingFetch(ctx context.Context, w *imapserver.UpdateWriter) error {
 	sess.notifyMutex.Lock()
 	watch, mailbox := sess.notifyWatch, sess.mailbox
 	sess.notifyMutex.Unlock()
@@ -461,14 +461,14 @@ func (sess *UserSession) notifyPendingFetch(w *imapserver.UpdateWriter) error {
 		return nil
 	}
 	return mailbox.tracker.PollWith(w, false, func() error {
-		return sess.writeNotifyNewMessages(watch, mailbox, w)
+		return sess.writeNotifyNewMessages(ctx, watch, mailbox, w)
 	})
 }
 
 // writeNotifyNewMessages sends the FETCH responses with the requested
 // MessageNew fetch attributes for messages that appeared in the selected
 // mailbox since the last notification.
-func (sess *UserSession) writeNotifyNewMessages(watch *notifyWatch, mailbox *MailboxView, w *imapserver.UpdateWriter) error {
+func (sess *UserSession) writeNotifyNewMessages(ctx context.Context, watch *notifyWatch, mailbox *MailboxView, w *imapserver.UpdateWriter) error {
 	type newMessage struct {
 		seqNum uint32
 		msg    *message
@@ -522,7 +522,7 @@ func (sess *UserSession) writeNotifyNewMessages(watch *notifyWatch, mailbox *Mai
 			continue
 		}
 		respWriter := fetchWriter.CreateMessage(nm.seqNum)
-		if err := nm.msg.fetch(respWriter, watch.selected.MessageNewFetch); err != nil {
+		if err := nm.msg.fetch(ctx, respWriter, watch.selected.MessageNewFetch); err != nil {
 			return err
 		}
 	}

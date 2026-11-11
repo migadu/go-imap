@@ -287,7 +287,7 @@ func (sess *UserSession) Poll(ctx context.Context, w *imapserver.UpdateWriter, a
 	}
 	// This flush may have released the EXISTS a pending MessageNew fetch-att
 	// response was waiting for.
-	return sess.notifyPendingFetch(w)
+	return sess.notifyPendingFetch(ctx, w)
 }
 
 func (sess *UserSession) Idle(ctx context.Context, w *imapserver.UpdateWriter, stop <-chan struct{}) error {
