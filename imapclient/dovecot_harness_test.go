@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -53,6 +55,58 @@ func TestDovecotHarnessEarlyExit(t *testing.T) {
 	case <-closed:
 	case <-time.After(10 * time.Second):
 		t.Fatal("dovecotServer.Close() blocked after doveadm exited")
+	}
+}
+
+// Closing the harness must release a child writing more than the stdout pipe
+// can hold, even when the client stops reading in the middle of its reply.
+func TestDovecotHarnessCloseWithUnreadOutput(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("needs a shell script standing in for doveadm")
+	}
+
+	binDir := t.TempDir()
+	pidFilename := filepath.Join(binDir, "pid")
+	script := "#!/bin/sh\necho $$ > " + strconv.Quote(pidFilename) + "\n" +
+		"dd if=/dev/zero bs=65536 count=32 2>/dev/null\ncat >/dev/null\n"
+	if err := os.WriteFile(filepath.Join(binDir, "doveadm"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	conn, server := newDovecotClientServerPair(t)
+	defer conn.Close()
+	closed := make(chan struct{})
+	// A failed assertion must not leave the deliberately blocked child alive.
+	t.Cleanup(func() {
+		select {
+		case <-closed:
+			return
+		default:
+		}
+		data, err := os.ReadFile(pidFilename)
+		if err != nil {
+			return
+		}
+		pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+		if err == nil {
+			if process, err := os.FindProcess(pid); err == nil {
+				process.Kill()
+			}
+		}
+	})
+
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if _, err := io.ReadFull(conn, make([]byte, 1)); err != nil {
+		t.Fatalf("read first byte of child's reply: %v", err)
+	}
+	go func() {
+		server.Close()
+		close(closed)
+	}()
+	select {
+	case <-closed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("dovecotServer.Close() blocked on unread stdout")
 	}
 }
 
