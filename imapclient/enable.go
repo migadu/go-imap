@@ -39,19 +39,27 @@ func (c *Client) handleEnabled() error {
 		return err
 	}
 
-	c.mutex.Lock()
-	for name := range caps {
-		c.enabled[name] = struct{}{}
+	// RFC 9051 §7.2.1: "The ENABLED response occurs as a result of an ENABLE
+	// command." One that answers none, or comes before authentication, where
+	// ENABLE is not valid (§6.3.1, §11.3), enables nothing.
+	cmd := findPendingCmdByType[*EnableCommand](c)
+	if cmd == nil {
+		return nil
 	}
 
-	quotedUTF8 := c.useQuotedUTF8Locked()
-	c.dec.QuotedUTF8 = quotedUTF8
+	c.mutex.Lock()
+	authenticated := c.state == imap.ConnStateAuthenticated || c.state == imap.ConnStateSelected
+	if authenticated {
+		for name := range caps {
+			c.enabled[name] = struct{}{}
+		}
+		c.dec.QuotedUTF8 = c.useQuotedUTF8Locked()
+	}
 	c.mutex.Unlock()
 
-	if cmd := findPendingCmdByType[*EnableCommand](c); cmd != nil {
+	if authenticated {
 		cmd.data.Caps = caps
 	}
-
 	return nil
 }
 
