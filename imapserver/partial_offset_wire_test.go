@@ -110,7 +110,7 @@ func TestFetchPartialOffsetRoundTrip(t *testing.T) {
 		t.Fatalf("SELECT: %v", err)
 	}
 
-	const offset = 1<<32 + 5
+	const offset int64 = 1<<32 + 5
 	section := &imap.FetchItemBodySection{Partial: &imap.SectionPartial{Offset: offset, Size: 10}}
 	msgs, err := c.Fetch(imap.SeqSetNum(1), &imap.FetchOptions{BodySection: []*imap.FetchItemBodySection{section}}).Collect()
 	if err != nil {

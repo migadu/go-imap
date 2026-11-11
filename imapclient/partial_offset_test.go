@@ -20,7 +20,7 @@ func TestFetchPartialOffsetWiderThan32Bits(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			client := newSelectedCodeServer(t, tc.resp)
 			opts := &imap.FetchOptions{}
-			const offset = 1<<32 + 5
+			const offset int64 = 1<<32 + 5
 			if tc.name == "body" {
 				opts.BodySection = []*imap.FetchItemBodySection{{Partial: &imap.SectionPartial{Offset: offset, Size: 10}}}
 			} else {
