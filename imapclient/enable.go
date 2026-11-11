@@ -17,7 +17,7 @@ func (c *Client) Enable(caps ...imap.Cap) *EnableCommand {
 		case imap.CapIMAP4rev2, imap.CapUTF8Accept, imap.CapMetadata, imap.CapMetadataServer, imap.CapQResync, imap.CapCondStore:
 			// ok
 		default:
-			done := make(chan error)
+			done := make(chan struct{})
 			close(done)
 			err := fmt.Errorf("imapclient: cannot enable %q: not supported", name)
 			return &EnableCommand{commandBase: commandBase{done: done, err: err}}

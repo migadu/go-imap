@@ -58,7 +58,9 @@ func (c *Client) armAutoIdleLocked() {
 // startAutoIdle runs when the client has had no command in flight for
 // Options.AutoIdle.
 func (c *Client) startAutoIdle() {
-	c.autoIdleMutex.Lock()
+	if !c.autoIdleMutex.LockUntil(c.closeCh) {
+		return
+	}
 	defer c.autoIdleMutex.Unlock()
 
 	c.mutex.Lock()
@@ -150,6 +152,13 @@ func (cmd *IdleCommand) run(c *Client, child *idleCommand) {
 				return
 			}
 		case <-c.decCh:
+			cmd.err = c.cancellationErr()
+			cmd.lastChild = child
+			return
+		case <-c.closeCh:
+			// Release the encoder without waiting for decoder completion: a
+			// callback being canceled may itself be waiting to acquire it.
+			cmd.err = c.cancellationErr()
 			cmd.lastChild = child
 			return
 		case <-cmd.stop:
@@ -230,13 +239,22 @@ type idleCommand struct {
 // This method blocks until the command to stop IDLE is written, but doesn't
 // wait for the server to respond. Callers can use Wait for this purpose.
 func (cmd *idleCommand) Close() error {
-	if cmd.err != nil {
-		return cmd.err
-	}
 	if cmd.enc == nil {
 		return fmt.Errorf("imapclient: IDLE command closed twice")
 	}
 	c := cmd.enc.client
+	if err, completed := cmd.poll(); completed {
+		cmd.enc.end()
+		cmd.enc = nil
+		return err
+	}
+	select {
+	case <-c.closeCh:
+		cmd.enc.end()
+		cmd.enc = nil
+		return c.cancellationErr()
+	default:
+	}
 	c.setWriteTimeout(cmdWriteTimeout)
 	_, err := c.bw.WriteString("DONE\r\n")
 	if err == nil {

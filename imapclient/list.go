@@ -149,11 +149,15 @@ func (c *Client) handleList() error {
 	case *ListCommand:
 		if cmd.returnStatus || cmd.returnMetadata {
 			if cmd.pendingData != nil {
-				cmd.mailboxes <- cmd.pendingData
+				if err := c.deliverListData(cmd, cmd.pendingData); err != nil {
+					return err
+				}
 			}
 			cmd.pendingData = data
 		} else {
-			cmd.mailboxes <- data
+			if err := c.deliverListData(cmd, data); err != nil {
+				return err
+			}
 		}
 	case *SelectCommand:
 		cmd.data.List = data
@@ -161,7 +165,7 @@ func (c *Client) handleList() error {
 
 	if cmd == nil && !c.ignoresUnsolicitedData() {
 		if handler := c.options.unilateralDataHandler().List; handler != nil {
-			handler(data)
+			return c.runUnilateralHandler(func() { handler(data) })
 		}
 	}
 
@@ -192,9 +196,20 @@ func (c *Client) handleLsub() error {
 		cmd = c.findPendingCmdFunc(isLsub)
 	}
 	if cmd != nil {
-		cmd.(*ListCommand).mailboxes <- data
+		return c.deliverListData(cmd.(*ListCommand), data)
 	}
 	return nil
+}
+
+// deliverListData keeps backpressure during normal operation and releases the
+// decoder if the connection is cancelled while the result queue is full.
+func (c *Client) deliverListData(cmd *ListCommand, data *imap.ListData) error {
+	select {
+	case cmd.mailboxes <- data:
+		return nil
+	case <-c.closeCh:
+		return c.cancellationErr()
+	}
 }
 
 // ListCommand is a LIST or an LSUB command.

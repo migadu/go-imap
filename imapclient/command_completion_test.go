@@ -12,7 +12,7 @@ import (
 func TestCompleteCommandPublishesStateBeforeDone(t *testing.T) {
 	client := &Client{state: imap.ConnStateAuthenticated}
 	cmd := &SelectCommand{
-		commandBase: commandBase{done: make(chan error, 1)},
+		commandBase: commandBase{done: make(chan struct{})},
 		mailbox:     "INBOX",
 		data:        imap.SelectData{ReadOnly: true, NumMessages: 1},
 	}

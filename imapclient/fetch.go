@@ -58,7 +58,7 @@ func (c *Client) Fetch(numSet imap.NumSet, options *imap.FetchOptions) *FetchCom
 	// touching the wire, instead of emitting a command the server is required
 	// to answer with BAD.
 	if options.Vanished && (numKind != imapwire.NumKindUID || options.ChangedSince == 0) {
-		done := make(chan error)
+		done := make(chan struct{})
 		close(done)
 		msgs := make(chan *FetchMessageData)
 		close(msgs)
@@ -848,7 +848,6 @@ func (c *Client) handleFetch(seqNum uint32) (err error) {
 		}
 		if n := bufferedBytes; n > 0 {
 			msg.release = func() { c.releaseFetchBuffer(n) }
-			released = true
 		}
 
 		// Check if this is a QRESYNC SELECT response
@@ -862,6 +861,7 @@ func (c *Client) handleFetch(seqNum uint32) (err error) {
 				ModSeq: modSeq,
 			})
 			handled = true
+			released = true
 			go msg.discard() // Discard remaining data
 			return nil
 		}
@@ -903,6 +903,10 @@ func (c *Client) handleFetch(seqNum uint32) (err error) {
 			go msg.discard()
 		}
 
+		// The consumer owns the buffered budget only after delivery succeeds.
+		// A cancelled send leaves this response private, so the defer above
+		// must release its bytes instead.
+		released = true
 		handled = true
 		return nil
 	}
