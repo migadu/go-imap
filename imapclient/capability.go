@@ -24,6 +24,26 @@ func (c *Client) handleCapability() error {
 	if cmd := findPendingCmdByType[*CapabilityCommand](c); cmd != nil {
 		cmd.caps = caps
 	}
+
+	// Workaround: some servers (Gmail, older Dovecot) send the capabilities
+	// of the authenticated state as an untagged response ahead of LOGIN's or
+	// AUTHENTICATE's tagged OK, where RFC 9051 section 6.2.3 has a CAPABILITY
+	// response code in that OK. With the command the oldest one in flight,
+	// the response answers no CAPABILITY command sent before it, so it is
+	// remembered as the command's. See:
+	// https://github.com/emersion/go-imap/issues/561
+	c.mutex.Lock()
+	var oldest command
+	if len(c.pendingCmds) > 0 {
+		oldest = c.pendingCmds[0]
+	}
+	c.mutex.Unlock()
+	switch cmd := oldest.(type) {
+	case *loginCommand:
+		cmd.caps = caps
+	case *authenticateCommand:
+		cmd.caps = caps
+	}
 	return nil
 }
 
@@ -31,6 +51,9 @@ func (c *Client) handleCapability() error {
 type CapabilityCommand struct {
 	commandBase
 	caps imap.CapSet
+	// refresh is set on a command the client sends on its own; see
+	// Client.resetCaps.
+	refresh *capsRefresh
 }
 
 func (cmd *CapabilityCommand) Wait() (imap.CapSet, error) {

@@ -460,7 +460,12 @@ func (c *Conn) serve() {
 				byeOnExit = true
 				break
 			}
-			if !isConnectionClosedError(err) && !isByeError(err) {
+			var tlsErr *startTLSHandshakeError
+			if isConnectionClosedError(err) || isByeError(err) {
+				// Not a failure worth reporting.
+			} else if errors.As(err, &tlsErr) {
+				c.server.logger().Printf("STARTTLS handshake failed (remote %v): %v", c.conn.RemoteAddr(), tlsErr.err)
+			} else {
 				c.server.logger().Printf("failed to read command (remote %v): %v", c.conn.RemoteAddr(), err)
 			}
 			break
@@ -564,7 +569,7 @@ func (c *Conn) lingerClose() {
 
 func (c *Conn) readCommand(dec *imapwire.Decoder) (err error) {
 	defer func() {
-		if decErr := dec.Err(); decErr != nil && strings.Contains(decErr.Error(), "max size exceeded") {
+		if errors.Is(dec.Err(), imapwire.ErrMaxSize) {
 			_ = c.writeStatusResp("", &imap.StatusResponse{
 				Type: imap.StatusResponseTypeBye,
 				Text: "Command too long",
@@ -721,6 +726,9 @@ func (c *Conn) readCommand(dec *imapwire.Decoder) (err error) {
 	if errors.Is(err, errShutdown) {
 		return err
 	}
+	if _, ok := err.(*startTLSHandshakeError); ok {
+		return err
+	}
 
 	dec.DiscardLine()
 
@@ -762,6 +770,15 @@ func (c *Conn) readCommand(dec *imapwire.Decoder) (err error) {
 			Type: imap.StatusResponseTypeBad,
 			Code: imap.ResponseCodeClientBug,
 			Text: "Syntax error: " + decErr.Message,
+		}
+	} else if errors.Is(err, imapwire.ErrMaxSize) {
+		// The client's doing, not the handler's (RFC 9051 section 7.1.5
+		// words it this way). readCommand follows up with BYE: the rest of
+		// the command is unread.
+		resp = &imap.StatusResponse{
+			Type: imap.StatusResponseTypeBad,
+			Code: imap.ResponseCodeClientBug,
+			Text: "Command line too long",
 		}
 	} else if err != nil {
 		c.server.logger().Printf("handling %v command (remote %v): %v", name, c.conn.RemoteAddr(), err)

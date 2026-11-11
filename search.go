@@ -55,6 +55,12 @@ type SearchCriteria struct {
 	Larger  int64
 	Smaller int64
 
+	// Younger and Older select messages by the age of their internal date:
+	// at most, respectively at least, this many seconds before the server's
+	// current time. Zero means no limit. Requires WITHIN (RFC 5032).
+	Younger uint32
+	Older   uint32
+
 	Not []SearchCriteria
 	Or  [][2]SearchCriteria
 
@@ -83,6 +89,13 @@ func (criteria *SearchCriteria) And(other *SearchCriteria) {
 	}
 	if other.Smaller != 0 && (criteria.Smaller == 0 || other.Smaller < criteria.Smaller) {
 		criteria.Smaller = other.Smaller
+	}
+
+	if other.Younger != 0 && (criteria.Younger == 0 || other.Younger < criteria.Younger) {
+		criteria.Younger = other.Younger
+	}
+	if other.Older > criteria.Older {
+		criteria.Older = other.Older
 	}
 
 	criteria.Not = append(criteria.Not, other.Not...)

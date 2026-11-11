@@ -51,7 +51,9 @@ func (c *Conn) handleAppend(tag string, dec *imapwire.Decoder) error {
 	// data-extension parsing. Otherwise an atom here is a data extension
 	// such as UTF8 (RFC 6855).
 	var dataExt string
-	if !dec.Special('~') && dec.Atom(&dataExt) {
+	if dec.Special('~') {
+		options.Binary = true
+	} else if dec.Atom(&dataExt) {
 		// Keywords are case-insensitive; normalize once so later comparisons
 		// (e.g. the closing ')' check) don't depend on the wire casing.
 		dataExt = strings.ToUpper(dataExt)
@@ -61,6 +63,12 @@ func (c *Conn) handleAppend(tag string, dec *imapwire.Decoder) error {
 			if !dec.ExpectSP() || !dec.ExpectSpecial('(') || !dec.ExpectSpecial('~') {
 				return dec.Err()
 			}
+		case "CATENATE":
+			sess, ok := c.session.(SessionCatenate)
+			if !ok || !c.configuredCaps().Has(imap.CapCatenate) {
+				return newClientBugError("Unknown APPEND data extension")
+			}
+			return c.handleAppendCatenate(tag, dec, sess, mailbox, &options)
 		default:
 			return newClientBugError("Unknown APPEND data extension")
 		}

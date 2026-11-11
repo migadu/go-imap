@@ -99,7 +99,6 @@ func (c *Conn) availableCaps() []imap.Cap {
 				imap.CapListExtended,
 				imap.CapListStatus,
 				imap.CapStatusSize,
-				imap.CapBinary,
 				imap.CapChildren,
 			})
 
@@ -114,8 +113,12 @@ func (c *Conn) availableCaps() []imap.Cap {
 		}
 
 		// Capabilities which require backend support and apply to both
-		// IMAP4rev1 and IMAP4rev2
+		// IMAP4rev1 and IMAP4rev2. IMAP4rev2 has BINARY's FETCH items but not
+		// its APPEND extension, so a rev2 server with full RFC 3516 support
+		// still advertises BINARY (RFC 9051 Appendix B); IMAP4rev2 does not
+		// imply it.
 		addAvailableCaps(&caps, available, []imap.Cap{
+			imap.CapBinary,
 			imap.CapSpecialUse,
 			imap.CapCreateSpecialUse,
 			imap.CapLiteralPlus,
@@ -125,6 +128,7 @@ func (c *Conn) availableCaps() []imap.Cap {
 			imap.CapSortDisplay,
 			imap.CapESort,
 			imap.CapID,
+			imap.CapWithin,
 			imap.Cap("THREAD=REFERENCES"),
 			imap.Cap("THREAD=REFS"),
 			imap.Cap("THREAD=ORDEREDSUBJECT"),
@@ -162,6 +166,12 @@ func (c *Conn) availableCaps() []imap.Cap {
 		if _, ok := c.session.(SessionACL); ok {
 			caps = append(caps, imap.CapACL)
 			caps = append(caps, imap.Cap("RIGHTS="+imap.RightSetExtended.String()))
+		}
+
+		// CATENATE requires an optional session interface; advertise it only
+		// when the session implements it.
+		if _, ok := c.session.(SessionCatenate); ok && available.Has(imap.CapCatenate) {
+			caps = append(caps, imap.CapCatenate)
 		}
 
 		if appendLimitSession, ok := c.session.(SessionAppendLimit); ok {

@@ -120,6 +120,12 @@ type Options struct {
 	// Raise it when fetching large messages over slow links. As with
 	// ResponseTimeout, there is no value meaning "no timeout".
 	LiteralReadTimeout time.Duration
+	// AutoIdle makes the client run IDLE by itself while it has nothing else
+	// to do. Once no command has been in flight for this long, and if the
+	// server supports IDLE, the client starts IDLE; it ends it before the
+	// next command is sent. Mailbox updates the server sends meanwhile reach
+	// UnilateralDataHandler. If zero, the client never idles on its own.
+	AutoIdle time.Duration
 }
 
 // responseTimeout returns ResponseTimeout, or the default if it is unset.
@@ -224,6 +230,9 @@ type Client struct {
 	bw       *bufio.Writer
 	dec      *imapwire.Decoder
 	encMutex sync.Mutex
+	// autoIdleMutex serializes starting the IDLE the client runs on its own
+	// account with sending any other command. It is taken before encMutex.
+	autoIdleMutex sync.Mutex
 
 	greetingCh   chan struct{}
 	greetingRecv bool
@@ -242,6 +251,16 @@ type Client struct {
 	pendingCmds []command
 	contReqs    []continuationRequest
 	closed      bool
+
+	// autoIdle is the IDLE command the client runs on its own account
+	// (Options.AutoIdle), if any; autoIdleTimer starts it, and
+	// autoIdleRefused is set once the server has refused one.
+	autoIdle        *IdleCommand
+	autoIdleTimer   *time.Timer
+	autoIdleRefused bool
+	// capsRefresh is the request for the capabilities the client has under
+	// way on its own account, if any.
+	capsRefresh *capsRefresh
 	// awaitingResp is true while the read goroutine is parked waiting for the
 	// first byte of the next response. Only then may another goroutine retune
 	// the read deadline: once a response is being decoded the deadline belongs
@@ -386,14 +405,23 @@ func DialStartTLS(address string, options *Options) (*Client, error) {
 
 // readTimeoutLocked returns how long to wait for the first byte of the next
 // response. A command in flight means the server owes us a reply, so the
-// response timeout applies. With nothing pending, or with IDLE running -- where
+// response timeout applies; so it does before the greeting. With nothing pending, or with IDLE running -- where
 // silence is expected and may last for many minutes -- the idle timeout does.
+// IDLE stops running when DONE is sent (RFC 2177 section 3).
 //
 // c.mutex must be held.
 func (c *Client) readTimeoutLocked() time.Duration {
+	// The server opens with a greeting (RFC 9051 section 7.1): until it has
+	// arrived a response is owed, command or not.
+	select {
+	case <-c.greetingCh:
+	default:
+		return c.options.responseTimeout()
+	}
+
 	var pending bool
 	for _, cmd := range c.pendingCmds {
-		if _, ok := cmd.(*idleCommand); ok {
+		if idle, ok := cmd.(*idleCommand); ok && idle.acknowledged && !idle.doneSent {
 			return idleReadTimeout
 		}
 		pending = true
@@ -495,6 +523,21 @@ func (c *Client) Caps() imap.CapSet {
 		return caps
 	}
 
+	// A request already under way answers the question: wait for it rather
+	// than send another.
+	c.mutex.Lock()
+	refresh := c.capsRefresh
+	c.mutex.Unlock()
+	if refresh != nil {
+		<-refresh.done
+		c.mutex.Lock()
+		caps = c.caps
+		c.mutex.Unlock()
+		if caps != nil {
+			return caps
+		}
+	}
+
 	capCmd := c.Capability()
 	caps, err := capCmd.Wait()
 	if err != nil {
@@ -503,15 +546,22 @@ func (c *Client) Caps() imap.CapSet {
 	return caps
 }
 
+// capsRefresh is a CAPABILITY command the client sends on its own, after the
+// capabilities it knew stopped being valid.
+type capsRefresh struct {
+	// seq is the command's commandBase.seq, zero until it is sent. Guarded by
+	// Client.mutex.
+	seq uint64
+	// done is closed once the command has completed.
+	done chan struct{}
+}
+
 func (c *Client) setCaps(caps imap.CapSet) {
 	// If the capabilities are being reset, request the updated capabilities
 	// from the server
 	if caps == nil {
-		// We need to send the CAPABILITY command in a separate goroutine:
-		// setCaps might be called with Client.encMutex locked
-		go func() {
-			c.Capability().Wait()
-		}()
+		c.resetCaps(nil)
+		return
 	}
 
 	c.mutex.Lock()
@@ -519,6 +569,44 @@ func (c *Client) setCaps(caps imap.CapSet) {
 	quotedUTF8 := c.useQuotedUTF8Locked()
 	c.dec.QuotedUTF8 = quotedUTF8
 	c.mutex.Unlock()
+}
+
+// resetCaps forgets the capabilities and requests them again.
+//
+// after is the command whose completion made them invalid, if any, and if a
+// request sent after it may stand in for a new one. A request the client has
+// under way and not sent before that command asks about the state the
+// command brought about: the server answers the two in order (RFC 9051
+// section 5.5 rules out reordering commands when the result of one depends on
+// the other). So it is not repeated.
+func (c *Client) resetCaps(after command) {
+	c.mutex.Lock()
+	c.caps = nil
+	quotedUTF8 := c.useQuotedUTF8Locked()
+	c.dec.QuotedUTF8 = quotedUTF8
+
+	if refresh := c.capsRefresh; refresh != nil && after != nil && (refresh.seq == 0 || refresh.seq > after.base().seq) {
+		c.mutex.Unlock()
+		return
+	}
+	refresh := &capsRefresh{done: make(chan struct{})}
+	c.capsRefresh = refresh
+	c.mutex.Unlock()
+
+	// We need to send the CAPABILITY command in a separate goroutine:
+	// resetCaps might be called with Client.encMutex locked
+	go func() {
+		defer close(refresh.done)
+		cmd := &CapabilityCommand{refresh: refresh}
+		c.beginCommand("CAPABILITY", cmd).end()
+		cmd.Wait()
+
+		c.mutex.Lock()
+		if c.capsRefresh == refresh {
+			c.capsRefresh = nil
+		}
+		c.mutex.Unlock()
+	}()
 }
 
 // Mailbox returns the state of the currently selected mailbox.
@@ -546,6 +634,9 @@ func (c *Client) Close() error {
 	c.mutex.Lock()
 	alreadyClosed := c.closed
 	c.closed = true
+	if c.autoIdleTimer != nil {
+		c.autoIdleTimer.Stop()
+	}
 	if !alreadyClosed {
 		close(c.closeCh)
 	}
@@ -607,6 +698,18 @@ func (c *Client) beginCommand(name string, cmd command) *commandEncoder {
 	// bounded, and it unblocks early if the connection fails.
 	c.awaitGreeting()
 
+	// The IDLE the client runs on its own makes way for any command but
+	// itself.
+	// Until this command is among the pending ones, which keeps IDLE from
+	// starting, hold off the timer that starts it: IDLE keeps the encoder
+	// for as long as it runs.
+	holdsAutoIdle := false
+	if idle, ok := cmd.(*idleCommand); c.options.AutoIdle > 0 && (!ok || !idle.auto) {
+		c.autoIdleMutex.Lock()
+		holdsAutoIdle = true
+		c.stopAutoIdleLocked()
+	}
+
 	c.encMutex.Lock() // unlocked by commandEncoder.end
 
 	c.mutex.Lock()
@@ -617,7 +720,11 @@ func (c *Client) beginCommand(name string, cmd command) *commandEncoder {
 	baseCmd := cmd.base()
 	*baseCmd = commandBase{
 		tag:  tag,
+		seq:  c.cmdTag,
 		done: make(chan error, 1),
+	}
+	if capCmd, ok := cmd.(*CapabilityCommand); ok && capCmd.refresh != nil {
+		capCmd.refresh.seq = c.cmdTag
 	}
 
 	c.pendingCmds = append(c.pendingCmds, cmd)
@@ -632,6 +739,9 @@ func (c *Client) beginCommand(name string, cmd command) *commandEncoder {
 	literalPlus := c.caps.Has(imap.CapLiteralPlus)
 
 	c.mutex.Unlock()
+	if holdsAutoIdle {
+		c.autoIdleMutex.Unlock()
+	}
 
 	c.setWriteTimeout(cmdWriteTimeout)
 
@@ -762,6 +872,11 @@ func (c *Client) completeCommand(cmd command, err error) {
 	case *ExpungeCommand:
 		close(cmd.seqNums)
 	}
+
+	// Start the inactivity interval after state transitions have completed.
+	c.mutex.Lock()
+	c.armAutoIdleLocked()
+	c.mutex.Unlock()
 
 	// Wait must observe the final connection state, mailbox snapshot and
 	// closed result channels when it returns.
@@ -984,7 +1099,11 @@ func (c *Client) readResponseTagged(tag, typ string) (startTLS *startTLSCommand,
 				malformedCode = true
 				break
 			}
-			if cmd, ok := cmd.(*AppendCommand); ok {
+			switch cmd := cmd.(type) {
+			case *AppendCommand:
+				cmd.data.UID = imap.UID(uidNum)
+				cmd.data.UIDValidity = uidValidity
+			case *AppendCatenateCommand:
 				cmd.data.UID = imap.UID(uidNum)
 				cmd.data.UIDValidity = uidValidity
 			}
@@ -1052,19 +1171,36 @@ func (c *Client) readResponseTagged(tag, typ string) (startTLS *startTLSCommand,
 		return nil, fmt.Errorf("in resp-cond-state: expected OK, NO or BAD status condition, but got %v", typ)
 	}
 
-	c.completeCommand(cmd, cmdErr)
-
 	if cmd, ok := cmd.(*startTLSCommand); ok && cmdErr == nil {
 		startTLS = cmd
 	}
 
 	if cmdErr == nil && code != "CAPABILITY" {
-		switch cmd.(type) {
-		case *startTLSCommand, *loginCommand, *authenticateCommand, *unauthenticateCommand:
-			// These commands invalidate the capabilities
+		switch cmd := cmd.(type) {
+		case *loginCommand:
+			// These commands invalidate the capabilities, unless the
+			// server sent the new ones along; see handleCapability.
+			if cmd.caps != nil {
+				c.setCaps(cmd.caps)
+			} else {
+				c.resetCaps(cmd)
+			}
+		case *authenticateCommand:
+			if cmd.caps != nil {
+				c.setCaps(cmd.caps)
+			} else {
+				c.resetCaps(cmd)
+			}
+		case *startTLSCommand, *unauthenticateCommand:
+			// So do these. What is known must not outlive the change of
+			// security layer or of user: always ask anew.
 			c.setCaps(nil)
 		}
 	}
+	// Waiters may immediately ask for capabilities in the new state. Publish
+	// their invalidation (and the refresh to await) before completing LOGIN or
+	// AUTHENTICATE, just as completeCommand publishes the connection state.
+	c.completeCommand(cmd, cmdErr)
 
 	return startTLS, nil
 }
@@ -1120,6 +1256,9 @@ func (c *Client) readResponseData(typ string) error {
 				flags, err := internal.ExpectFlagList(c.dec)
 				if err != nil {
 					return err
+				}
+				if c.ignoresMailboxData() {
+					break
 				}
 
 				c.mutex.Lock()
@@ -1182,7 +1321,7 @@ func (c *Client) readResponseData(typ string) error {
 			case "NOMODSEQ":
 				// ignore
 			case "NOTIFICATIONOVERFLOW":
-				if handler := c.options.unilateralDataHandler().NotificationOverflow; handler != nil {
+				if handler := c.options.unilateralDataHandler().NotificationOverflow; handler != nil && !c.ignoresUnsolicitedData() {
 					handler()
 				}
 			default: // [SP 1*<any TEXT-CHAR except "]">]
@@ -1207,7 +1346,9 @@ func (c *Client) readResponseData(typ string) error {
 			return fmt.Errorf("in resp-text: %w", c.dec.Err())
 		}
 
-		if code == "CLOSED" {
+		// CLOSED ends a selection; it cannot authenticate an unauthenticated
+		// connection (and thereby admit unsolicited LIST/STATUS data).
+		if code == "CLOSED" && c.State() == imap.ConnStateSelected {
 			c.setState(imap.ConnStateAuthenticated)
 		}
 
@@ -1230,6 +1371,9 @@ func (c *Client) readResponseData(typ string) error {
 				c.setCaps(nil) // request initial capabilities
 			}
 			close(c.greetingCh)
+			c.mutex.Lock()
+			c.armAutoIdleLocked()
+			c.mutex.Unlock()
 		}
 	case "ID":
 		return c.handleID()
@@ -1343,6 +1487,9 @@ func (c *Client) handleVanished() error {
 
 	if !c.dec.ExpectUIDSet(&data.UIDs) {
 		return c.dec.Err()
+	}
+	if c.ignoresMailboxData() {
+		return nil
 	}
 
 	cmd := findPendingCmdByType[*SelectCommand](c)
@@ -1490,6 +1637,14 @@ func (ce *commandEncoder) end() {
 // A CRLF is written and the encoder is flushed. Callers must call
 // commandEncoder.end to release the lock.
 func (ce *commandEncoder) flush() {
+	if ce.Encoder.Refused() {
+		// The server answered the command in place of the continuation
+		// request for one of its literals (RFC 9051 section 4.3). That ends
+		// the command, at the CRLF which followed the literal's size: there
+		// is nothing to add, and no reason to give up on the connection.
+		ce.Encoder = nil
+		return
+	}
 	if err := ce.Encoder.CRLF(); err != nil {
 		// TODO: consider stashing the error in Client to return it in future
 		// calls
@@ -1500,6 +1655,15 @@ func (ce *commandEncoder) flush() {
 
 // Literal encodes a literal.
 func (ce *commandEncoder) Literal(size int64) io.WriteCloser {
+	return ce.literal(size, false)
+}
+
+// Literal8 encodes a literal8 (RFC 3516).
+func (ce *commandEncoder) Literal8(size int64) io.WriteCloser {
+	return ce.literal(size, true)
+}
+
+func (ce *commandEncoder) literal(size int64, binary bool) io.WriteCloser {
 	var contReq *imapwire.ContinuationRequest
 	ce.client.mutex.Lock()
 	hasCapLiteralMinus := ce.client.caps.Has(imap.CapLiteralMinus)
@@ -1508,8 +1672,14 @@ func (ce *commandEncoder) Literal(size int64) io.WriteCloser {
 		contReq = ce.client.registerContReq(ce.cmd)
 	}
 	ce.client.setWriteTimeout(literalWriteTimeout)
+	var wc io.WriteCloser
+	if binary {
+		wc = ce.Encoder.Literal8(size, contReq)
+	} else {
+		wc = ce.Encoder.Literal(size, contReq)
+	}
 	return literalWriter{
-		WriteCloser: ce.Encoder.Literal(size, contReq),
+		WriteCloser: wc,
 		client:      ce.client,
 	}
 }
@@ -1635,7 +1805,9 @@ type command interface {
 }
 
 type commandBase struct {
-	tag  string
+	tag string
+	// seq orders the commands by when they were sent.
+	seq  uint64
 	done chan error
 	err  error
 }
@@ -1663,6 +1835,9 @@ func (cmd *Command) Wait() error {
 
 type loginCommand struct {
 	Command
+	// caps holds the capabilities the server sent while the command was the
+	// oldest one in flight; see Client.handleCapability.
+	caps imap.CapSet
 }
 
 // logoutCommand is a LOGOUT command.

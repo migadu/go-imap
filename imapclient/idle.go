@@ -1,9 +1,12 @@
 package imapclient
 
 import (
+	"errors"
 	"fmt"
 	"sync/atomic"
 	"time"
+
+	"github.com/migadu/go-imap"
 )
 
 const idleRestartInterval = 28 * time.Minute
@@ -19,17 +22,90 @@ const idleRestartInterval = 28 * time.Minute
 // command is restarted automatically to avoid getting disconnected due to
 // inactivity timeouts.
 func (c *Client) Idle() (*IdleCommand, error) {
-	child, err := c.idle()
+	return c.startIdle(false)
+}
+
+// startIdle is Idle. auto is set for the IDLE the client runs on its own
+// account (Options.AutoIdle), which is not itself a reason to end one.
+func (c *Client) startIdle(auto bool) (*IdleCommand, error) {
+	child, err := c.idle(auto)
 	if err != nil {
 		return nil, err
 	}
 
 	cmd := &IdleCommand{
+		auto: auto,
 		stop: make(chan struct{}),
 		done: make(chan struct{}),
 	}
 	go cmd.run(c, child)
 	return cmd, nil
+}
+
+// armAutoIdle starts the wait after which the client idles on its own, if
+// that is asked for and no command is in flight. c.mutex must be held.
+func (c *Client) armAutoIdleLocked() {
+	if c.options.AutoIdle <= 0 || c.closed || len(c.pendingCmds) > 0 {
+		return
+	}
+	if c.autoIdleTimer == nil {
+		c.autoIdleTimer = time.AfterFunc(c.options.AutoIdle, c.startAutoIdle)
+	} else {
+		c.autoIdleTimer.Reset(c.options.AutoIdle)
+	}
+}
+
+// startAutoIdle runs when the client has had no command in flight for
+// Options.AutoIdle.
+func (c *Client) startAutoIdle() {
+	c.autoIdleMutex.Lock()
+	defer c.autoIdleMutex.Unlock()
+
+	c.mutex.Lock()
+	// IDLE is for the authenticated and selected states, and for servers
+	// that offer it (RFC 2177; part of IMAP4rev2). With the capabilities
+	// unknown for now, the command which fetches them arms the timer anew.
+	authenticated := c.state == imap.ConnStateAuthenticated || c.state == imap.ConnStateSelected
+	ok := !c.closed && !c.autoIdleRefused && c.autoIdle == nil && len(c.pendingCmds) == 0 &&
+		authenticated && (c.caps.Has(imap.CapIdle) || c.caps.Has(imap.CapIMAP4rev2))
+	c.mutex.Unlock()
+	if !ok {
+		return
+	}
+
+	cmd, err := c.startIdle(true)
+	if err != nil {
+		// A server that offers IDLE and refuses it will refuse it again.
+		var imapErr *imap.Error
+		if errors.As(err, &imapErr) {
+			c.mutex.Lock()
+			c.autoIdleRefused = true
+			c.mutex.Unlock()
+		}
+		return
+	}
+	c.mutex.Lock()
+	c.autoIdle = cmd
+	c.mutex.Unlock()
+}
+
+// stopAutoIdleLocked ends the IDLE the client started on its own, if there
+// is one, so that a command can be sent. It returns once DONE is written; RFC
+// 2177 section 3 lets the next command follow it at once.
+//
+// c.autoIdleMutex must be held.
+func (c *Client) stopAutoIdleLocked() {
+	c.mutex.Lock()
+	if c.autoIdleTimer != nil {
+		c.autoIdleTimer.Stop()
+	}
+	cmd := c.autoIdle
+	c.autoIdle = nil
+	c.mutex.Unlock()
+
+	if cmd != nil {
+		cmd.Close()
+	}
 }
 
 // IdleCommand is an IDLE command.
@@ -39,6 +115,7 @@ func (c *Client) Idle() (*IdleCommand, error) {
 //
 // Close must be called to stop the IDLE command.
 type IdleCommand struct {
+	auto    bool
 	stopped atomic.Bool
 	stop    chan struct{}
 	done    chan struct{}
@@ -69,7 +146,7 @@ func (cmd *IdleCommand) run(c *Client, child *idleCommand) {
 			if cmd.err = child.Close(); cmd.err != nil {
 				return
 			}
-			if child, cmd.err = c.idle(); cmd.err != nil {
+			if child, cmd.err = c.idle(cmd.auto); cmd.err != nil {
 				return
 			}
 		case <-c.decCh:
@@ -109,10 +186,13 @@ func (cmd *IdleCommand) Wait() error {
 	return cmd.lastChild.Wait()
 }
 
-func (c *Client) idle() (*idleCommand, error) {
-	cmd := &idleCommand{}
-	contReq := c.registerContReq(cmd)
+func (c *Client) idle(auto bool) (*idleCommand, error) {
+	cmd := &idleCommand{auto: auto}
 	cmd.enc = c.beginCommand("IDLE", cmd)
+	// Continuations are matched in wire order. Register only once this
+	// command owns the encoder, so an IDLE queued behind another command
+	// cannot consume that command's literal continuation.
+	contReq := c.registerContReq(cmd)
 	cmd.enc.flush()
 
 	_, err := contReq.Wait()
@@ -120,6 +200,12 @@ func (c *Client) idle() (*idleCommand, error) {
 		cmd.enc.end()
 		return nil, err
 	}
+	c.mutex.Lock()
+	cmd.acknowledged = true
+	if c.awaitingResp {
+		c.setReadTimeout(c.readTimeoutLocked())
+	}
+	c.mutex.Unlock()
 
 	return cmd, nil
 }
@@ -128,6 +214,15 @@ func (c *Client) idle() (*idleCommand, error) {
 type idleCommand struct {
 	commandBase
 	enc *commandEncoder
+	// auto is set for an IDLE the client runs on its own account.
+	auto bool
+	// acknowledged is set after the continuation request arrives. Until then
+	// IDLE still owes a response and uses the ordinary response timeout.
+	// Guarded by Client.mutex.
+	acknowledged bool
+	// doneSent is set once DONE has been written: from then on the server
+	// owes the tagged response. Guarded by Client.mutex.
+	doneSent bool
 }
 
 // Close stops the IDLE command.
@@ -141,11 +236,19 @@ func (cmd *idleCommand) Close() error {
 	if cmd.enc == nil {
 		return fmt.Errorf("imapclient: IDLE command closed twice")
 	}
-	cmd.enc.client.setWriteTimeout(cmdWriteTimeout)
-	_, err := cmd.enc.client.bw.WriteString("DONE\r\n")
+	c := cmd.enc.client
+	c.setWriteTimeout(cmdWriteTimeout)
+	_, err := c.bw.WriteString("DONE\r\n")
 	if err == nil {
-		err = cmd.enc.client.bw.Flush()
+		err = c.bw.Flush()
 	}
+	// The reader is most likely parked on the idle timeout; see beginCommand.
+	c.mutex.Lock()
+	cmd.doneSent = true
+	if c.awaitingResp {
+		c.setReadTimeout(c.readTimeoutLocked())
+	}
+	c.mutex.Unlock()
 	cmd.enc.end()
 	cmd.enc = nil
 	return err
