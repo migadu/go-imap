@@ -188,8 +188,11 @@ func (cmd *IdleCommand) Wait() error {
 
 func (c *Client) idle(auto bool) (*idleCommand, error) {
 	cmd := &idleCommand{auto: auto}
-	contReq := c.registerContReq(cmd)
 	cmd.enc = c.beginCommand("IDLE", cmd)
+	// Continuations are matched in wire order. Register only once this
+	// command owns the encoder, so an IDLE queued behind another command
+	// cannot consume that command's literal continuation.
+	contReq := c.registerContReq(cmd)
 	cmd.enc.flush()
 
 	_, err := contReq.Wait()

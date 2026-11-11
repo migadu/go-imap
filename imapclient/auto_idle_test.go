@@ -42,6 +42,11 @@ func (s *autoIdleServer) waitFor(want string) (string, bool) {
 
 func newAutoIdleServer(t *testing.T, caps string, options *imapclient.Options) (*imapclient.Client, *autoIdleServer) {
 	t.Helper()
+	return newAutoIdleServerGreeting(t, "OK", caps, options)
+}
+
+func newAutoIdleServerGreeting(t *testing.T, greeting, caps string, options *imapclient.Options) (*imapclient.Client, *autoIdleServer) {
+	t.Helper()
 
 	clientConn, serverConn := net.Pipe()
 	t.Cleanup(func() { clientConn.Close() })
@@ -50,7 +55,7 @@ func newAutoIdleServer(t *testing.T, caps string, options *imapclient.Options) (
 	go func() {
 		defer serverConn.Close()
 		br := bufio.NewReader(serverConn)
-		io.WriteString(serverConn, "* OK [CAPABILITY "+caps+"] ready\r\n")
+		io.WriteString(serverConn, "* "+greeting+" [CAPABILITY "+caps+"] ready\r\n")
 		var idleTag string
 		idling := false
 		for {
@@ -81,6 +86,8 @@ func newAutoIdleServer(t *testing.T, caps string, options *imapclient.Options) (
 			case "DONE":
 				idling = false
 				io.WriteString(serverConn, idleTag+" OK IDLE terminated\r\n")
+			case "SELECT":
+				io.WriteString(serverConn, "* 0 EXISTS\r\n"+fields[0]+" OK selected\r\n")
 			case "LOGIN":
 				io.WriteString(serverConn, fields[0]+" OK [CAPABILITY "+caps+"] logged in\r\n")
 			default:
@@ -116,8 +123,12 @@ func TestAutoIdle(t *testing.T) {
 		t.Fatalf("Login() = %v", err)
 	}
 
+	if _, err := client.Select("INBOX", nil).Wait(); err != nil {
+		t.Fatal(err)
+	}
+
 	// Nothing to do: IDLE starts by itself.
-	if got, ok := srv.waitFor("LOGIN IDLE"); !ok {
+	if got, ok := srv.waitFor("LOGIN SELECT IDLE"); !ok {
 		t.Fatalf("the server received %q, want LOGIN and then IDLE", got)
 	}
 
@@ -136,8 +147,8 @@ func TestAutoIdle(t *testing.T) {
 	if err := client.Noop().Wait(); err != nil {
 		t.Fatalf("Noop() = %v", err)
 	}
-	if got, ok := srv.waitFor("LOGIN IDLE DONE NOOP IDLE"); !ok {
-		t.Fatalf("the server received %q, want LOGIN IDLE DONE NOOP IDLE", got)
+	if got, ok := srv.waitFor("LOGIN SELECT IDLE DONE NOOP IDLE"); !ok {
+		t.Fatalf("the server received %q, want LOGIN SELECT IDLE DONE NOOP IDLE", got)
 	}
 
 	// Commands in a row do not let IDLE in between them.
@@ -146,8 +157,20 @@ func TestAutoIdle(t *testing.T) {
 			t.Fatalf("Noop() = %v", err)
 		}
 	}
-	if got, ok := srv.waitFor("LOGIN IDLE DONE NOOP IDLE DONE NOOP NOOP NOOP IDLE"); !ok {
+	if got, ok := srv.waitFor("LOGIN SELECT IDLE DONE NOOP IDLE DONE NOOP NOOP NOOP IDLE"); !ok {
 		t.Fatalf("the server received %q, want one IDLE after the three NOOPs", got)
+	}
+}
+
+// A PREAUTH greeting already establishes the authenticated state. Automatic
+// IDLE must start even if the caller never sends an initial command.
+func TestAutoIdlePreauth(t *testing.T) {
+	client, srv := newAutoIdleServerGreeting(t, "PREAUTH", "IMAP4rev1 IDLE", &imapclient.Options{AutoIdle: 20 * time.Millisecond})
+	if err := client.WaitGreeting(); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := srv.waitFor("IDLE"); !ok {
+		t.Fatalf("after PREAUTH the server received %q, want IDLE", got)
 	}
 }
 

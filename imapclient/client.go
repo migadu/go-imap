@@ -732,7 +732,6 @@ func (c *Client) completeCommand(cmd command, err error) {
 		}
 	}
 	c.contReqs = filtered
-	c.armAutoIdleLocked()
 	c.mutex.Unlock()
 
 	switch cmd := cmd.(type) {
@@ -792,6 +791,11 @@ func (c *Client) completeCommand(cmd command, err error) {
 	case *ExpungeCommand:
 		close(cmd.seqNums)
 	}
+
+	// Start the inactivity interval after state transitions have completed.
+	c.mutex.Lock()
+	c.armAutoIdleLocked()
+	c.mutex.Unlock()
 
 	// Wait must observe the final connection state, mailbox snapshot and
 	// closed result channels when it returns.
@@ -1256,6 +1260,9 @@ func (c *Client) readResponseData(typ string) error {
 				c.setCaps(nil) // request initial capabilities
 			}
 			close(c.greetingCh)
+			c.mutex.Lock()
+			c.armAutoIdleLocked()
+			c.mutex.Unlock()
 		}
 	case "ID":
 		return c.handleID()
