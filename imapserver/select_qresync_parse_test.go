@@ -53,6 +53,8 @@ func TestSelectQResyncParams(t *testing.T) {
 // TestUIDFetchTrailingVanished covers the non-standard
 // "(CHANGEDSINCE n) VANISHED" hybrid the parser accepts after the modifier
 // list, and the malformed trailing token that has to be refused instead.
+// A modifier the server doesn't know, or one in the wrong place, is a client
+// error: BAD, not NO [SERVERBUG].
 func TestUIDFetchTrailingVanished(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -61,6 +63,10 @@ func TestUIDFetchTrailingVanished(t *testing.T) {
 	}{
 		{name: "trailing VANISHED", command: "UID FETCH 1:* (FLAGS) (CHANGEDSINCE 1) VANISHED", want: "a3 OK"},
 		{name: "trailing junk", command: "UID FETCH 1:* (FLAGS) (CHANGEDSINCE 1) (", want: "a3 BAD"},
+		{name: "trailing unknown atom", command: "UID FETCH 1:* (FLAGS) (CHANGEDSINCE 1) FOO", want: "a3 BAD"},
+		{name: "unknown modifier", command: "UID FETCH 1:* (FLAGS) (FOO 1)", want: "a3 BAD"},
+		{name: "unknown bare modifier", command: "UID FETCH 1:* FLAGS FOO 1", want: "a3 BAD"},
+		{name: "VANISHED without UID", command: "FETCH 1:* (FLAGS) (CHANGEDSINCE 1 VANISHED)", want: "a3 BAD"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rc := newQResyncTestConn(t)

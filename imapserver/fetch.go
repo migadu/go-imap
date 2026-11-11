@@ -106,11 +106,11 @@ func (c *Conn) handleFetch(dec *imapwire.Decoder, numKind NumKind) error {
 					}
 				case "VANISHED":
 					if numKind != NumKindUID {
-						return fmt.Errorf("VANISHED modifier only allowed with UID FETCH")
+						return newClientBugError("VANISHED modifier only allowed with UID FETCH")
 					}
 					options.Vanished = true
 				default:
-					return fmt.Errorf("unknown FETCH modifier: %v", param)
+					return newClientBugError(fmt.Sprintf("Unknown FETCH modifier: %v", param))
 				}
 				if !dec.SP() {
 					break
@@ -132,10 +132,10 @@ func (c *Conn) handleFetch(dec *imapwire.Decoder, numKind NumKind) error {
 					return dec.Err()
 				}
 				if strings.ToUpper(atom) != "VANISHED" {
-					return fmt.Errorf("unexpected FETCH modifier: %v", atom)
+					return newClientBugError(fmt.Sprintf("Unexpected FETCH modifier: %v", atom))
 				}
 				if numKind != NumKindUID {
-					return fmt.Errorf("VANISHED modifier only allowed with UID FETCH")
+					return newClientBugError("VANISHED modifier only allowed with UID FETCH")
 				}
 				options.Vanished = true
 			}
@@ -159,11 +159,11 @@ func (c *Conn) handleFetch(dec *imapwire.Decoder, numKind NumKind) error {
 					}
 				case "VANISHED":
 					if numKind != NumKindUID {
-						return fmt.Errorf("VANISHED modifier only allowed with UID FETCH")
+						return newClientBugError("VANISHED modifier only allowed with UID FETCH")
 					}
 					options.Vanished = true
 				default:
-					return fmt.Errorf("unknown FETCH modifier: %v", modifier)
+					return newClientBugError(fmt.Sprintf("Unknown FETCH modifier: %v", modifier))
 				}
 				if !dec.SP() {
 					break
