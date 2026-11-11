@@ -130,10 +130,18 @@ func TestNotifyTestConnCommandDeadline(t *testing.T) {
 	addr, _, closer := newNotifyTestServer(t)
 	defer closer()
 
-	c := dialNotifyTestTimeout(t, addr, 300*time.Millisecond)
+	c := dialNotifyTest(t, addr)
 	defer c.close()
+	if resp := c.cmd("NOOP"); !strings.Contains(resp, " OK ") {
+		t.Fatalf("initial NOOP: %q", resp)
+	}
 	for i := 0; i < 3; i++ {
-		time.Sleep(200 * time.Millisecond)
+		// Simulate the connection's previous deadline expiring while idle,
+		// without waiting for wall-clock time or narrowing the greeting's
+		// timeout on a loaded test machine.
+		if err := c.conn.SetDeadline(time.Now().Add(-time.Second)); err != nil {
+			t.Fatalf("expire deadline: %v", err)
+		}
 		if resp := c.cmd("NOOP"); !strings.Contains(resp, " OK ") {
 			t.Fatalf("NOOP %d: %q", i+1, resp)
 		}
