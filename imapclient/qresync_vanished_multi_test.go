@@ -27,7 +27,7 @@ func TestSelect_QResync_MultipleVanishedEarlier(t *testing.T) {
 
 	go func() {
 		br := bufio.NewReader(serverConn)
-		io.WriteString(serverConn, "* OK [CAPABILITY IMAP4rev2 QRESYNC] ready\r\n")
+		io.WriteString(serverConn, "* PREAUTH [CAPABILITY IMAP4rev2 QRESYNC] ready\r\n")
 		line, err := br.ReadString('\n')
 		if err != nil {
 			return
@@ -88,7 +88,7 @@ func TestSelect_QResync_LiveVanishedIsNotResync(t *testing.T) {
 
 	go func() {
 		br := bufio.NewReader(serverConn)
-		io.WriteString(serverConn, "* OK [CAPABILITY IMAP4rev2 QRESYNC] ready\r\n")
+		io.WriteString(serverConn, "* PREAUTH [CAPABILITY IMAP4rev2 QRESYNC] ready\r\n")
 		line, err := br.ReadString('\n')
 		if err != nil {
 			return
