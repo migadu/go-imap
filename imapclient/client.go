@@ -916,12 +916,36 @@ func (c *Client) completeCommand(cmd command, err error) {
 	close(base.done)
 }
 
+// errCommandCompleted is why a command the server has already answered
+// cannot send a literal.
+var errCommandCompleted = errors.New("imapclient: the server answered the command before its literal was sent")
+
+// isPendingLocked reports whether cmd is among the commands the server has
+// not answered yet.
+func (c *Client) isPendingLocked(cmd command) bool {
+	for _, pending := range c.pendingCmds {
+		if pending.base() == cmd.base() {
+			return true
+		}
+	}
+	return false
+}
+
 func (c *Client) registerContReq(cmd command) *imapwire.ContinuationRequest {
 	contReq := imapwire.NewContinuationRequest()
 
 	c.mutex.Lock()
 	if c.cancelErr != nil {
 		contReq.Cancel(c.cancelErr)
+		c.mutex.Unlock()
+		return contReq
+	}
+	// A command the server has answered gets no continuation request, but
+	// one registered for it would take the next command's: completeCommand
+	// cancels only those registered before. This happens to a command with
+	// several literals once the server refuses one (issue #164).
+	if !c.isPendingLocked(cmd) {
+		contReq.Cancel(errCommandCompleted)
 		c.mutex.Unlock()
 		return contReq
 	}
