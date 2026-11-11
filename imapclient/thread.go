@@ -14,10 +14,13 @@ type ThreadOptions struct {
 }
 
 func (c *Client) thread(numKind imapwire.NumKind, options *ThreadOptions) *ThreadCommand {
+	// Learn the capabilities before taking the encoder, which a CAPABILITY
+	// command needs too.
+	condStore := c.Caps().Has(imap.CapCondStore)
 	cmd := &ThreadCommand{}
 	enc := c.beginCommand(uidCmdName("THREAD", numKind), cmd)
 	enc.SP().Atom(string(options.Algorithm)).SP().Atom("UTF-8").SP()
-	writeSearchKey(enc.Encoder, options.SearchCriteria, c.Caps().Has(imap.CapCondStore))
+	writeSearchKey(enc.Encoder, options.SearchCriteria, condStore)
 	enc.end()
 	return cmd
 }

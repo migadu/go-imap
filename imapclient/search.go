@@ -42,6 +42,10 @@ func (c *Client) search(numKind imapwire.NumKind, criteria *imap.SearchCriteria,
 	// servers even if we only send ASCII characters: the server then must
 	// decode encoded headers and Content-Transfer-Encoding before matching the
 	// criteria.
+	//
+	// Both need the capabilities: learn them before taking the encoder, which
+	// a CAPABILITY command needs too.
+	condStore := c.Caps().Has(imap.CapCondStore)
 	var charset string
 	if !c.useQuotedUTF8() && !searchCriteriaIsASCII(criteria) {
 		charset = "UTF-8"
@@ -67,7 +71,7 @@ func (c *Client) search(numKind imapwire.NumKind, criteria *imap.SearchCriteria,
 	if charset != "" {
 		enc.Atom("CHARSET").SP().Atom(charset).SP()
 	}
-	writeSearchKey(enc.Encoder, criteria, c.Caps().Has(imap.CapCondStore))
+	writeSearchKey(enc.Encoder, criteria, condStore)
 	enc.end()
 	return cmd
 }
@@ -87,6 +91,8 @@ func (c *Client) UIDSearch(criteria *imap.SearchCriteria, options *imap.SearchOp
 // source searches the currently selected mailbox. ESEARCH always reports UIDs;
 // each *imap.SearchData in the result carries its Mailbox and UIDValidity.
 func (c *Client) MultiSearch(source *imap.SearchSource, criteria *imap.SearchCriteria, options *imap.SearchOptions) *MultiSearchCommand {
+	// See search.
+	condStore := c.Caps().Has(imap.CapCondStore)
 	var charset string
 	if !c.useQuotedUTF8() && !searchCriteriaIsASCII(criteria) {
 		charset = "UTF-8"
@@ -109,7 +115,7 @@ func (c *Client) MultiSearch(source *imap.SearchSource, criteria *imap.SearchCri
 	if charset != "" {
 		enc.Atom("CHARSET").SP().Atom(charset).SP()
 	}
-	writeSearchKey(enc.Encoder, criteria, c.Caps().Has(imap.CapCondStore))
+	writeSearchKey(enc.Encoder, criteria, condStore)
 	enc.end()
 	return cmd
 }
