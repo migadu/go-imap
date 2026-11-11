@@ -64,13 +64,18 @@ func (c *Client) UnselectAndExpunge() *Command {
 // or its messages is to be read and dropped. RFC 9051 section 11.3: "when
 // not in selected state, clients MUST ignore responses / response codes
 // related to message and mailbox status such as FLAGS, EXIST, EXPUNGE, and
-// FETCH". The responses to SELECT and EXAMINE arrive before the client
-// enters that state, and are not ignored.
+// FETCH". That holds for the responses to a pending FETCH, STORE or EXPUNGE
+// too. The responses to SELECT and EXAMINE arrive before the client enters
+// that state, and are not ignored.
 func (c *Client) ignoresMailboxData() bool {
 	c.mutex.Lock()
-	selected := c.state == imap.ConnStateSelected
+	state := c.state
 	c.mutex.Unlock()
-	return !selected && findPendingCmdByType[*SelectCommand](c) == nil
+	// Only an authenticated connection can legitimately be selecting a
+	// mailbox. A queued SELECT before authentication, or after cancellation,
+	// must not make otherwise unsuitable responses meaningful.
+	return state != imap.ConnStateSelected &&
+		(state != imap.ConnStateAuthenticated || findPendingCmdByType[*SelectCommand](c) == nil)
 }
 
 // ignoresUnsolicitedData reports whether a response no command asked for is

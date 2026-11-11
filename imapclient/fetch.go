@@ -772,6 +772,12 @@ func (c *Client) handleFetch(seqNum uint32) (err error) {
 
 	msg = &FetchMessageData{SeqNum: seqNum, items: items, opts: &c.options}
 
+	// Whether the message is dropped, whether or not a pending FETCH or STORE
+	// asked for it: with no mailbox selected, there is no message it can be
+	// about. Decided once: the state cannot change while the response is
+	// read.
+	ignored := c.ignoresMailboxData()
+
 	// UID FETCH responses may put their UID after body literals. Until the
 	// UID is known, keep the data private instead of assigning it to an
 	// arbitrary command (or treating it as unsolicited). A pending
@@ -797,7 +803,7 @@ func (c *Client) handleFetch(seqNum uint32) (err error) {
 		}
 		return false
 	})
-	needsUID := uidPending && !seqClaimed
+	needsUID := uidPending && !seqClaimed && !ignored
 	var uid imap.UID
 	var flags []imap.Flag
 	var modSeq uint64
@@ -838,16 +844,19 @@ func (c *Client) handleFetch(seqNum uint32) (err error) {
 	}
 	defer func() { dec.CheckLiteralFunc = previousCheck }()
 
-	// Whether an unsolicited message is dropped. Decided once: the state
-	// cannot change while the response is read.
-	ignored := c.ignoresMailboxData()
-
 	handleMsg := func() error {
 		if handled {
 			return nil
 		}
 		if n := bufferedBytes; n > 0 {
 			msg.release = func() { c.releaseFetchBuffer(n) }
+		}
+
+		if ignored {
+			handled = true
+			released = true
+			go msg.discard()
+			return nil
 		}
 
 		// Check if this is a QRESYNC SELECT response
@@ -894,7 +903,7 @@ func (c *Client) handleFetch(seqNum uint32) (err error) {
 			case <-c.closeCh:
 				return net.ErrClosed
 			}
-		} else if handler := c.options.unilateralDataHandler().Fetch; handler != nil && !ignored {
+		} else if handler := c.options.unilateralDataHandler().Fetch; handler != nil {
 			go func() {
 				defer msg.releaseAfterCallback()
 				handler(msg)

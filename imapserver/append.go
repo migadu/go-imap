@@ -47,7 +47,7 @@ func (c *Conn) handleAppend(tag string, dec *imapwire.Decoder) error {
 	options.Time = t
 
 	// A leading '~' is the literal8 prefix of a bare binary append
-	// (APPEND mailbox ~{n}, RFC 3516 / IMAP4rev2): consume it and skip
+	// (APPEND mailbox ~{n}, RFC 3516 §4.4): consume it and skip
 	// data-extension parsing. Otherwise an atom here is a data extension
 	// such as UTF8 (RFC 6855).
 	var dataExt string
@@ -91,6 +91,13 @@ func (c *Conn) handleAppend(tag string, dec *imapwire.Decoder) error {
 	if err := c.checkState(imap.ConnStateAuthenticated); err != nil {
 		c.drainLiteral(lit, dec, nonSync)
 		return err
+	}
+
+	// The literal8 APPEND is BINARY's: IMAP4rev2 has only BINARY's FETCH
+	// items (RFC 9051 Appendix B).
+	if options.Binary && !c.configuredCaps().Has(imap.CapBinary) {
+		c.drainLiteral(lit, dec, nonSync)
+		return newClientBugError("APPEND with a literal8 requires BINARY")
 	}
 
 	if lit.Size() > appendLimit {

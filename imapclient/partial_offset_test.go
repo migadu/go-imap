@@ -18,7 +18,7 @@ func TestFetchPartialOffsetWiderThan32Bits(t *testing.T) {
 		{"binary", "* 1 FETCH (BINARY[]<4294967301> \"\")\r\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			client := newCodeServer(t, tc.resp)
+			client := newSelectedCodeServer(t, tc.resp)
 			opts := &imap.FetchOptions{}
 			const offset = 1<<32 + 5
 			if tc.name == "body" {

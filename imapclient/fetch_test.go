@@ -90,6 +90,8 @@ func TestFetch_emptyLiteralMissingSP(t *testing.T) {
 		io.WriteString(serverConn, "* 1 FETCH (BODY[HEADER.FIELDS (REFERENCES)] {0}\r\nUID 42)\r\n")
 		io.WriteString(serverConn, tag+" OK FETCH completed\r\n")
 	}()
+	// FETCH responses belong to a selected mailbox (RFC 9051 section 11.3).
+	client.SetStateForTest(imap.ConnStateSelected)
 
 	bodySection := &imap.FetchItemBodySection{
 		Specifier:    imap.PartSpecifierHeader,

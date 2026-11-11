@@ -43,7 +43,7 @@ func testMailboxReadOnlyChanges(t *testing.T, tagged bool) {
 		replies[2] = "%s OK [READ-WRITE] NOOP completed\r\n"
 	}
 	go func() {
-		fmt.Fprint(serverConn, "* OK [CAPABILITY IMAP4rev1] ready\r\n")
+		fmt.Fprint(serverConn, "* PREAUTH [CAPABILITY IMAP4rev1] ready\r\n")
 		r := bufio.NewReader(serverConn)
 		for _, reply := range replies {
 			line, err := r.ReadString('\n')
