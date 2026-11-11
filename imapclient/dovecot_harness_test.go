@@ -67,7 +67,7 @@ func TestDovecotHarnessCloseWithUnreadOutput(t *testing.T) {
 
 	binDir := t.TempDir()
 	pidFilename := filepath.Join(binDir, "pid")
-	script := "#!/bin/sh\necho $$ > " + strconv.Quote(pidFilename) + "\n" +
+	script := "#!/bin/sh\necho $$ > '" + strings.ReplaceAll(pidFilename, "'", "'\"'\"'") + "'\n" +
 		"dd if=/dev/zero bs=65536 count=32 2>/dev/null\ncat >/dev/null\n"
 	if err := os.WriteFile(filepath.Join(binDir, "doveadm"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
