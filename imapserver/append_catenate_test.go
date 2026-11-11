@@ -57,8 +57,16 @@ func (s *catenateSession) AppendCatenate(ctx context.Context, mailbox string, pa
 
 func newCatenateConn(t *testing.T, limit uint32) *searchRev2Conn {
 	t.Helper()
+	rc := dialCatenateConn(t, limit)
+	rc.do("LOGIN " + searchRev2Username + " " + searchRev2Password)
+	return rc
+}
+
+// dialCatenateConn is newCatenateConn before LOGIN.
+func dialCatenateConn(t *testing.T, limit uint32) *searchRev2Conn {
+	t.Helper()
 	caps := imap.CapSet{imap.CapIMAP4rev1: {}, imap.CapCatenate: {}, imap.CapLiteralPlus: {}}
-	return newSearchRev2ConnWrapped(t, caps, func(sess imapserver.Session) imapserver.Session {
+	return dialSearchRev2Conn(t, caps, func(sess imapserver.Session) imapserver.Session {
 		return &catenateSession{
 			Session: sess,
 			urls: map[string]string{

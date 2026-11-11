@@ -190,6 +190,23 @@ func (dec *Decoder) NextByteIs(want byte) bool {
 	return true
 }
 
+// NextByteIsDigit reports whether the next byte is a decimal digit, without
+// consuming it: whether a number starts here.
+//
+// It is the lookahead for a grammar with a number or another form, to be
+// followed by ExpectNumber or one of its siblings, which report a number too
+// large for its type. Number and its siblings cannot serve: they read the
+// digits of such a number and return false, as when there is none. On a read
+// error it returns false and sets the decoder error.
+func (dec *Decoder) NextByteIsDigit() bool {
+	ch, ok := dec.readByte()
+	if !ok {
+		return false
+	}
+	dec.mustUnreadByte()
+	return ch >= '0' && ch <= '9'
+}
+
 // EOF returns true if end-of-file is reached.
 //
 // A read failure that is not io.EOF -- a timeout, a reset connection, a TLS
@@ -338,12 +355,12 @@ func (dec *Decoder) DiscardUntilByte(untilCh byte) {
 	}
 }
 
-// maxDiscardLiteralSize bounds how many octets of a non-synchronizing literal
+// MaxDiscardLiteralSize bounds how many octets of a non-synchronizing literal
 // DiscardLine drains while recovering from a command error. It is well above
 // the 4096-octet cap LITERAL- puts on non-synchronizing literals; a larger one
 // is refused rather than read, so recovery can never be turned into an
 // unbounded read.
-const maxDiscardLiteralSize = 64 << 10
+const MaxDiscardLiteralSize = 64 << 10
 
 // DiscardLine skips the remainder of the current line, so that the next
 // command can be read from a clean position.
@@ -355,12 +372,15 @@ const maxDiscardLiteralSize = 64 << 10
 // literal whose announcement was never parsed — the stream is marked
 // desynchronised instead of guessing; see Desynchronized.
 func (dec *Decoder) DiscardLine() {
+	if dec.desynced {
+		return
+	}
 	dec.discarding = true
 	defer func() { dec.discarding = false }()
 
 	if n := dec.pendingLiteral; n > 0 {
 		dec.pendingLiteral = 0
-		if n > maxDiscardLiteralSize {
+		if n > MaxDiscardLiteralSize {
 			dec.desynced = true
 			return
 		}
@@ -387,6 +407,12 @@ func (dec *Decoder) DiscardLine() {
 	if dec.side == ConnSideServer && endsWithNonSyncLiteral(text) {
 		dec.desynced = true
 	}
+}
+
+// MarkDesynchronized prevents further command recovery when unread input can no
+// longer be classified safely. The server must close the connection.
+func (dec *Decoder) MarkDesynchronized() {
+	dec.desynced = true
 }
 
 // Desynchronized reports whether the decoder had to give up on resynchronising
@@ -478,6 +504,10 @@ func (dec *Decoder) expectNumber(bitSize int, name string) (uint64, bool) {
 	return v, dec.Expect(ok, name)
 }
 
+// Number reads a number, if there is one. A number too large for 32 bits is
+// read and reported as false, leaving no error: a client tolerates it in an
+// optional response code, and skips that code. To choose between a number and
+// another form, use NextByteIsDigit and ExpectNumber.
 func (dec *Decoder) Number(ptr *uint32) bool {
 	v, ok, _ := dec.number(32)
 	if !ok {
@@ -515,8 +545,13 @@ func (dec *Decoder) ExpectBodyFldOctets(ptr *uint32) bool {
 // as zero: refusing it fails the whole FETCH response, and with it every other
 // message in the batch, over one part whose line count nobody needs.
 func (dec *Decoder) ExpectBodyFldLines(ptr *int64) bool {
-	// Number64 unreads the first non-digit byte, so NIL is still intact here.
-	if dec.Number64(ptr) {
+	// number unreads the first non-digit byte, so NIL is still intact here.
+	// An oversized count is not NIL, nor the absence of a count.
+	v, ok, err := dec.number(63)
+	if err != nil {
+		return dec.returnErr(err)
+	} else if ok {
+		*ptr = int64(v)
 		return true
 	}
 	var s string
@@ -527,6 +562,8 @@ func (dec *Decoder) ExpectBodyFldLines(ptr *int64) bool {
 	return dec.Expect(false, "body-fld-lines")
 }
 
+// Number64 reads a number64, if there is one, tolerating one too large as
+// Number does.
 func (dec *Decoder) Number64(ptr *int64) bool {
 	// number64 is an unsigned 63-bit integer (RFC 9051 Section 9).
 	v, ok, _ := dec.number(63)
@@ -545,6 +582,8 @@ func (dec *Decoder) ExpectNumber64(ptr *int64) bool {
 	return ok
 }
 
+// ModSeq reads a mod-sequence value, if there is one, tolerating one too large
+// as Number does.
 func (dec *Decoder) ModSeq(ptr *uint64) bool {
 	v, ok, _ := dec.number(64)
 	if !ok {
@@ -892,8 +931,15 @@ func (dec *Decoder) LiteralReader() (lit *LiteralReader, nonSync, ok bool) {
 	if !dec.Special('{') {
 		return nil, false, false
 	}
-	var size int64
-	if !dec.ExpectNumber64(&size) {
+	// Defer a numeric overflow until after the complete header is validated.
+	// A valid synchronizing announcement has no payload before continuation,
+	// even when its size cannot be represented, and can still be answered BAD.
+	v, numberOK, numberErr := dec.number(63)
+	if !numberOK && numberErr == nil {
+		dec.Expect(false, "number64")
+		if dec.side == ConnSideServer {
+			dec.MarkDesynchronized()
+		}
 		return nil, false, false
 	}
 	// Refuse obviously hostile sizes. The IMAP grammar permits arbitrary
@@ -904,6 +950,24 @@ func (dec *Decoder) LiteralReader() (lit *LiteralReader, nonSync, ok bool) {
 	if dec.side == ConnSideServer {
 		nonSync = dec.acceptByte('+')
 	}
+	// Once a literal prefix has been consumed, malformed framing cannot be
+	// recovered by discarding only the remaining header suffix. Payload may
+	// already follow it, so the server must stop instead of guessing a new
+	// command boundary.
+	if !dec.ExpectSpecial('}') || !dec.ExpectCRLF() {
+		if dec.side == ConnSideServer {
+			dec.MarkDesynchronized()
+		}
+		return nil, false, false
+	}
+	if numberErr != nil {
+		if nonSync {
+			dec.MarkDesynchronized()
+		}
+		dec.returnErr(numberErr)
+		return nil, false, false
+	}
+	size := int64(v)
 	if size < 0 || size > absoluteMaxLiteralSize {
 		// Refused on sight, so the peer's syntax: an expect error, which a
 		// server answers with BAD. The octets of a non-synchronizing literal
@@ -918,9 +982,7 @@ func (dec *Decoder) LiteralReader() (lit *LiteralReader, nonSync, ok bool) {
 		})
 		return nil, false, false
 	}
-	if !dec.ExpectSpecial('}') || !dec.ExpectCRLF() {
-		return nil, false, false
-	}
+
 	dec.literal = true
 	lit = &LiteralReader{
 		dec:     dec,

@@ -172,6 +172,11 @@ func (enc *Encoder) validQuoted(s string) bool {
 }
 
 func (enc *Encoder) stringLiteral(s string) {
+	// The command has failed, or the server has refused one of its literals:
+	// nothing more is sent, so don't ask to.
+	if enc.err != nil {
+		return
+	}
 	var sync *ContinuationRequest
 	if enc.side == ConnSideClient && (!enc.LiteralMinus || len(s) > 4096) && !enc.LiteralPlus {
 		if enc.NewContinuationRequest != nil {
