@@ -196,8 +196,8 @@ func readStatusAttVal(dec *imapwire.Decoder, data *imap.StatusData) error {
 		data.Size = &size
 	case "APPENDLIMIT":
 		var num uint32
-		if dec.Number(&num) {
-			ok = true
+		if dec.NextByteIsDigit() {
+			ok = dec.ExpectNumber(&num)
 		} else {
 			ok = dec.ExpectNIL()
 			num = ^uint32(0)

@@ -65,7 +65,10 @@ func readThreadList(dec *imapwire.Decoder) (*imap.ThreadData, error) {
 	var data imap.ThreadData
 	err := dec.ExpectList(func() error {
 		var num uint32
-		if len(data.SubThreads) == 0 && dec.Number(&num) {
+		if len(data.SubThreads) == 0 && dec.NextByteIsDigit() {
+			if !dec.ExpectNumber(&num) {
+				return dec.Err()
+			}
 			data.Chain = append(data.Chain, num)
 		} else {
 			sub, err := readThreadList(dec)

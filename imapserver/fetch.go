@@ -323,8 +323,14 @@ func readSection(dec *imapwire.Decoder, section *imap.FetchItemBodySection) erro
 		return nil
 	}
 
-	var dot bool
-	section.Part, dot = readSectionPart(dec)
+	var (
+		dot bool
+		err error
+	)
+	section.Part, dot, err = readSectionPart(dec)
+	if err != nil {
+		return err
+	}
 	if dot || len(section.Part) == 0 {
 		var specifier string
 		if dot {
@@ -365,16 +371,27 @@ func readSection(dec *imapwire.Decoder, section *imap.FetchItemBodySection) erro
 	return nil
 }
 
-func readSectionPart(dec *imapwire.Decoder) (part []int, dot bool) {
+// readSectionPart reads section-part, nz-number *("." nz-number), if there is
+// one. dot reports a dot after it not followed by a number, which comes before
+// a section-text such as HEADER.
+func readSectionPart(dec *imapwire.Decoder) (part []int, dot bool, err error) {
 	for {
 		dot = len(part) > 0
 		if dot && !dec.Special('.') {
-			return part, false
+			return part, false, nil
 		}
 
+		// A digit starts a number, which must then fit: Number would take
+		// one too large for no number at all.
+		if !dec.NextByteIsDigit() {
+			return part, dot, dec.Err()
+		}
 		var num uint32
-		if !dec.Number(&num) {
-			return part, dot
+		if !dec.ExpectNumber(&num) {
+			return nil, false, dec.Err()
+		}
+		if num == 0 {
+			return nil, false, newClientBugError("Section part numbers start at 1")
 		}
 		part = append(part, int(num))
 	}
@@ -406,6 +423,9 @@ func readSectionBinary(dec *imapwire.Decoder) ([]int, error) {
 		var num uint32
 		if !dec.ExpectNumber(&num) {
 			return l, dec.Err()
+		}
+		if num == 0 {
+			return l, newClientBugError("Section part numbers start at 1")
 		}
 		l = append(l, int(num))
 

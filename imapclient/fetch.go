@@ -1031,7 +1031,10 @@ func (c *Client) handleFetch(seqNum uint32) (err error) {
 						return fmt.Errorf("in section-spec: %w", err)
 					}
 				case "BINARY":
-					part, dot := readSectionPart(dec)
+					part, dot, err := readSectionPart(dec)
+					if err != nil {
+						return fmt.Errorf("in section-binary: %w", err)
+					}
 					if dot {
 						return fmt.Errorf("in section-binary: expected number after dot")
 					}
@@ -1140,7 +1143,10 @@ func (c *Client) handleFetch(seqNum uint32) (err error) {
 			if !dec.ExpectSpecial('[') {
 				return dec.Err()
 			}
-			part, dot := readSectionPart(dec)
+			part, dot, err := readSectionPart(dec)
+			if err != nil {
+				return fmt.Errorf("in section-binary: %w", err)
+			}
 			if dot {
 				return fmt.Errorf("in section-binary: expected number after dot")
 			}
@@ -1724,8 +1730,14 @@ func readBodyFldLang(dec *imapwire.Decoder) ([]string, error) {
 func readSectionSpec(dec *imapwire.Decoder) (*imap.FetchItemBodySection, error) {
 	var section imap.FetchItemBodySection
 
-	var dot bool
-	section.Part, dot = readSectionPart(dec)
+	var (
+		dot bool
+		err error
+	)
+	section.Part, dot, err = readSectionPart(dec)
+	if err != nil {
+		return nil, err
+	}
 	if dot || len(section.Part) == 0 {
 		var specifier string
 		if dot {
@@ -1798,16 +1810,27 @@ func readHeaderList(dec *imapwire.Decoder) ([]string, error) {
 	return l, err
 }
 
-func readSectionPart(dec *imapwire.Decoder) (part []int, dot bool) {
+// readSectionPart reads section-part, nz-number *("." nz-number), if there is
+// one. dot reports a dot after it not followed by a number, which comes before
+// a section-text such as HEADER.
+func readSectionPart(dec *imapwire.Decoder) (part []int, dot bool, err error) {
 	for {
 		dot = len(part) > 0
 		if dot && !dec.Special('.') {
-			return part, false
+			return part, false, nil
 		}
 
+		// A digit starts a number, which must then fit: Number would take
+		// one too large for no number at all, and the section for another.
+		if !dec.NextByteIsDigit() {
+			return part, dot, dec.Err()
+		}
 		var num uint32
-		if !dec.Number(&num) {
-			return part, dot
+		if !dec.ExpectNumber(&num) {
+			return nil, false, dec.Err()
+		}
+		if num == 0 {
+			return nil, false, fmt.Errorf("in section-part: part numbers start at 1, got 0")
 		}
 		part = append(part, int(num))
 	}
