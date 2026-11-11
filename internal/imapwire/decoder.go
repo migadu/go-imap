@@ -32,11 +32,11 @@ func isAStringChar(ch byte) bool {
 	return IsAtomChar(ch) || ch == ']'
 }
 
-// DecoderExpectError is an error due to the Decoder.Expect family of methods.
 // ErrMaxSize is the decoder's error once it has read more than
 // Decoder.MaxSize.
 var ErrMaxSize = errors.New("imapwire: max size exceeded")
 
+// DecoderExpectError is an error due to the Decoder.Expect family of methods.
 type DecoderExpectError struct {
 	Message string
 }
