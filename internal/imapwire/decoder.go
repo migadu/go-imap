@@ -190,6 +190,23 @@ func (dec *Decoder) NextByteIs(want byte) bool {
 	return true
 }
 
+// NextByteIsDigit reports whether the next byte is a decimal digit, without
+// consuming it: whether a number starts here.
+//
+// It is the lookahead for a grammar with a number or another form, to be
+// followed by ExpectNumber or one of its siblings, which report a number too
+// large for its type. Number and its siblings cannot serve: they read the
+// digits of such a number and return false, as when there is none. On a read
+// error it returns false and sets the decoder error.
+func (dec *Decoder) NextByteIsDigit() bool {
+	ch, ok := dec.readByte()
+	if !ok {
+		return false
+	}
+	dec.mustUnreadByte()
+	return ch >= '0' && ch <= '9'
+}
+
 // EOF returns true if end-of-file is reached.
 //
 // A read failure that is not io.EOF -- a timeout, a reset connection, a TLS
@@ -478,6 +495,10 @@ func (dec *Decoder) expectNumber(bitSize int, name string) (uint64, bool) {
 	return v, dec.Expect(ok, name)
 }
 
+// Number reads a number, if there is one. A number too large for 32 bits is
+// read and reported as false, leaving no error: a client tolerates it in an
+// optional response code, and skips that code. To choose between a number and
+// another form, use NextByteIsDigit and ExpectNumber.
 func (dec *Decoder) Number(ptr *uint32) bool {
 	v, ok, _ := dec.number(32)
 	if !ok {
@@ -515,8 +536,13 @@ func (dec *Decoder) ExpectBodyFldOctets(ptr *uint32) bool {
 // as zero: refusing it fails the whole FETCH response, and with it every other
 // message in the batch, over one part whose line count nobody needs.
 func (dec *Decoder) ExpectBodyFldLines(ptr *int64) bool {
-	// Number64 unreads the first non-digit byte, so NIL is still intact here.
-	if dec.Number64(ptr) {
+	// number unreads the first non-digit byte, so NIL is still intact here.
+	// An oversized count is not NIL, nor the absence of a count.
+	v, ok, err := dec.number(63)
+	if err != nil {
+		return dec.returnErr(err)
+	} else if ok {
+		*ptr = int64(v)
 		return true
 	}
 	var s string
@@ -527,6 +553,8 @@ func (dec *Decoder) ExpectBodyFldLines(ptr *int64) bool {
 	return dec.Expect(false, "body-fld-lines")
 }
 
+// Number64 reads a number64, if there is one, tolerating one too large as
+// Number does.
 func (dec *Decoder) Number64(ptr *int64) bool {
 	// number64 is an unsigned 63-bit integer (RFC 9051 Section 9).
 	v, ok, _ := dec.number(63)
@@ -545,6 +573,8 @@ func (dec *Decoder) ExpectNumber64(ptr *int64) bool {
 	return ok
 }
 
+// ModSeq reads a mod-sequence value, if there is one, tolerating one too large
+// as Number does.
 func (dec *Decoder) ModSeq(ptr *uint64) bool {
 	v, ok, _ := dec.number(64)
 	if !ok {
