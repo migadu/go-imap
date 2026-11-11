@@ -279,6 +279,51 @@ func TestSort(t *testing.T) {
 	// These are tested at the server/protocol level in imapserver package
 }
 
+// RFC 5256 §3: messages that exactly match the sort criteria stay in mailbox
+// order, and REVERSE "does not affect the implicit 'sequence number' sort
+// criterion". Messages with one INTERNALDATE therefore sort 1, 2, 3 under
+// ARRIVAL and REVERSE ARRIVAL alike.
+func TestSortArrivalTie(t *testing.T) {
+	client, server := newClientServerPair(t, imap.ConnStateSelected)
+	defer client.Close()
+	defer server.Close()
+
+	const mboxName = "SORT-TIE"
+	if err := client.Create(mboxName, nil).Wait(); err != nil {
+		t.Fatalf("Create() = %v", err)
+	}
+	if _, err := client.Select(mboxName, nil).Wait(); err != nil {
+		t.Fatalf("Select() = %v", err)
+	}
+	date := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	for i := 0; i < 3; i++ {
+		msg := []byte("Subject: m\r\n\r\nbody")
+		cmd := client.Append(mboxName, int64(len(msg)), &imap.AppendOptions{Time: date})
+		if _, err := cmd.Write(msg); err != nil {
+			t.Fatalf("Append.Write() = %v", err)
+		}
+		if err := cmd.Close(); err != nil {
+			t.Fatalf("Append.Close() = %v", err)
+		}
+		if _, err := cmd.Wait(); err != nil {
+			t.Fatalf("Append.Wait() = %v", err)
+		}
+	}
+
+	for _, reverse := range []bool{false, true} {
+		data, err := client.Sort(&imapclient.SortOptions{
+			SortCriteria:   []imap.SortCriterion{{Key: imap.SortKeyArrival, Reverse: reverse}},
+			SearchCriteria: &imap.SearchCriteria{},
+		}).Wait()
+		if err != nil {
+			t.Fatalf("Sort(reverse %v) = %v", reverse, err)
+		}
+		if want := []uint32{1, 2, 3}; !reflect.DeepEqual(data.SeqNums, want) {
+			t.Errorf("Sort(reverse %v) SeqNums = %v, want %v", reverse, data.SeqNums, want)
+		}
+	}
+}
+
 // TestESortWire verifies RFC 5267 §3.2 ordered ALL range expansion (12:10 is
 // equivalent to 10:12, while comma-separated tokens preserve wire order), and
 // that an uncorrelated ESEARCH, which no command caused (RFC 4466 §2.6.2), is
