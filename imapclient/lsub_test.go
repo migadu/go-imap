@@ -108,6 +108,10 @@ func TestLsub_KeepsToItsOwnResponses(t *testing.T) {
 		}
 	}()
 
+	// Unsolicited LIST responses are for an authenticated session (RFC 9051
+	// section 11.3).
+	client.SetStateForTest(imap.ConnStateAuthenticated)
+
 	mailboxes, err := client.Lsub("", "*").Collect()
 	if err != nil {
 		t.Fatalf("Lsub() = %v", err)

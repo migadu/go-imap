@@ -2,6 +2,7 @@ package imapwire
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io"
 	"strconv"
@@ -30,6 +31,10 @@ func IsAtomChar(ch byte) bool {
 func isAStringChar(ch byte) bool {
 	return IsAtomChar(ch) || ch == ']'
 }
+
+// ErrMaxSize is the decoder's error once it has read more than
+// Decoder.MaxSize.
+var ErrMaxSize = errors.New("imapwire: max size exceeded")
 
 // DecoderExpectError is an error due to the Decoder.Expect family of methods.
 type DecoderExpectError struct {
@@ -144,7 +149,7 @@ func (dec *Decoder) readByte() (byte, bool) {
 		return 0, false
 	}
 	if dec.MaxSize > 0 && dec.readBytes > dec.MaxSize {
-		return 0, dec.returnErr(fmt.Errorf("imapwire: max size exceeded"))
+		return 0, dec.returnErr(ErrMaxSize)
 	}
 	dec.crlf = false
 	if dec.literal {
@@ -449,21 +454,45 @@ func (dec *Decoder) numberStr() (s string, ok bool) {
 	return sb.String(), true
 }
 
-func (dec *Decoder) Number(ptr *uint32) bool {
+// number reads a number of at most bitSize bits. Without a digit to read it
+// returns ok false and no error; a number too large for bitSize is an error.
+func (dec *Decoder) number(bitSize int) (v uint64, ok bool, err error) {
 	s, ok := dec.numberStr()
 	if !ok {
-		return false
+		return 0, false, nil
 	}
-	v64, err := strconv.ParseUint(s, 10, 32)
+	v, parseErr := strconv.ParseUint(s, 10, bitSize)
+	if parseErr != nil {
+		return 0, false, &DecoderExpectError{Message: fmt.Sprintf("number too large for %v bits", bitSize)}
+	}
+	return v, true, nil
+}
+
+// expectNumber is number for the Expect variants. An oversized number is
+// reported as such: Expect would name the byte that follows it instead.
+func (dec *Decoder) expectNumber(bitSize int, name string) (uint64, bool) {
+	v, ok, err := dec.number(bitSize)
 	if err != nil {
-		return false // can happen on overflow
+		return 0, dec.returnErr(err)
 	}
-	*ptr = uint32(v64)
+	return v, dec.Expect(ok, name)
+}
+
+func (dec *Decoder) Number(ptr *uint32) bool {
+	v, ok, _ := dec.number(32)
+	if !ok {
+		return false // also on overflow
+	}
+	*ptr = uint32(v)
 	return true
 }
 
 func (dec *Decoder) ExpectNumber(ptr *uint32) bool {
-	return dec.Expect(dec.Number(ptr), "number")
+	v, ok := dec.expectNumber(32, "number")
+	if ok {
+		*ptr = uint32(v)
+	}
+	return ok
 }
 
 func (dec *Decoder) ExpectBodyFldOctets(ptr *uint32) bool {
@@ -499,37 +528,38 @@ func (dec *Decoder) ExpectBodyFldLines(ptr *int64) bool {
 }
 
 func (dec *Decoder) Number64(ptr *int64) bool {
-	s, ok := dec.numberStr()
+	// number64 is an unsigned 63-bit integer (RFC 9051 Section 9).
+	v, ok, _ := dec.number(63)
 	if !ok {
-		return false
+		return false // also on overflow
 	}
-	v, err := strconv.ParseInt(s, 10, 64)
-	if err != nil {
-		return false // can happen on overflow
-	}
-	*ptr = v
+	*ptr = int64(v)
 	return true
 }
 
 func (dec *Decoder) ExpectNumber64(ptr *int64) bool {
-	return dec.Expect(dec.Number64(ptr), "number64")
+	v, ok := dec.expectNumber(63, "number64")
+	if ok {
+		*ptr = int64(v)
+	}
+	return ok
 }
 
 func (dec *Decoder) ModSeq(ptr *uint64) bool {
-	s, ok := dec.numberStr()
+	v, ok, _ := dec.number(64)
 	if !ok {
-		return false
-	}
-	v, err := strconv.ParseUint(s, 10, 64)
-	if err != nil {
-		return false // can happen on overflow
+		return false // also on overflow
 	}
 	*ptr = v
 	return true
 }
 
 func (dec *Decoder) ExpectModSeq(ptr *uint64) bool {
-	return dec.Expect(dec.ModSeq(ptr), "mod-sequence-value")
+	v, ok := dec.expectNumber(64, "mod-sequence-value")
+	if ok {
+		*ptr = v
+	}
+	return ok
 }
 
 func (dec *Decoder) Quoted(ptr *string) bool {

@@ -88,6 +88,15 @@ func (c *Conn) supportsESort() bool {
 	return c.availableCapsSet().Has(imap.CapESort)
 }
 
+// supportsWithin reports whether the session supports the OLDER and YOUNGER
+// search keys (RFC 5032).
+func (c *Conn) supportsWithin() bool {
+	if capSession, ok := c.session.(SessionCapabilities); ok {
+		return capSession.GetCapabilities().Has(imap.CapWithin)
+	}
+	return c.availableCapsSet().Has(imap.CapWithin)
+}
+
 // supportsQResync returns true if the connection supports QRESYNC extension.
 // This checks both session-specific capabilities (if available) and server capabilities.
 func (c *Conn) supportsQResync() bool {

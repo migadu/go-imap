@@ -389,14 +389,23 @@ func DialStartTLS(address string, options *Options) (*Client, error) {
 
 // readTimeoutLocked returns how long to wait for the first byte of the next
 // response. A command in flight means the server owes us a reply, so the
-// response timeout applies. With nothing pending, or with IDLE running -- where
+// response timeout applies; so it does before the greeting. With nothing pending, or with IDLE running -- where
 // silence is expected and may last for many minutes -- the idle timeout does.
+// IDLE stops running when DONE is sent (RFC 2177 section 3).
 //
 // c.mutex must be held.
 func (c *Client) readTimeoutLocked() time.Duration {
+	// The server opens with a greeting (RFC 9051 section 7.1): until it has
+	// arrived a response is owed, command or not.
+	select {
+	case <-c.greetingCh:
+	default:
+		return c.options.responseTimeout()
+	}
+
 	var pending bool
 	for _, cmd := range c.pendingCmds {
-		if _, ok := cmd.(*idleCommand); ok {
+		if idle, ok := cmd.(*idleCommand); ok && idle.acknowledged && !idle.doneSent {
 			return idleReadTimeout
 		}
 		pending = true
@@ -1196,6 +1205,9 @@ func (c *Client) readResponseData(typ string) error {
 				if err != nil {
 					return err
 				}
+				if c.ignoresMailboxData() {
+					break
+				}
 
 				c.mutex.Lock()
 				if c.state == imap.ConnStateSelected {
@@ -1257,7 +1269,7 @@ func (c *Client) readResponseData(typ string) error {
 			case "NOMODSEQ":
 				// ignore
 			case "NOTIFICATIONOVERFLOW":
-				if handler := c.options.unilateralDataHandler().NotificationOverflow; handler != nil {
+				if handler := c.options.unilateralDataHandler().NotificationOverflow; handler != nil && !c.ignoresUnsolicitedData() {
 					handler()
 				}
 			default: // [SP 1*<any TEXT-CHAR except "]">]
@@ -1282,7 +1294,9 @@ func (c *Client) readResponseData(typ string) error {
 			return fmt.Errorf("in resp-text: %w", c.dec.Err())
 		}
 
-		if code == "CLOSED" {
+		// CLOSED ends a selection; it cannot authenticate an unauthenticated
+		// connection (and thereby admit unsolicited LIST/STATUS data).
+		if code == "CLOSED" && c.State() == imap.ConnStateSelected {
 			c.setState(imap.ConnStateAuthenticated)
 		}
 
@@ -1418,6 +1432,9 @@ func (c *Client) handleVanished() error {
 
 	if !c.dec.ExpectUIDSet(&data.UIDs) {
 		return c.dec.Err()
+	}
+	if c.ignoresMailboxData() {
+		return nil
 	}
 
 	cmd := findPendingCmdByType[*SelectCommand](c)
@@ -1565,6 +1582,14 @@ func (ce *commandEncoder) end() {
 // A CRLF is written and the encoder is flushed. Callers must call
 // commandEncoder.end to release the lock.
 func (ce *commandEncoder) flush() {
+	if ce.Encoder.Refused() {
+		// The server answered the command in place of the continuation
+		// request for one of its literals (RFC 9051 section 4.3). That ends
+		// the command, at the CRLF which followed the literal's size: there
+		// is nothing to add, and no reason to give up on the connection.
+		ce.Encoder = nil
+		return
+	}
 	if err := ce.Encoder.CRLF(); err != nil {
 		// TODO: consider stashing the error in Client to return it in future
 		// calls
@@ -1575,6 +1600,15 @@ func (ce *commandEncoder) flush() {
 
 // Literal encodes a literal.
 func (ce *commandEncoder) Literal(size int64) io.WriteCloser {
+	return ce.literal(size, false)
+}
+
+// Literal8 encodes a literal8 (RFC 3516).
+func (ce *commandEncoder) Literal8(size int64) io.WriteCloser {
+	return ce.literal(size, true)
+}
+
+func (ce *commandEncoder) literal(size int64, binary bool) io.WriteCloser {
 	var contReq *imapwire.ContinuationRequest
 	ce.client.mutex.Lock()
 	hasCapLiteralMinus := ce.client.caps.Has(imap.CapLiteralMinus)
@@ -1583,8 +1617,14 @@ func (ce *commandEncoder) Literal(size int64) io.WriteCloser {
 		contReq = ce.client.registerContReq(ce.cmd)
 	}
 	ce.client.setWriteTimeout(literalWriteTimeout)
+	var wc io.WriteCloser
+	if binary {
+		wc = ce.Encoder.Literal8(size, contReq)
+	} else {
+		wc = ce.Encoder.Literal(size, contReq)
+	}
 	return literalWriter{
-		WriteCloser: ce.Encoder.Literal(size, contReq),
+		WriteCloser: wc,
 		client:      ce.client,
 	}
 }
