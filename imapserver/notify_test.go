@@ -21,8 +21,8 @@ type notifyTestConn struct {
 	conn net.Conn
 	br   *bufio.Reader
 	tag  int
-	// timeout bounds the greeting, and is the read deadline readLine
-	// restores.
+	// timeout bounds the greeting and each command, and is the read
+	// deadline readLine restores.
 	timeout time.Duration
 }
 
@@ -93,6 +93,11 @@ func (c *notifyTestConn) cmd(format string, args ...interface{}) string {
 	c.tag++
 	tag := fmt.Sprintf("T%d", c.tag)
 	line := tag + " " + fmt.Sprintf(format, args...)
+	// Each command gets its own time, however long the connection has been
+	// in use.
+	if err := c.conn.SetDeadline(time.Now().Add(c.timeout)); err != nil {
+		c.t.Fatalf("SetDeadline: %v", err)
+	}
 	if _, err := c.conn.Write([]byte(line + "\r\n")); err != nil {
 		c.t.Fatalf("write %q: %v", line, err)
 	}
