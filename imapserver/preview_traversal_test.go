@@ -88,6 +88,13 @@ func previewTraversalFixtures() []previewTraversalFixture {
 			want: "UTF-8 sibling text.",
 		},
 		{name: "no plain text", raw: "Content-Type: text/html\r\n\r\n<p>No plain text</p>\r\n"},
+		{
+			name: "exact 128 parts without plain text",
+			raw: "Content-Type: multipart/mixed; boundary=exact128\r\n\r\n" +
+				strings.Repeat("--exact128\r\nContent-Type: text/html\r\n\r\n<p>x</p>\r\n", 127) +
+				"--exact128--\r\n",
+			want: "",
+		},
 	}
 }
 

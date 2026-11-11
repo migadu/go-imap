@@ -131,6 +131,41 @@ func TestGeneratePreviewTraversalBoundaries(t *testing.T) {
 			})
 		}
 	})
+	t.Run("empty multipart at max depth", func(t *testing.T) {
+		raw := previewTestMultipart("leaf")
+		for i := 1; i < maxPreviewMIMEDepth; i++ {
+			raw = previewTestMultipart(fmt.Sprintf("empty%d", i), raw)
+		}
+		if len(raw) >= maxPreviewRawBytes {
+			t.Fatal("empty-multipart depth fixture also exceeds raw-byte budget")
+		}
+		text, available, err := generatePreview(context.Background(), strings.NewReader(raw))
+		if err != nil || !available || text != "" {
+			t.Fatalf("empty multipart at max depth=(%q,%v,%v), want(\"\",true,nil)", text, available, err)
+		}
+	})
+	t.Run("parts without plain text", func(t *testing.T) {
+		for _, total := range []int{maxPreviewMIMEParts, maxPreviewMIMEParts + 1} {
+			t.Run(fmt.Sprint(total), func(t *testing.T) {
+				parts := make([]string, 0, total-1)
+				for i := 0; i < total-1; i++ {
+					parts = append(parts, previewTestEntity("text/html; charset=utf-8", "", "", "<p>x</p>"))
+				}
+				raw := previewTestMultipart("noplain", parts...)
+				if len(raw) >= maxPreviewRawBytes {
+					t.Fatal("part-count fixture also exceeds raw-byte budget")
+				}
+				text, available, err := generatePreview(context.Background(), strings.NewReader(raw))
+				if total == maxPreviewMIMEParts {
+					if err != nil || !available || text != "" {
+						t.Fatalf("boundary without plain=(%q,%v,%v), want(\"\",true,nil)", text, available, err)
+					}
+				} else if err != nil || available || text != "" {
+					t.Fatalf("over-part without plain=(%q,%v,%v), want unavailable", text, available, err)
+				}
+			})
+		}
+	})
 }
 
 // Every MIME read shares one raw budget, including library-internal header

@@ -92,16 +92,10 @@ func (g *previewGenerator) walk(entity *gomessage.Entity, depth int, partErr err
 	g.parts++
 	mediaType, _, _ := entity.Header.ContentType()
 	if strings.HasPrefix(mediaType, "multipart/") {
-		if depth == maxPreviewMIMEDepth {
-			return "", false, errPreviewBudget
-		}
 		mr := entity.MultipartReader()
 		for {
 			if err := g.readError(); err != nil {
 				return "", false, err
-			}
-			if g.parts == maxPreviewMIMEParts {
-				return "", false, errPreviewBudget
 			}
 			part, nextErr := mr.NextPart()
 			if readErr := g.readError(); readErr != nil {
