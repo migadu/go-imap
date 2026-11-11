@@ -103,7 +103,7 @@ func (c *Client) handleFlags() error {
 	if cmd != nil {
 		cmd.data.Flags = flags
 	} else if handler := c.options.unilateralDataHandler().Mailbox; handler != nil {
-		handler(&UnilateralDataMailbox{Flags: flags})
+		return c.runUnilateralHandler(func() { handler(&UnilateralDataMailbox{Flags: flags}) })
 	}
 
 	return nil
@@ -125,7 +125,7 @@ func (c *Client) handleExists(num uint32) error {
 		c.mutex.Unlock()
 
 		if handler := c.options.unilateralDataHandler().Mailbox; handler != nil {
-			handler(&UnilateralDataMailbox{NumMessages: &num})
+			return c.runUnilateralHandler(func() { handler(&UnilateralDataMailbox{NumMessages: &num}) })
 		}
 	}
 	return nil

@@ -28,7 +28,19 @@ func (c *Client) startTLS(config *tls.Config) error {
 	}
 
 	// The decoder goroutine will invoke Client.upgradeStartTLS
-	<-upgradeDone
+	select {
+	case <-upgradeDone:
+	case <-c.closeCh:
+		// The tagged result can be complete while the reader still awaits
+		// its CRLF. Cancellation at that point prevents the upgrade and
+		// must release this separate wait as well.
+		return c.cancellationErr()
+	}
+	select {
+	case <-c.closeCh:
+		return c.cancellationErr()
+	default:
+	}
 
 	// upgradeStartTLS may have refused the upgrade (e.g. the server sent
 	// buffered data before the OK response) and left tlsConn nil. Surface that
@@ -72,6 +84,6 @@ type startTLSCommand struct {
 	tlsConn     *tls.Conn
 	// upgradeErr carries a failure from upgradeStartTLS (decoder goroutine) back
 	// to startTLS (caller goroutine). It is kept separate from commandBase.err,
-	// which wait() mutates, to avoid a data race on that field.
+	// which is published when the tagged command completes.
 	upgradeErr error
 }

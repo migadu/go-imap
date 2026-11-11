@@ -26,8 +26,10 @@ func (c *Client) Authenticate(saslClient sasl.Client) error {
 	}
 
 	cmd := &authenticateCommand{}
-	contReq := c.registerContReq(cmd)
 	enc := c.beginCommand("AUTHENTICATE", cmd)
+	// Register in wire order, after this command owns the encoder. A queued
+	// AUTHENTICATE must not consume another command's literal continuation.
+	contReq := c.registerContReq(cmd)
 	enc.SP().Atom(mech)
 	if initialResp != nil && hasSASLIR {
 		enc.SP().Atom(internal.EncodeSASL(initialResp))
