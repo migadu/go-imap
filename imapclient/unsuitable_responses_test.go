@@ -172,6 +172,7 @@ func TestUnsuitableResponseCodes(t *testing.T) {
 						"* OK [CLOSED] closed\r\n"+
 						"* 1 FETCH (BODY[] {5}\r\nhello)\r\n"+
 						"* LIST () \"/\" Other\r\n"+
+						"* METADATA Other /private/comment\r\n"+
 						"* STATUS Other (MESSAGES 1)\r\n"+tag+" OK done\r\n")
 				}
 			}()
@@ -182,6 +183,7 @@ func TestUnsuitableResponseCodes(t *testing.T) {
 					Fetch:                func(*imapclient.FetchMessageData) { log.note("Fetch") },
 					List:                 func(*imap.ListData) { log.note("List") },
 					Status:               func(*imap.StatusData) { log.note("Status") },
+					Metadata:             func(string, []string) { log.note("Metadata") },
 					NotificationOverflow: func() { log.note("NotificationOverflow") },
 				},
 			})
@@ -193,7 +195,7 @@ func TestUnsuitableResponseCodes(t *testing.T) {
 			var wantCalls []string
 			if authenticated {
 				wantState = imap.ConnStateAuthenticated
-				wantCalls = []string{"List", "NotificationOverflow", "Status"}
+				wantCalls = []string{"List", "Metadata", "NotificationOverflow", "Status"}
 			}
 			if state := client.State(); state != wantState {
 				t.Errorf("State() = %v, want %v", state, wantState)
