@@ -1216,7 +1216,7 @@ func (c *Client) handleFetch(seqNum uint32) (err error) {
 					return dec.Err()
 				}
 				// Don't trust the server to keep RFC 8970's limits.
-				s = internal.SanitizePreview(s)
+				s = internal.CleanPreview(s)
 				preview = &s
 			}
 			item = FetchItemDataPreview{Preview: preview}
