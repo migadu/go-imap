@@ -23,6 +23,12 @@ func (c *Client) UIDExpunge(uids imap.UIDSet) *ExpungeCommand {
 }
 
 func (c *Client) handleExpunge(seqNum uint32) error {
+	// Dropped with no mailbox selected, even when a pending EXPUNGE asked for
+	// it: there is no message it can be about.
+	if c.ignoresMailboxData() {
+		return nil
+	}
+
 	c.mutex.Lock()
 	if c.state == imap.ConnStateSelected && c.mailbox.NumMessages > 0 {
 		c.mailbox = c.mailbox.copy()
@@ -33,7 +39,7 @@ func (c *Client) handleExpunge(seqNum uint32) error {
 	cmd := findPendingCmdByType[*ExpungeCommand](c)
 	if cmd != nil {
 		cmd.seqNums <- seqNum
-	} else if handler := c.options.unilateralDataHandler().Expunge; handler != nil && !c.ignoresMailboxData() {
+	} else if handler := c.options.unilateralDataHandler().Expunge; handler != nil {
 		handler(seqNum)
 	}
 
