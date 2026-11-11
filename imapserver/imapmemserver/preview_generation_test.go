@@ -73,6 +73,11 @@ func TestGeneratePreviewNormalMIME(t *testing.T) {
 		{name: "HTML unsupported", raw: html, want: ""},
 		{name: "image unsupported", raw: previewTestEntity("image/png", "base64", "", base64.StdEncoding.EncodeToString([]byte("image"))), want: ""},
 		{name: "unknown encoding unsupported", raw: previewTestEntity("text/plain", "x-unknown-preview-encoding", "", "undecoded"), want: ""},
+		{name: "unknown charset plain unsupported", raw: previewTestEntity("text/plain; charset=iso-8859-1", "", "", "Caf\xe9 "+strings.Repeat("a", 250)), want: ""},
+		{name: "skipped sibling unknown charset", raw: previewTestMultipart("alt", previewTestEntity("text/html; charset=iso-8859-1", "", "", "<p>Caf\xe9</p>"), plain), want: "plain body"},
+		{name: "skipped sibling unknown encoding", raw: previewTestMultipart("enc", previewTestEntity("application/octet-stream", "x-uuencode", "attachment", "raw"), plain), want: "plain body"},
+		{name: "unknown charset plain falls through to UTF-8 plain", raw: previewTestMultipart("fallback", previewTestEntity("text/plain; charset=iso-8859-1", "", "", "Caf\xe9"), plain), want: "plain body"},
+		{name: "attachment with unquoted filename space skipped", raw: previewTestMultipart("disp", previewTestEntity("text/plain", "", "attachment; filename=note 2026.txt", "attachment body"), plain), want: "plain body"},
 		{name: "code point limit", raw: previewTestEntity("text/plain; charset=utf-8", "", "", strings.Repeat("é", 220)), want: strings.Repeat("é", 200)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -273,4 +278,15 @@ func TestGeneratePreviewDecodedTextBoundary(t *testing.T) {
 			}
 		})
 	}
+	t.Run("split multibyte rune at text limit", func(t *testing.T) {
+		prefix := strings.Repeat("a", 150) + " "
+		pad := maxPreviewTextBytes - len(prefix) - 2 // cuts 3-byte '€' after 2 bytes
+		body := prefix + strings.Repeat(" ", pad) + "€" + strings.Repeat("z", 100)
+		raw := previewTestEntity("text/plain; charset=utf-8", "", "", body)
+		text, available, err := generatePreview(context.Background(), strings.NewReader(raw))
+		want := strings.Repeat("a", 150)
+		if err != nil || !available || text != want {
+			t.Fatalf("split rune preview=(%q,%v,%v), want(%q,true,nil)", text, available, err, want)
+		}
+	})
 }

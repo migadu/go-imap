@@ -71,6 +71,13 @@ func previewTraversalFixtures() []previewTraversalFixture {
 			limited: true,
 		},
 		{name: "normal MIME", raw: previewNormalMIME, want: "Keep this inline text."},
+		{
+			name: "skipped non-UTF-8 HTML sibling",
+			raw: "Content-Type: multipart/alternative; boundary=charset\r\n\r\n" +
+				"--charset\r\nContent-Type: text/html; charset=iso-8859-1\r\n\r\n<p>Caf\xe9</p>\r\n" +
+				"--charset\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nUTF-8 sibling text.\r\n--charset--\r\n",
+			want: "UTF-8 sibling text.",
+		},
 		{name: "no plain text", raw: "Content-Type: text/html\r\n\r\n<p>No plain text</p>\r\n"},
 	}
 }
