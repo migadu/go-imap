@@ -33,9 +33,15 @@ func generatePreview(ctx context.Context, r io.Reader) (string, bool, error) {
 	raw := &previewInput{ctx: ctx, r: r, remaining: maxPreviewRawBytes}
 	g := previewGenerator{ctx: ctx, raw: raw}
 	entity, err := gomessage.Read(raw)
-	var text string
-	if err == nil || gomessage.IsUnknownCharset(err) {
-		text, _, err = g.walk(entity, 1)
+	var (
+		text  string
+		found bool
+	)
+	if err == nil || isUnknownBodyCoding(err) {
+		text, found, err = g.walk(entity, 1, err)
+	}
+	if found && err == nil {
+		return text, true, nil
 	}
 	// go-message can format reader errors without wrapping them. Retain the
 	// original failure beneath the parser, even if it reported ordinary EOF.
@@ -72,7 +78,11 @@ func (g *previewGenerator) readError() error {
 	return g.raw.err
 }
 
-func (g *previewGenerator) walk(entity *gomessage.Entity, depth int) (string, bool, error) {
+func isUnknownBodyCoding(err error) bool {
+	return gomessage.IsUnknownCharset(err) || gomessage.IsUnknownEncoding(err)
+}
+
+func (g *previewGenerator) walk(entity *gomessage.Entity, depth int, partErr error) (string, bool, error) {
 	if err := g.readError(); err != nil {
 		return "", false, err
 	}
@@ -82,49 +92,55 @@ func (g *previewGenerator) walk(entity *gomessage.Entity, depth int) (string, bo
 	g.parts++
 	mediaType, _, _ := entity.Header.ContentType()
 	if strings.HasPrefix(mediaType, "multipart/") {
-		if depth == maxPreviewMIMEDepth {
-			return "", false, errPreviewBudget
-		}
 		mr := entity.MultipartReader()
 		for {
 			if err := g.readError(); err != nil {
 				return "", false, err
 			}
-			if g.parts == maxPreviewMIMEParts {
-				return "", false, errPreviewBudget
-			}
-			part, err := mr.NextPart()
+			part, nextErr := mr.NextPart()
 			if readErr := g.readError(); readErr != nil {
 				return "", false, readErr
 			}
-			if err == io.EOF {
+			if nextErr == io.EOF {
 				return "", false, nil
 			}
-			if err != nil {
-				return "", false, err
+			if nextErr != nil && !isUnknownBodyCoding(nextErr) {
+				return "", false, nextErr
 			}
-			text, found, err := g.walk(part, depth+1)
+			text, found, err := g.walk(part, depth+1, nextErr)
 			if found || err != nil {
 				return text, found, err
 			}
 		}
 	}
-	disposition, _, _ := entity.Header.ContentDisposition()
-	if mediaType != "text/plain" || disposition == "attachment" {
+	disposition, _, dispErr := entity.Header.ContentDisposition()
+	if dispErr != nil {
+		disposition, _, _ = strings.Cut(disposition, ";")
+		disposition = strings.ToLower(strings.TrimSpace(disposition))
+	}
+	if mediaType != "text/plain" || disposition == "attachment" || partErr != nil {
 		return "", false, nil
 	}
 	// Body is already transfer/charset decoded by go-message. Keep a useful
 	// prefix without draining the rest, but check cancellation through buffers.
 	body := previewContextReader{ctx: g.ctx, r: entity.Body}
 	b, _ := io.ReadAll(io.LimitReader(body, maxPreviewTextBytes))
+	text := formatPreviewText(b)
 	if err := g.readError(); err != nil {
+		if errors.Is(err, errPreviewBudget) && g.ctx.Err() == nil && text != "" {
+			return text, true, nil
+		}
 		return "", false, err
 	}
-	text := strings.Join(strings.Fields(string(b)), " ")
+	return text, true, nil
+}
+
+func formatPreviewText(b []byte) string {
+	text := strings.Join(strings.Fields(strings.ToValidUTF8(string(b), "")), " ")
 	if r := []rune(text); len(r) > 200 {
 		text = string(r[:200])
 	}
-	return text, true, nil
+	return text
 }
 
 // previewInput sits below every multipart reader, so implicit discards and

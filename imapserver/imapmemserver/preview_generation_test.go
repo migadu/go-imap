@@ -73,6 +73,11 @@ func TestGeneratePreviewNormalMIME(t *testing.T) {
 		{name: "HTML unsupported", raw: html, want: ""},
 		{name: "image unsupported", raw: previewTestEntity("image/png", "base64", "", base64.StdEncoding.EncodeToString([]byte("image"))), want: ""},
 		{name: "unknown encoding unsupported", raw: previewTestEntity("text/plain", "x-unknown-preview-encoding", "", "undecoded"), want: ""},
+		{name: "unknown charset plain unsupported", raw: previewTestEntity("text/plain; charset=iso-8859-1", "", "", "Caf\xe9 "+strings.Repeat("a", 250)), want: ""},
+		{name: "skipped sibling unknown charset", raw: previewTestMultipart("alt", previewTestEntity("text/html; charset=iso-8859-1", "", "", "<p>Caf\xe9</p>"), plain), want: "plain body"},
+		{name: "skipped sibling unknown encoding", raw: previewTestMultipart("enc", previewTestEntity("application/octet-stream", "x-uuencode", "attachment", "raw"), plain), want: "plain body"},
+		{name: "unknown charset plain falls through to UTF-8 plain", raw: previewTestMultipart("fallback", previewTestEntity("text/plain; charset=iso-8859-1", "", "", "Caf\xe9"), plain), want: "plain body"},
+		{name: "attachment with unquoted filename space skipped", raw: previewTestMultipart("disp", previewTestEntity("text/plain", "", "attachment; filename=note 2026.txt", "attachment body"), plain), want: "plain body"},
 		{name: "code point limit", raw: previewTestEntity("text/plain; charset=utf-8", "", "", strings.Repeat("é", 220)), want: strings.Repeat("é", 200)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -122,6 +127,41 @@ func TestGeneratePreviewTraversalBoundaries(t *testing.T) {
 					}
 				} else if err != nil || available || text != "" {
 					t.Fatalf("over-part leaf=(%q,%v,%v), want unavailable", text, available, err)
+				}
+			})
+		}
+	})
+	t.Run("empty multipart at max depth", func(t *testing.T) {
+		raw := previewTestMultipart("leaf")
+		for i := 1; i < maxPreviewMIMEDepth; i++ {
+			raw = previewTestMultipart(fmt.Sprintf("empty%d", i), raw)
+		}
+		if len(raw) >= maxPreviewRawBytes {
+			t.Fatal("empty-multipart depth fixture also exceeds raw-byte budget")
+		}
+		text, available, err := generatePreview(context.Background(), strings.NewReader(raw))
+		if err != nil || !available || text != "" {
+			t.Fatalf("empty multipart at max depth=(%q,%v,%v), want(\"\",true,nil)", text, available, err)
+		}
+	})
+	t.Run("parts without plain text", func(t *testing.T) {
+		for _, total := range []int{maxPreviewMIMEParts, maxPreviewMIMEParts + 1} {
+			t.Run(fmt.Sprint(total), func(t *testing.T) {
+				parts := make([]string, 0, total-1)
+				for i := 0; i < total-1; i++ {
+					parts = append(parts, previewTestEntity("text/html; charset=utf-8", "", "", "<p>x</p>"))
+				}
+				raw := previewTestMultipart("noplain", parts...)
+				if len(raw) >= maxPreviewRawBytes {
+					t.Fatal("part-count fixture also exceeds raw-byte budget")
+				}
+				text, available, err := generatePreview(context.Background(), strings.NewReader(raw))
+				if total == maxPreviewMIMEParts {
+					if err != nil || !available || text != "" {
+						t.Fatalf("boundary without plain=(%q,%v,%v), want(\"\",true,nil)", text, available, err)
+					}
+				} else if err != nil || available || text != "" {
+					t.Fatalf("over-part without plain=(%q,%v,%v), want unavailable", text, available, err)
 				}
 			})
 		}
@@ -179,6 +219,43 @@ func TestGeneratePreviewLargePlainPrefix(t *testing.T) {
 			}
 		})
 	}
+	t.Run("chosen plain prefix kept when tail hits raw budget", func(t *testing.T) {
+		att := previewTestEntity("application/octet-stream", "", "attachment", strings.Repeat("x", 220<<10))
+		plain := previewTestEntity("text/plain; charset=utf-8", "", "", "Hello preview! "+strings.Repeat("word ", 10<<10))
+		raw := previewTestMultipart("budgettail", att, plain)
+		if len(raw) <= maxPreviewRawBytes {
+			t.Fatal("fixture must exceed raw budget while reading chosen plain part")
+		}
+		counter := &previewCountingReader{r: strings.NewReader(raw)}
+		text, available, err := generatePreview(context.Background(), counter)
+		if err != nil || !available || !strings.HasPrefix(text, "Hello preview! word ") || len([]rune(text)) != 200 {
+			t.Fatalf("tail-budget preview=(%q,%v,%v), len=%d", text, available, err, len([]rune(text)))
+		}
+		if counter.bytes != maxPreviewRawBytes {
+			t.Errorf("read %d raw bytes, want %d", counter.bytes, maxPreviewRawBytes)
+		}
+	})
+	t.Run("quoted-printable plain hitting raw budget mid-UTF8 rune", func(t *testing.T) {
+		// Each "=09=\r\n" decodes 6 raw bytes into 1 tab byte, so 256 KiB of raw QP
+		// decodes to ~43 KiB (< maxPreviewTextBytes) and hits errPreviewBudget.
+		// Place a 6-byte QP UTF-8 rune ("=C3=A9") across the exact 256 KiB cut.
+		header := "Content-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: quoted-printable\r\n\r\nLead "
+		pad := strings.Repeat("=09=\r\n", (maxPreviewRawBytes-len(header)-3)/6)
+		rem := maxPreviewRawBytes - len(header) - len(pad)
+		if rem < 3 {
+			t.Fatalf("unexpected remainder %d", rem)
+		}
+		// Fill up to maxPreviewRawBytes - 3 with spaces, then "=C3=A9" so only "=C3" fits.
+		raw := header + pad + strings.Repeat(" ", rem-3) + "=C3=A9 tail"
+		counter := &previewCountingReader{r: strings.NewReader(raw)}
+		text, available, err := generatePreview(context.Background(), counter)
+		if err != nil || !available || text != "Lead" {
+			t.Fatalf("qp split-UTF8 preview=(%q,%v,%v), want(\"Lead\",true,nil)", text, available, err)
+		}
+		if counter.bytes != maxPreviewRawBytes {
+			t.Errorf("read %d raw bytes, want %d", counter.bytes, maxPreviewRawBytes)
+		}
+	})
 }
 
 func TestPreviewInputExactRawBoundary(t *testing.T) {
@@ -273,4 +350,15 @@ func TestGeneratePreviewDecodedTextBoundary(t *testing.T) {
 			}
 		})
 	}
+	t.Run("split multibyte rune at text limit", func(t *testing.T) {
+		prefix := strings.Repeat("a", 150) + " "
+		pad := maxPreviewTextBytes - len(prefix) - 2 // cuts 3-byte '€' after 2 bytes
+		body := prefix + strings.Repeat(" ", pad) + "€" + strings.Repeat("z", 100)
+		raw := previewTestEntity("text/plain; charset=utf-8", "", "", body)
+		text, available, err := generatePreview(context.Background(), strings.NewReader(raw))
+		want := strings.Repeat("a", 150)
+		if err != nil || !available || text != want {
+			t.Fatalf("split rune preview=(%q,%v,%v), want(%q,true,nil)", text, available, err, want)
+		}
+	})
 }
