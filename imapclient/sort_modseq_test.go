@@ -142,7 +142,9 @@ func selectModSeqMailbox(t *testing.T, client *imapclient.Client, mboxName strin
 	}
 	for i := 0; i < 3; i++ {
 		msg := []byte("Subject: m\r\n\r\nbody")
-		cmd := client.Append(mboxName, int64(len(msg)), nil)
+		// Arrival dates a day apart, as in TestSort.
+		date := time.Date(2020, 1, 1+i, 0, 0, 0, 0, time.UTC)
+		cmd := client.Append(mboxName, int64(len(msg)), &imap.AppendOptions{Time: date})
 		if _, err := cmd.Write(msg); err != nil {
 			t.Fatalf("Append.Write() = %v", err)
 		}
@@ -152,7 +154,6 @@ func selectModSeqMailbox(t *testing.T, client *imapclient.Client, mboxName strin
 		if _, err := cmd.Wait(); err != nil {
 			t.Fatalf("Append.Wait() = %v", err)
 		}
-		time.Sleep(10 * time.Millisecond) // distinct arrival times
 	}
 	// Give the middle message (in ARRIVAL order) the highest mod-sequence.
 	store := client.Store(imap.SeqSetNum(2), &imap.StoreFlags{Op: imap.StoreFlagsAdd, Flags: []imap.Flag{imap.FlagFlagged}}, nil)

@@ -37,8 +37,11 @@ func TestSort(t *testing.T) {
 		t.Fatalf("Select() failed: %v", err)
 	}
 
-	appendMsg := func(msgData []byte) {
-		cmd := client.Append(mboxName, int64(len(msgData)), nil)
+	// Arrival dates a day apart: servers may keep INTERNALDATE to the second
+	// (Dovecot does), and equal dates sort by sequence number even under
+	// REVERSE (TestSortArrivalTie).
+	appendMsg := func(msgData []byte, date time.Time) {
+		cmd := client.Append(mboxName, int64(len(msgData)), &imap.AppendOptions{Time: date})
 		if _, err := cmd.Write(msgData); err != nil {
 			t.Fatalf("Append.Write() failed: %v", err)
 		}
@@ -50,12 +53,9 @@ func TestSort(t *testing.T) {
 		}
 	}
 
-	// Append messages, ensuring different arrival times
-	appendMsg(msg1)
-	time.Sleep(10 * time.Millisecond)
-	appendMsg(msg2)
-	time.Sleep(10 * time.Millisecond)
-	appendMsg(msg3)
+	appendMsg(msg1, time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC))
+	appendMsg(msg2, time.Date(2020, 1, 2, 0, 0, 0, 0, time.UTC))
+	appendMsg(msg3, time.Date(2020, 1, 3, 0, 0, 0, 0, time.UTC))
 
 	allMsgs := &imap.SearchCriteria{}
 
