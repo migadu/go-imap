@@ -460,7 +460,12 @@ func (c *Conn) serve() {
 				byeOnExit = true
 				break
 			}
-			if !isConnectionClosedError(err) && !isByeError(err) {
+			var tlsErr *startTLSHandshakeError
+			if isConnectionClosedError(err) || isByeError(err) {
+				// Not a failure worth reporting.
+			} else if errors.As(err, &tlsErr) {
+				c.server.logger().Printf("STARTTLS handshake failed (remote %v): %v", c.conn.RemoteAddr(), tlsErr.err)
+			} else {
 				c.server.logger().Printf("failed to read command (remote %v): %v", c.conn.RemoteAddr(), err)
 			}
 			break
@@ -719,6 +724,9 @@ func (c *Conn) readCommand(dec *imapwire.Decoder) (err error) {
 	// A handler that was parked in an idle wait when Shutdown arrived has no
 	// tagged response to give; the serve loop answers with BYE.
 	if errors.Is(err, errShutdown) {
+		return err
+	}
+	if _, ok := err.(*startTLSHandshakeError); ok {
 		return err
 	}
 

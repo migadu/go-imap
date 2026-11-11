@@ -47,6 +47,31 @@ type Options struct {
 	// TLSConfig is a TLS configuration for STARTTLS. If nil, STARTTLS is
 	// disabled.
 	TLSConfig *tls.Config
+	// OnStartTLS, if set, is called synchronously after STARTTLS has passed
+	// validation and immediately before its positive response is written. The
+	// connection is the plaintext transport. This lets an application stop
+	// asynchronous plaintext notices before the client switches to TLS.
+	// It is not called for rejected commands or implicit TLS connections.
+	//
+	// The hook runs on the connection's command goroutine while the server
+	// holds the connection's response-write lock, so no other response can be
+	// written until it returns. It must return promptly, must not read or
+	// write conn, and must not wait for a goroutine that is itself writing a
+	// response on this connection (e.g. through an UpdateWriter): that
+	// goroutine is blocked on the same lock and the two would deadlock.
+	// Signal such writers to stop instead of waiting for them.
+	OnStartTLS func(conn net.Conn)
+	// OnTLSHandshakeComplete, if set, is called synchronously after a STARTTLS
+	// handshake succeeds and before any post-TLS command is dispatched. plain
+	// is the original transport and secure is the completed TLS connection.
+	// With this hook the handshake is completed eagerly, under the command-read
+	// timeout and connection context; otherwise STARTTLS keeps its lazy
+	// handshake behavior. It is not called on failure or for implicit TLS.
+	//
+	// Like OnStartTLS, the hook runs with the connection's response-write lock
+	// held: it must return promptly, must not read or write either connection,
+	// and must not wait for another goroutine's write on this connection.
+	OnTLSHandshakeComplete func(plain net.Conn, secure *tls.Conn)
 	// InsecureAuth allows clients to authenticate without TLS. In this mode,
 	// the server is susceptible to man-in-the-middle attacks.
 	InsecureAuth bool
