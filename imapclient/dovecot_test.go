@@ -78,6 +78,11 @@ acl_driver = vfile
 		// of the stream instead of hanging.
 		io.Copy(serverConn, stdout)
 		serverConn.Close()
+		// If the client closed its pipe while Dovecot was writing a reply,
+		// the copy above ended before stdout did. Close the read end too:
+		// otherwise Dovecot can remain blocked on a full stdout pipe and
+		// never reach the EOF on stdin that asks it to exit.
+		stdout.Close()
 		srv.waitErr = cmd.Wait()
 	}()
 
