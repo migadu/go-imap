@@ -851,6 +851,7 @@ func (c *Client) completeCommand(cmd command, err error) {
 				c.state = imap.ConnStateNotAuthenticated
 				c.mailbox = nil
 				c.enabled = make(imap.CapSet)
+				// What ENABLE allowed the server to send ends with it.
 				c.dec.QuotedUTF8 = c.useQuotedUTF8Locked()
 			}
 			c.mutex.Unlock()
@@ -1186,7 +1187,11 @@ func (c *Client) readResponseTagged(tag, typ string) (startTLS *startTLSCommand,
 			if err != nil {
 				return nil, fmt.Errorf("in capability-data: %w", err)
 			}
-			c.setCaps(caps)
+			// STARTTLS's OK is the last response sent in the clear: what it
+			// says is discarded with the rest once TLS has started (below).
+			if _, ok := cmd.(*startTLSCommand); !ok || typ != "OK" {
+				c.setCaps(caps)
+			}
 		case "METADATA": // METADATA response codes with size parameter
 			var subCode string
 			if !c.dec.ExpectSP() || !c.dec.ExpectAtom(&subCode) {
@@ -1288,6 +1293,12 @@ func (c *Client) readResponseTagged(tag, typ string) (startTLS *startTLSCommand,
 
 	if cmd, ok := cmd.(*startTLSCommand); ok && cmdErr == nil {
 		startTLS = cmd
+		// RFC 9051 §6.2.1: "Once TLS has been started, the client MUST
+		// discard cached information about server capabilities". The
+		// Capability refresh waits for STARTTLS, which holds the command
+		// lock until the handshake is done, so it goes over TLS. A request
+		// still waiting to send can satisfy the refresh without duplication.
+		c.resetCaps(cmd)
 	}
 
 	if cmdErr == nil && code != "CAPABILITY" {
@@ -1306,9 +1317,9 @@ func (c *Client) readResponseTagged(tag, typ string) (startTLS *startTLSCommand,
 			} else {
 				c.resetCaps(cmd)
 			}
-		case *startTLSCommand, *unauthenticateCommand:
-			// So do these. What is known must not outlive the change of
-			// security layer or of user: always ask anew.
+		case *unauthenticateCommand:
+			// So does this. What is known must not outlive the change of
+			// user: always ask anew. (STARTTLS has asked already, above.)
 			c.setCaps(nil)
 		}
 	}

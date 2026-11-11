@@ -50,7 +50,13 @@ func (c *Client) startTLS(config *tls.Config) error {
 	if cmd.upgradeErr != nil {
 		return cmd.upgradeErr
 	}
-	return cmd.tlsConn.Handshake()
+	if err := cmd.tlsConn.Handshake(); err != nil {
+		// A successful tagged STARTTLS response commits this connection to
+		// TLS. Fail before releasing the encoder to any queued commands.
+		c.cancel(err)
+		return err
+	}
+	return nil
 }
 
 // upgradeStartTLS finishes the STARTTLS upgrade after the server has sent an
@@ -62,6 +68,7 @@ func (c *Client) upgradeStartTLS(startTLS *startTLSCommand) {
 	// This is the canonical defense against smuggling attacks.
 	if c.br.Buffered() > 0 {
 		startTLS.upgradeErr = fmt.Errorf("STARTTLS refused: server sent buffered data before TLS")
+		c.cancel(startTLS.upgradeErr)
 		return
 	}
 
