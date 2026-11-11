@@ -446,6 +446,9 @@ func (mbox *MailboxView) Search(ctx context.Context, numKind imapserver.NumKind,
 	defer mbox.mutex.Unlock()
 
 	mbox.staticSearchCriteria(criteria)
+	// All messages and nested keys in this command use the same WITHIN
+	// reference time, even if evaluating the search crosses a second.
+	now := time.Now()
 
 	var (
 		data   imap.SearchData
@@ -459,7 +462,7 @@ func (mbox *MailboxView) Search(ctx context.Context, numKind imapserver.NumKind,
 	for i, msg := range mbox.l {
 		seqNum := mbox.tracker.EncodeSeqNum(uint32(i) + 1)
 
-		if !msg.search(seqNum, criteria) {
+		if !msg.search(seqNum, criteria, now) {
 			continue
 		}
 
@@ -541,12 +544,13 @@ func (mbox *MailboxView) Sort(ctx context.Context, kind imapserver.NumKind, sort
 	defer mbox.mutex.Unlock()
 
 	mbox.staticSearchCriteria(searchCriteria)
+	now := time.Now()
 
 	// 1. Search for messages
 	var matchingMsgs []*message
 	for i, msg := range mbox.l {
 		seqNum := mbox.tracker.EncodeSeqNum(uint32(i) + 1)
-		if msg.search(seqNum, searchCriteria) {
+		if msg.search(seqNum, searchCriteria, now) {
 			matchingMsgs = append(matchingMsgs, msg)
 		}
 	}

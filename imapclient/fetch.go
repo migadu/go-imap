@@ -388,6 +388,9 @@ type FetchMessageData struct {
 	mu sync.Mutex
 	// released is set once an unsolicited message's callback has returned.
 	released bool
+	// err is why the response ended before its closing parenthesis, if it
+	// did. The reader sets it before closing items.
+	err error
 }
 
 // Next advances to the next data item for this message.
@@ -461,6 +464,12 @@ func (data *FetchMessageData) Collect() (*FetchMessageBuffer, error) {
 	data.mu.Unlock()
 	if released {
 		return buf, errFetchMessageReleased
+	}
+	// items is closed: the reader is done with the message. A response that
+	// failed part-way leaves a message with items missing, which must not
+	// pass for a whole one (issue #119).
+	if data.err != nil {
+		return buf, fmt.Errorf("imapclient: incomplete FETCH message: %w", data.err)
 	}
 	return buf, nil
 }
@@ -752,14 +761,16 @@ func (c *Client) handleFetch(seqNum uint32) (err error) {
 	// until then it is returned here.
 	var bufferedBytes int64
 	released := false
+	var msg *FetchMessageData
 	defer func() {
+		msg.err = err
 		close(items)
 		if !released && bufferedBytes > 0 {
 			c.releaseFetchBuffer(bufferedBytes)
 		}
 	}()
 
-	msg := &FetchMessageData{SeqNum: seqNum, items: items, opts: &c.options}
+	msg = &FetchMessageData{SeqNum: seqNum, items: items, opts: &c.options}
 
 	// UID FETCH responses may put their UID after body literals. Until the
 	// UID is known, keep the data private instead of assigning it to an
@@ -827,6 +838,10 @@ func (c *Client) handleFetch(seqNum uint32) (err error) {
 	}
 	defer func() { dec.CheckLiteralFunc = previousCheck }()
 
+	// Whether an unsolicited message is dropped. Decided once: the state
+	// cannot change while the response is read.
+	ignored := c.ignoresMailboxData()
+
 	handleMsg := func() error {
 		if handled {
 			return nil
@@ -879,7 +894,7 @@ func (c *Client) handleFetch(seqNum uint32) (err error) {
 			case <-c.closeCh:
 				return net.ErrClosed
 			}
-		} else if handler := c.options.unilateralDataHandler().Fetch; handler != nil {
+		} else if handler := c.options.unilateralDataHandler().Fetch; handler != nil && !ignored {
 			go func() {
 				defer msg.releaseAfterCallback()
 				handler(msg)

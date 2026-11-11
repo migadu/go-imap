@@ -487,6 +487,26 @@ func readSearchKeyWithAtomDepth(c *Conn, criteria *imap.SearchCriteria, dec *ima
 		case "SMALLER":
 			criteria.And(&imap.SearchCriteria{Smaller: n})
 		}
+	case "OLDER", "YOUNGER":
+		// RFC 5032 §3: search-key =/ ( "OLDER" / "YOUNGER" ) SP nz-number.
+		// A backend that does not offer WITHIN would not evaluate the
+		// interval, so the keys are unknown to it.
+		if !c.supportsWithin() {
+			return newClientBugError(fmt.Sprintf("invalid search-key %q", key))
+		}
+		var n uint32
+		if !dec.ExpectSP() || !dec.ExpectNumber(&n) {
+			return dec.Err()
+		}
+		if n == 0 {
+			return newClientBugError(fmt.Sprintf("The %v interval must be a non-zero number", key))
+		}
+		switch key {
+		case "OLDER":
+			criteria.And(&imap.SearchCriteria{Older: n})
+		case "YOUNGER":
+			criteria.And(&imap.SearchCriteria{Younger: n})
+		}
 	case "NOT":
 		if !dec.ExpectSP() {
 			return dec.Err()

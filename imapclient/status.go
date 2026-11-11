@@ -75,7 +75,7 @@ func (c *Client) handleStatus() error {
 	})
 	if cmd == nil {
 		// Unsolicited STATUS response (e.g., from NOTIFY)
-		if handler := c.options.unilateralDataHandler().Status; handler != nil {
+		if handler := c.options.unilateralDataHandler().Status; handler != nil && !c.ignoresUnsolicitedData() {
 			handler(data)
 		}
 		return nil

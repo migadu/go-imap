@@ -49,24 +49,52 @@ acl_driver = vfile
 	cmd := exec.Command("doveadm", "-c", cfgFilename, "exec", "imap")
 	cmd.Env = []string{"USER=" + testUsername, "PATH=" + os.Getenv("PATH")}
 	cmd.Dir = tempDir
-	cmd.Stdin = serverConn
-	cmd.Stdout = serverConn
 	cmd.Stderr = os.Stderr
+	// The pipe is not handed to exec as Stdin and Stdout: Wait would then
+	// wait for exec's own copy from it, which only ends when the pipe is
+	// closed, and nothing would tell us that Dovecot has exited.
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatalf("failed to open Dovecot's stdin: %v", err)
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatalf("failed to open Dovecot's stdout: %v", err)
+	}
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("failed to start Dovecot: %v", err)
 	}
 
-	return clientConn, &dovecotServer{cmd, serverConn}
+	srv := &dovecotServer{conn: serverConn, exited: make(chan struct{})}
+	go func() {
+		// Ends when the pipe is closed; Dovecot exits when its input ends.
+		io.Copy(stdin, serverConn)
+		stdin.Close()
+	}()
+	go func() {
+		defer close(srv.exited)
+		// Ends when Dovecot exits, whether it was asked to or not. Close
+		// our end then, so that a client still waiting for it sees the end
+		// of the stream instead of hanging.
+		io.Copy(serverConn, stdout)
+		serverConn.Close()
+		srv.waitErr = cmd.Wait()
+	}()
+
+	return clientConn, srv
 }
 
 type dovecotServer struct {
-	cmd  *exec.Cmd
 	conn net.Conn
+	// exited is closed once Dovecot has exited; waitErr is set by then.
+	exited  chan struct{}
+	waitErr error
 }
 
 func (srv *dovecotServer) Close() error {
-	if err := srv.conn.Close(); err != nil {
-		return err
-	}
-	return srv.cmd.Wait()
+	// Dovecot exits when its standard input ends. The pipe may be closed
+	// already, if it exited by itself.
+	srv.conn.Close()
+	<-srv.exited
+	return srv.waitErr
 }

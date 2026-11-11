@@ -159,7 +159,7 @@ func (c *Client) handleList() error {
 		cmd.data.List = data
 	}
 
-	if cmd == nil {
+	if cmd == nil && !c.ignoresUnsolicitedData() {
 		if handler := c.options.unilateralDataHandler().List; handler != nil {
 			handler(data)
 		}

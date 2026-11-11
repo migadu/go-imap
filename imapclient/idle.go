@@ -200,6 +200,12 @@ func (c *Client) idle(auto bool) (*idleCommand, error) {
 		cmd.enc.end()
 		return nil, err
 	}
+	c.mutex.Lock()
+	cmd.acknowledged = true
+	if c.awaitingResp {
+		c.setReadTimeout(c.readTimeoutLocked())
+	}
+	c.mutex.Unlock()
 
 	return cmd, nil
 }
@@ -210,6 +216,13 @@ type idleCommand struct {
 	enc *commandEncoder
 	// auto is set for an IDLE the client runs on its own account.
 	auto bool
+	// acknowledged is set after the continuation request arrives. Until then
+	// IDLE still owes a response and uses the ordinary response timeout.
+	// Guarded by Client.mutex.
+	acknowledged bool
+	// doneSent is set once DONE has been written: from then on the server
+	// owes the tagged response. Guarded by Client.mutex.
+	doneSent bool
 }
 
 // Close stops the IDLE command.
@@ -223,11 +236,19 @@ func (cmd *idleCommand) Close() error {
 	if cmd.enc == nil {
 		return fmt.Errorf("imapclient: IDLE command closed twice")
 	}
-	cmd.enc.client.setWriteTimeout(cmdWriteTimeout)
-	_, err := cmd.enc.client.bw.WriteString("DONE\r\n")
+	c := cmd.enc.client
+	c.setWriteTimeout(cmdWriteTimeout)
+	_, err := c.bw.WriteString("DONE\r\n")
 	if err == nil {
-		err = cmd.enc.client.bw.Flush()
+		err = c.bw.Flush()
 	}
+	// The reader is most likely parked on the idle timeout; see beginCommand.
+	c.mutex.Lock()
+	cmd.doneSent = true
+	if c.awaitingResp {
+		c.setReadTimeout(c.readTimeoutLocked())
+	}
+	c.mutex.Unlock()
 	cmd.enc.end()
 	cmd.enc = nil
 	return err
