@@ -3,8 +3,6 @@ package imapserver
 import (
 	"context"
 	"crypto/tls"
-	"errors"
-	"fmt"
 
 	"github.com/migadu/go-imap"
 	"github.com/migadu/go-imap/internal/imapwire"
@@ -12,7 +10,13 @@ import (
 
 // An error after the positive STARTTLS response is fatal: the peer now expects
 // TLS records, so readCommand must not turn it into an IMAP status response.
-var errStartTLSHandshake = errors.New("imapserver: STARTTLS handshake failed")
+type startTLSHandshakeError struct{ err error }
+
+func (e *startTLSHandshakeError) Error() string {
+	return "imapserver: STARTTLS handshake failed: " + e.err.Error()
+}
+
+func (e *startTLSHandshakeError) Unwrap() error { return e.err }
 
 func (c *Conn) canStartTLS() bool {
 	_, isTLS := c.conn.(*tls.Conn)
@@ -84,7 +88,7 @@ func (c *Conn) handleStartTLS(tag string, dec *imapwire.Decoder) error {
 		ctx, cancel := context.WithTimeout(c.ctx, cmdReadTimeout)
 		defer cancel()
 		if err := tlsConn.HandshakeContext(ctx); err != nil {
-			return fmt.Errorf("%w: %w", errStartTLSHandshake, err)
+			return &startTLSHandshakeError{err}
 		}
 		h(plain, tlsConn)
 	}
