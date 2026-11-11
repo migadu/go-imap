@@ -164,7 +164,7 @@ func (c *Client) handleMetadata() error {
 		}
 	default:
 		if handler := c.options.unilateralDataHandler().Metadata; handler != nil && len(data.EntryList) > 0 && !c.ignoresUnsolicitedData() {
-			handler(data.Mailbox, data.EntryList)
+			return c.runUnilateralHandler(func() { handler(data.Mailbox, data.EntryList) })
 		}
 	}
 
