@@ -25,7 +25,7 @@ func TestNotModSeqWire(t *testing.T) {
 	lines := make(chan string, 4)
 	go func() {
 		defer serverConn.Close()
-		io.WriteString(serverConn, "* PREAUTH [CAPABILITY IMAP4rev1 SORT CONDSTORE] ready\r\n")
+		io.WriteString(serverConn, "* PREAUTH [CAPABILITY IMAP4rev1 SORT ESORT CONDSTORE] ready\r\n")
 		reader := bufio.NewReader(serverConn)
 		for {
 			line, err := reader.ReadString('\n')
@@ -43,6 +43,7 @@ func TestNotModSeqWire(t *testing.T) {
 	if err := client.WaitGreeting(); err != nil {
 		t.Fatalf("WaitGreeting() = %v", err)
 	}
+	client.SetStateForTest(imap.ConnStateSelected)
 
 	criteria := &imap.SearchCriteria{Not: []imap.SearchCriteria{{ModSeq: &imap.SearchCriteriaModSeq{ModSeq: 4}}}}
 	if _, err := client.Search(criteria, nil).Wait(); err != nil {
@@ -59,5 +60,15 @@ func TestNotModSeqWire(t *testing.T) {
 	}
 	if got, want := <-lines, "SORT (ARRIVAL) UTF-8 NOT (MODSEQ 4)"; got != want {
 		t.Errorf("Sort() sent %q, want %q", got, want)
+	}
+	if _, err := client.Sort(&imapclient.SortOptions{
+		SortCriteria:   []imap.SortCriterion{{Key: imap.SortKeyArrival}},
+		SearchCriteria: criteria,
+		Return:         imap.SortOptions{ReturnAll: true},
+	}).Wait(); err != nil {
+		t.Fatalf("extended Sort() = %v", err)
+	}
+	if got, want := <-lines, "SORT RETURN (ALL) (ARRIVAL) UTF-8 NOT (MODSEQ 4)"; got != want {
+		t.Errorf("extended Sort() sent %q, want %q", got, want)
 	}
 }
