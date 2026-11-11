@@ -74,6 +74,9 @@ func (c *Client) Authenticate(saslClient sasl.Client) error {
 
 type authenticateCommand struct {
 	commandBase
+	// caps holds the capabilities the server sent while the command was the
+	// oldest one in flight; see Client.handleCapability.
+	caps imap.CapSet
 }
 
 func (c *Client) writeSASLResp(resp []byte) error {

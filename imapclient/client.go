@@ -1128,10 +1128,21 @@ func (c *Client) readResponseTagged(tag, typ string) (startTLS *startTLSCommand,
 	}
 
 	if cmdErr == nil && code != "CAPABILITY" {
-		switch cmd.(type) {
-		case *loginCommand, *authenticateCommand:
-			// These commands invalidate the capabilities
-			c.resetCaps(cmd)
+		switch cmd := cmd.(type) {
+		case *loginCommand:
+			// These commands invalidate the capabilities, unless the
+			// server sent the new ones along; see handleCapability.
+			if cmd.caps != nil {
+				c.setCaps(cmd.caps)
+			} else {
+				c.resetCaps(cmd)
+			}
+		case *authenticateCommand:
+			if cmd.caps != nil {
+				c.setCaps(cmd.caps)
+			} else {
+				c.resetCaps(cmd)
+			}
 		case *startTLSCommand, *unauthenticateCommand:
 			// So do these. What is known must not outlive the change of
 			// security layer or of user: always ask anew.
@@ -1769,6 +1780,9 @@ func (cmd *Command) Wait() error {
 
 type loginCommand struct {
 	Command
+	// caps holds the capabilities the server sent while the command was the
+	// oldest one in flight; see Client.handleCapability.
+	caps imap.CapSet
 }
 
 // logoutCommand is a LOGOUT command.
