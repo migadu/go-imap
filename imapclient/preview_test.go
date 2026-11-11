@@ -2,6 +2,7 @@ package imapclient_test
 
 import (
 	"bufio"
+	"fmt"
 	"io"
 	"net"
 	"strings"
@@ -18,6 +19,8 @@ import (
 // overruns the 256-character limit is cut down to it.
 func TestFetch_previewDecoding(t *testing.T) {
 	long := strings.Repeat("a", 300)
+	multiline := "Primus: Look!\r\n\r\n\tSecundus: Maybe it's out of gas?"
+	rawControls := "a\x00\x1bb\xff\tc\r\n"
 	clientConn, serverConn := net.Pipe()
 	defer serverConn.Close()
 
@@ -40,12 +43,14 @@ func TestFetch_previewDecoding(t *testing.T) {
 		io.WriteString(serverConn, "* 4 FETCH (UID 4 PREVIEW {7}\r\nCaf\xc3\xa9 ?)\r\n")
 		io.WriteString(serverConn, "* 5 FETCH (UID 5 PREVIEW \""+long+"\")\r\n")
 		io.WriteString(serverConn, "* 6 FETCH (UID 6 PREVIEW nil)\r\n")
+		io.WriteString(serverConn, fmt.Sprintf("* 7 FETCH (UID 7 PREVIEW {%d}\r\n%s)\r\n", len(multiline), multiline))
+		io.WriteString(serverConn, fmt.Sprintf("* 8 FETCH (UID 8 PREVIEW {%d}\r\n%s)\r\n", len(rawControls), rawControls))
 		io.WriteString(serverConn, tag+" OK FETCH completed\r\n")
 	}()
 	// FETCH responses belong to a selected mailbox (RFC 9051 section 11.3).
 	client.SetStateForTest(imap.ConnStateSelected)
 
-	messages, err := client.Fetch(imap.SeqSetNum(1, 2, 3, 4, 5, 6), &imap.FetchOptions{
+	messages, err := client.Fetch(imap.SeqSetNum(1, 2, 3, 4, 5, 6, 7, 8), &imap.FetchOptions{
 		UID:     true,
 		Preview: &imap.FetchItemPreview{Lazy: true},
 	}).Collect()
@@ -55,12 +60,12 @@ func TestFetch_previewDecoding(t *testing.T) {
 	if command := <-commands; !strings.Contains(command, "(UID PREVIEW (LAZY))") {
 		t.Errorf("command = %q, want it to ask for (UID PREVIEW (LAZY))", command)
 	}
-	if len(messages) != 6 {
-		t.Fatalf("len(messages) = %v, want 6", len(messages))
+	if len(messages) != 8 {
+		t.Fatalf("len(messages) = %v, want 8", len(messages))
 	}
 
 	str := func(s string) *string { return &s }
-	for i, want := range []*string{nil, str(""), str("Lunch?"), str("Café ?"), str(long[:256]), nil} {
+	for i, want := range []*string{nil, str(""), str("Lunch?"), str("Café ?"), str(long[:256]), nil, str(multiline), str("ab\tc\r\n")} {
 		got := messages[i].Preview
 		switch {
 		case want == nil && got != nil:

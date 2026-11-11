@@ -233,7 +233,7 @@ func TestWritePreview(t *testing.T) {
 		{name: "unavailable, one request without LAZY", command: "FETCH 1 (PREVIEW (LAZY) PREVIEW)", want: `PREVIEW ""`},
 		{name: "empty", command: "FETCH 1 PREVIEW (LAZY)", available: true, want: `PREVIEW ""`},
 		{name: "text", command: "FETCH 1 PREVIEW", text: "Lunch?", available: true, want: `PREVIEW "Lunch?"`},
-		{name: "control characters", command: "FETCH 1 PREVIEW", text: "a\x00b\tc\r\nd", available: true, want: `PREVIEW "ab c  d"`},
+		{name: "control characters", command: "FETCH 1 PREVIEW", text: "a\x00b\tc\r\nd", available: true, want: `PREVIEW "ab c d"`},
 		{name: "invalid UTF-8", command: "FETCH 1 PREVIEW", text: "ok\xffok", available: true, want: `PREVIEW "okok"`},
 		{name: "long text as a literal", command: "FETCH 1 PREVIEW", text: long, available: true, want: fmt.Sprintf("PREVIEW {%d}\n%s)", len(cut), cut)},
 		{name: "long text quoted in UTF-8", caps: utf8Caps, enable: "ENABLE UTF8=ACCEPT", command: "FETCH 1 PREVIEW", text: long, available: true, want: `PREVIEW "` + cut + `")`},
