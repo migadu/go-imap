@@ -77,6 +77,7 @@ func TestSort_ModSeq(t *testing.T) {
 		criteria   imap.SearchCriteria
 		wantSeq    []uint32
 		wantModSeq uint64
+		notModSeq  bool // see skipDovecotNotModSeq
 	}{
 		{
 			name:       "MODSEQ",
@@ -89,6 +90,7 @@ func TestSort_ModSeq(t *testing.T) {
 			criteria:   imap.SearchCriteria{Not: []imap.SearchCriteria{{ModSeq: &imap.SearchCriteriaModSeq{ModSeq: modSeq + 1}}}},
 			wantSeq:    []uint32{1},
 			wantModSeq: modSeq,
+			notModSeq:  true,
 		},
 		{
 			name:    "no MODSEQ",
@@ -105,6 +107,9 @@ func TestSort_ModSeq(t *testing.T) {
 				name += " extended"
 			}
 			t.Run(name, func(t *testing.T) {
+				if tc.notModSeq {
+					skipDovecotNotModSeq(t, server)
+				}
 				options := &imapclient.SortOptions{
 					SortCriteria:   []imap.SortCriterion{{Key: imap.SortKeyArrival}},
 					SearchCriteria: &tc.criteria,
