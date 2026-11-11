@@ -43,7 +43,7 @@ func TestVanishedLowersMessageCount(t *testing.T) {
 				tc.vanished + "\r\n%s OK NOOP completed\r\n",
 			}
 			go func() {
-				fmt.Fprint(serverConn, "* OK [CAPABILITY IMAP4rev1 ENABLE CONDSTORE QRESYNC] ready\r\n")
+				fmt.Fprint(serverConn, "* PREAUTH [CAPABILITY IMAP4rev1 ENABLE CONDSTORE QRESYNC] ready\r\n")
 				r := bufio.NewReader(serverConn)
 				for _, reply := range replies {
 					line, err := r.ReadString('\n')
@@ -98,7 +98,7 @@ func TestVanishedEarlierDuringSelectKeepsTheCount(t *testing.T) {
 		t.Fatal(err)
 	}
 	go func() {
-		fmt.Fprint(serverConn, "* OK [CAPABILITY IMAP4rev1 ENABLE CONDSTORE QRESYNC] ready\r\n")
+		fmt.Fprint(serverConn, "* PREAUTH [CAPABILITY IMAP4rev1 ENABLE CONDSTORE QRESYNC] ready\r\n")
 		r := bufio.NewReader(serverConn)
 		for _, reply := range []string{
 			"* ENABLED QRESYNC\r\n%s OK ENABLE completed\r\n",

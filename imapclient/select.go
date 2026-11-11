@@ -69,9 +69,13 @@ func (c *Client) UnselectAndExpunge() *Command {
 // that state, and are not ignored.
 func (c *Client) ignoresMailboxData() bool {
 	c.mutex.Lock()
-	selected := c.state == imap.ConnStateSelected
+	state := c.state
 	c.mutex.Unlock()
-	return !selected && findPendingCmdByType[*SelectCommand](c) == nil
+	// Only an authenticated connection can legitimately be selecting a
+	// mailbox. A queued SELECT before authentication, or after cancellation,
+	// must not make otherwise unsuitable responses meaningful.
+	return state != imap.ConnStateSelected &&
+		(state != imap.ConnStateAuthenticated || findPendingCmdByType[*SelectCommand](c) == nil)
 }
 
 // ignoresUnsolicitedData reports whether a response no command asked for is
