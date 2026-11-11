@@ -69,6 +69,9 @@ func readThreadList(dec *imapwire.Decoder) (*imap.ThreadData, error) {
 			if !dec.ExpectNumber(&num) {
 				return dec.Err()
 			}
+			if num == 0 {
+				return fmt.Errorf("imapclient: THREAD message numbers start at 1")
+			}
 			data.Chain = append(data.Chain, num)
 		} else {
 			sub, err := readThreadList(dec)
