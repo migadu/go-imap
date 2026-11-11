@@ -1110,8 +1110,6 @@ func (c *Client) readResponseTagged(tag, typ string) (startTLS *startTLSCommand,
 		return nil, fmt.Errorf("in resp-cond-state: expected OK, NO or BAD status condition, but got %v", typ)
 	}
 
-	c.completeCommand(cmd, cmdErr)
-
 	if cmd, ok := cmd.(*startTLSCommand); ok && cmdErr == nil {
 		startTLS = cmd
 	}
@@ -1127,6 +1125,10 @@ func (c *Client) readResponseTagged(tag, typ string) (startTLS *startTLSCommand,
 			c.setCaps(nil)
 		}
 	}
+	// Waiters may immediately ask for capabilities in the new state. Publish
+	// their invalidation (and the refresh to await) before completing LOGIN or
+	// AUTHENTICATE, just as completeCommand publishes the connection state.
+	c.completeCommand(cmd, cmdErr)
 
 	return startTLS, nil
 }
