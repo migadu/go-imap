@@ -721,6 +721,9 @@ func (c *Conn) readCommand(dec *imapwire.Decoder) (err error) {
 	if errors.Is(err, errShutdown) {
 		return err
 	}
+	if errors.Is(err, errStartTLSHandshake) {
+		return err
+	}
 
 	dec.DiscardLine()
 
