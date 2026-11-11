@@ -229,10 +229,10 @@ type Client struct {
 	br       *bufio.Reader
 	bw       *bufio.Writer
 	dec      *imapwire.Decoder
-	encMutex sync.Mutex
+	encMutex commandMutex
 	// autoIdleMutex serializes starting the IDLE the client runs on its own
 	// account with sending any other command. It is taken before encMutex.
-	autoIdleMutex sync.Mutex
+	autoIdleMutex commandMutex
 
 	greetingCh   chan struct{}
 	greetingRecv bool
@@ -240,7 +240,7 @@ type Client struct {
 
 	decCh   chan struct{}
 	decErr  error
-	closeCh chan struct{} // closed by Close to interrupt FETCH delivery
+	closeCh chan struct{} // closed by cancellation to interrupt delivery and lock waits
 
 	mutex       sync.Mutex
 	state       imap.ConnState
@@ -251,6 +251,8 @@ type Client struct {
 	pendingCmds []command
 	contReqs    []continuationRequest
 	closed      bool
+	closeCalled bool  // explicit Close calls, separate from terminal cancellation
+	cancelErr   error // first fatal error, published before closeCh closes; guarded by mutex
 
 	// autoIdle is the IDLE command the client runs on its own account
 	// (Options.AutoIdle), if any; autoIdleTimer starts it, and
@@ -489,6 +491,10 @@ func (c *Client) State() imap.ConnState {
 
 func (c *Client) setState(state imap.ConnState) {
 	c.mutex.Lock()
+	if c.closed {
+		c.mutex.Unlock()
+		return
+	}
 	c.state = state
 	if c.state != imap.ConnStateSelected {
 		c.mailbox = nil
@@ -629,34 +635,21 @@ func (c *Client) Closed() <-chan struct{} {
 	return c.decCh
 }
 
-// Close immediately closes the connection.
+// Close immediately closes the connection and waits for command finalization.
+// An already-running unilateral handler may still be returning afterwards.
 func (c *Client) Close() error {
 	c.mutex.Lock()
-	alreadyClosed := c.closed
-	c.closed = true
-	if c.autoIdleTimer != nil {
-		c.autoIdleTimer.Stop()
-	}
-	if !alreadyClosed {
-		close(c.closeCh)
-	}
+	alreadyClosed := c.closeCalled
+	c.closeCalled = true
 	c.mutex.Unlock()
-
-	// Ignore net.ErrClosed here, because we also call conn.Close in c.read
-	if err := c.conn.Close(); err != nil && !errors.Is(err, net.ErrClosed) && !errors.Is(err, io.ErrClosedPipe) {
+	_, err := c.cancel(net.ErrClosed)
+	if err != nil && !errors.Is(err, net.ErrClosed) && !errors.Is(err, io.ErrClosedPipe) {
 		return err
 	}
-
-	// The read goroutine fails the pending commands when it exits, but it
-	// cannot exit while a unilateral data handler it called is waiting for
-	// one of them. Fail them here, so that such a handler returns.
-	c.failPendingCmds(net.ErrClosed)
-
 	<-c.decCh
-	if err := c.decErr; err != nil {
-		return err
+	if c.decErr != nil {
+		return c.decErr
 	}
-
 	if alreadyClosed {
 		return net.ErrClosed
 	}
@@ -678,6 +671,7 @@ func (c *Client) awaitGreeting() {
 	select {
 	case <-c.greetingCh:
 	case <-c.decCh:
+	case <-c.closeCh:
 	}
 }
 
@@ -705,14 +699,29 @@ func (c *Client) beginCommand(name string, cmd command) *commandEncoder {
 	// for as long as it runs.
 	holdsAutoIdle := false
 	if idle, ok := cmd.(*idleCommand); c.options.AutoIdle > 0 && (!ok || !idle.auto) {
-		c.autoIdleMutex.Lock()
+		if !c.autoIdleMutex.LockUntil(c.closeCh) {
+			return c.rejectedCommand(cmd)
+		}
 		holdsAutoIdle = true
 		c.stopAutoIdleLocked()
 	}
 
-	c.encMutex.Lock() // unlocked by commandEncoder.end
+	if !c.encMutex.LockUntil(c.closeCh) {
+		if holdsAutoIdle {
+			c.autoIdleMutex.Unlock()
+		}
+		return c.rejectedCommand(cmd)
+	}
 
 	c.mutex.Lock()
+	if c.closed {
+		c.mutex.Unlock()
+		c.encMutex.Unlock()
+		if holdsAutoIdle {
+			c.autoIdleMutex.Unlock()
+		}
+		return c.rejectedCommand(cmd)
+	}
 
 	c.cmdTag++
 	tag := fmt.Sprintf("T%v", c.cmdTag)
@@ -721,7 +730,7 @@ func (c *Client) beginCommand(name string, cmd command) *commandEncoder {
 	*baseCmd = commandBase{
 		tag:  tag,
 		seq:  c.cmdTag,
-		done: make(chan error, 1),
+		done: make(chan struct{}),
 	}
 	if capCmd, ok := cmd.(*CapabilityCommand); ok && capCmd.refresh != nil {
 		capCmd.refresh.seq = c.cmdTag
@@ -757,9 +766,20 @@ func (c *Client) beginCommand(name string, cmd command) *commandEncoder {
 		Encoder: wireEnc,
 		client:  c,
 		cmd:     baseCmd,
+		locked:  true,
 	}
 	enc.Atom(tag).SP().Atom(name)
 	return enc
+}
+
+// rejectedCommand creates a private failed command after cancellation. It never
+// enters pendingCmds and its encoder never touches the connection's writer.
+func (c *Client) rejectedCommand(cmd command) *commandEncoder {
+	*cmd.base() = commandBase{done: make(chan struct{})}
+	c.completeCommand(cmd, c.cancellationErr())
+	enc := imapwire.NewEncoder(bufio.NewWriter(io.Discard), imapwire.ConnSideClient)
+	enc.SetError(c.cancellationErr())
+	return &commandEncoder{Encoder: enc, client: c, cmd: cmd.base()}
 }
 
 func (c *Client) deletePendingCmdByTag(tag string) command {
@@ -802,8 +822,12 @@ func findPendingCmdByType[T command](c *Client) T {
 }
 
 func (c *Client) completeCommand(cmd command, err error) {
-	// Ensure the command is not blocked waiting on continuation requests
+	// Only the reader completes registered commands. A rejected command has
+	// never been exposed to it and can be completed by its creating goroutine.
 	c.mutex.Lock()
+	if c.cancelErr != nil {
+		err = c.cancelErr
+	}
 	var filtered []continuationRequest
 	for _, contReq := range c.contReqs {
 		if contReq.cmd != cmd.base() {
@@ -823,22 +847,26 @@ func (c *Client) completeCommand(cmd command, err error) {
 	case *unauthenticateCommand:
 		if err == nil {
 			c.mutex.Lock()
-			c.state = imap.ConnStateNotAuthenticated
-			c.mailbox = nil
-			c.enabled = make(imap.CapSet)
+			if !c.closed {
+				c.state = imap.ConnStateNotAuthenticated
+				c.mailbox = nil
+				c.enabled = make(imap.CapSet)
+			}
 			c.mutex.Unlock()
 		}
 	case *SelectCommand:
 		var imapErr *imap.Error
 		if err == nil {
 			c.mutex.Lock()
-			c.state = imap.ConnStateSelected
-			c.mailbox = &SelectedMailbox{
-				Name:           cmd.mailbox,
-				NumMessages:    cmd.data.NumMessages,
-				Flags:          cmd.data.Flags,
-				PermanentFlags: cmd.data.PermanentFlags,
-				ReadOnly:       cmd.data.ReadOnly,
+			if !c.closed {
+				c.state = imap.ConnStateSelected
+				c.mailbox = &SelectedMailbox{
+					Name:           cmd.mailbox,
+					NumMessages:    cmd.data.NumMessages,
+					Flags:          cmd.data.Flags,
+					PermanentFlags: cmd.data.PermanentFlags,
+					ReadOnly:       cmd.data.ReadOnly,
+				}
 			}
 			c.mutex.Unlock()
 		} else if errors.As(err, &imapErr) && imapErr.Type == imap.StatusResponseTypeNo {
@@ -864,7 +892,10 @@ func (c *Client) completeCommand(cmd command, err error) {
 		}
 	case *ListCommand:
 		if cmd.pendingData != nil {
-			cmd.mailboxes <- cmd.pendingData
+			if deliveryErr := c.deliverListData(cmd, cmd.pendingData); deliveryErr != nil {
+				err = deliveryErr
+			}
+			cmd.pendingData = nil
 		}
 		close(cmd.mailboxes)
 	case *FetchCommand:
@@ -880,15 +911,20 @@ func (c *Client) completeCommand(cmd command, err error) {
 
 	// Wait must observe the final connection state, mailbox snapshot and
 	// closed result channels when it returns.
-	done := cmd.base().done
-	done <- err
-	close(done)
+	base := cmd.base()
+	base.err = err
+	close(base.done)
 }
 
 func (c *Client) registerContReq(cmd command) *imapwire.ContinuationRequest {
 	contReq := imapwire.NewContinuationRequest()
 
 	c.mutex.Lock()
+	if c.cancelErr != nil {
+		contReq.Cancel(c.cancelErr)
+		c.mutex.Unlock()
+		return contReq
+	}
 	c.contReqs = append(c.contReqs, continuationRequest{
 		ContinuationRequest: contReq,
 		cmd:                 cmd.base(),
@@ -898,22 +934,43 @@ func (c *Client) registerContReq(cmd command) *imapwire.ContinuationRequest {
 	return contReq
 }
 
-func (c *Client) closeWithError(err error) {
-	c.conn.Close()
-	c.failPendingCmds(err)
+// cancel interrupts transport, deliveries, continuations, and command lock
+// acquisition. It never closes result channels or mutates command results.
+func (c *Client) cancel(err error) (first bool, closeErr error) {
+	if err == nil {
+		err = io.ErrUnexpectedEOF
+	}
+	c.mutex.Lock()
+	first = !c.closed
+	if first {
+		c.closed = true
+		c.cancelErr = err
+		c.state = imap.ConnStateLogout
+		c.mailbox = nil
+		if c.autoIdleTimer != nil {
+			c.autoIdleTimer.Stop()
+		}
+		for _, req := range c.contReqs {
+			req.Cancel(err)
+		}
+		c.contReqs = nil
+		close(c.closeCh)
+	}
+	c.mutex.Unlock()
+	return first, c.conn.Close()
 }
 
-// failPendingCmds completes every pending command with err.
-func (c *Client) failPendingCmds(err error) {
+func (c *Client) cancellationErr() error {
 	c.mutex.Lock()
-	c.state = imap.ConnStateLogout
-	pendingCmds := c.pendingCmds
-	c.pendingCmds = nil
-	c.mutex.Unlock()
-
-	for _, cmd := range pendingCmds {
-		c.completeCommand(cmd, err)
+	defer c.mutex.Unlock()
+	if c.cancelErr != nil {
+		return c.cancelErr
 	}
+	return net.ErrClosed
+}
+
+func (c *Client) closeWithError(err error) {
+	c.cancel(err)
 }
 
 // read continuously reads data coming from the server.
@@ -923,19 +980,43 @@ func (c *Client) failPendingCmds(err error) {
 func (c *Client) read() {
 	defer close(c.decCh)
 	defer func() {
+		panicked := false
 		if v := recover(); v != nil {
+			panicked = true
 			c.decErr = fmt.Errorf("imapclient: panic reading response: %v\n%s", v, debug.Stack())
 		}
-
 		cmdErr := c.decErr
 		if cmdErr == nil {
 			cmdErr = io.ErrUnexpectedEOF
 		}
-		c.closeWithError(cmdErr)
+		readerCanceled, _ := c.cancel(cmdErr)
+		if !panicked {
+			cmdErr = c.cancellationErr()
+			// Keep a clean EOF (e.g. after LOGOUT) clean for Close. Pending
+			// commands still fail with unexpected EOF. Explicit Close is also
+			// successful, while a writer's fatal error remains observable.
+			if errors.Is(cmdErr, net.ErrClosed) || (readerCanceled && c.decErr == nil) {
+				c.decErr = nil
+			} else {
+				c.decErr = cmdErr
+			}
+		}
+		c.mutex.Lock()
+		pending := c.pendingCmds
+		c.pendingCmds = nil
+		c.mutex.Unlock()
+		for _, cmd := range pending {
+			c.completeCommand(cmd, cmdErr)
+		}
 	}()
 
 	c.setReadTimeout(c.options.responseTimeout()) // We're waiting for the greeting
 	for {
+		select {
+		case <-c.closeCh:
+			return
+		default:
+		}
 		// Arm the deadline for the wait that is about to happen. dec.EOF blocks
 		// until the first byte of the next response arrives, so this is where a
 		// server that has gone silent must be caught.
@@ -1046,9 +1127,18 @@ func (c *Client) readResponseTagged(tag, typ string) (startTLS *startTLSCommand,
 	}
 
 	// We've removed the command from the pending queue above. Make sure we
-	// don't stall it on error.
+	// don't stall it on an error or a panic. This is still the reader, so it
+	// retains exclusive ownership of publishing the command's results.
 	defer func() {
-		if err != nil {
+		if v := recover(); v != nil {
+			panicErr := fmt.Errorf("imapclient: panic reading tagged response: %v\n%s", v, debug.Stack())
+			c.cancel(panicErr)
+			if _, completed := cmd.base().poll(); !completed {
+				c.completeCommand(cmd, panicErr)
+			}
+			panic(v)
+		}
+		if _, completed := cmd.base().poll(); err != nil && !completed {
 			c.completeCommand(cmd, err)
 		}
 	}()
@@ -1271,7 +1361,9 @@ func (c *Client) readResponseData(typ string) error {
 				if cmd := findPendingCmdByType[*SelectCommand](c); cmd != nil {
 					cmd.data.PermanentFlags = flags
 				} else if handler := c.options.unilateralDataHandler().Mailbox; handler != nil {
-					handler(&UnilateralDataMailbox{PermanentFlags: flags})
+					if err := c.runUnilateralHandler(func() { handler(&UnilateralDataMailbox{PermanentFlags: flags}) }); err != nil {
+						return err
+					}
 				}
 			case "READ-ONLY", "READ-WRITE":
 				// RFC 9051 §7.1: besides answering SELECT, these report that the
@@ -1322,7 +1414,9 @@ func (c *Client) readResponseData(typ string) error {
 				// ignore
 			case "NOTIFICATIONOVERFLOW":
 				if handler := c.options.unilateralDataHandler().NotificationOverflow; handler != nil && !c.ignoresUnsolicitedData() {
-					handler()
+					if err := c.runUnilateralHandler(func() { handler() }); err != nil {
+						return err
+					}
 				}
 			default: // [SP 1*<any TEXT-CHAR except "]">]
 				if c.dec.SP() {
@@ -1522,7 +1616,9 @@ func (c *Client) handleVanished() error {
 		// response, and each carries its own part of the expunged set.
 		cmd.data.Vanished = append(cmd.data.Vanished, data.UIDs...)
 	} else if handler := c.options.unilateralDataHandler().Vanished; handler != nil {
-		handler(&data)
+		if err := c.runUnilateralHandler(func() { handler(&data) }); err != nil {
+			return err
+		}
 	}
 
 	return nil
@@ -1619,6 +1715,7 @@ type commandEncoder struct {
 	*imapwire.Encoder
 	client *Client
 	cmd    *commandBase
+	locked bool // owns encMutex and the connection's buffered writer
 }
 
 // end ends an outgoing command.
@@ -1628,8 +1725,11 @@ func (ce *commandEncoder) end() {
 	if ce.Encoder != nil {
 		ce.flush()
 	}
-	ce.client.setWriteTimeout(0)
-	ce.client.encMutex.Unlock()
+	if ce.locked {
+		ce.client.setWriteTimeout(0)
+		ce.client.encMutex.Unlock()
+		ce.locked = false
+	}
 }
 
 // flush sends an outgoing command, but keeps the encoder lock.
@@ -1713,12 +1813,13 @@ type UnilateralDataMailbox struct {
 //
 // The Fetch handler is invoked in a separate goroutine. Reading further
 // responses can wait for it to consume message data or return. Other handlers
-// (Expunge, Mailbox, Vanished) are invoked synchronously and will block the
-// client while running.
+// are ordered with response processing: the reader waits for each handler
+// before reading another response. Closing the client releases that wait; an
+// already-running handler may still be returning when Close finishes.
 //
 // A handler must not wait for a command (Wait, Collect and the like): the
-// reply would be read by the goroutine the handler is running on, so the wait
-// only ends when the client is closed. Send commands from another goroutine.
+// reader waits for the handler before it can read the reply, so cancellation
+// is required to break that cycle. Send commands from another goroutine.
 //
 // If the caller intends to perform slow operations in any handler, a buffered
 // channel and a separate goroutine should be used. For Fetch, collect or copy
@@ -1808,17 +1909,31 @@ type commandBase struct {
 	tag string
 	// seq orders the commands by when they were sent.
 	seq  uint64
-	done chan error
-	err  error
+	done chan struct{}
+	err  error // immutable once done is closed; waiters only read it
 }
 
 func (cmd *commandBase) base() *commandBase {
 	return cmd
 }
 
+// poll acquires the published result without consuming it. Validation errors
+// created before sending a command have no completion channel.
+func (cmd *commandBase) poll() (error, bool) {
+	if cmd.done == nil {
+		return cmd.err, true
+	}
+	select {
+	case <-cmd.done:
+		return cmd.err, true
+	default:
+		return nil, false
+	}
+}
+
 func (cmd *commandBase) wait() error {
-	if cmd.err == nil {
-		cmd.err = <-cmd.done
+	if cmd.done != nil {
+		<-cmd.done
 	}
 	return cmd.err
 }

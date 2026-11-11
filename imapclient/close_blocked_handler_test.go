@@ -11,62 +11,66 @@ import (
 	"github.com/migadu/go-imap/imapclient"
 )
 
-// The Mailbox, Expunge and Vanished handlers run on the goroutine that reads
-// responses, so a handler waiting for a command waits for a reply nobody
-// reads. That is the caller's mistake (emersion/go-imap#668), but it must
-// not be beyond repair: Close used to hang too, waiting for the read
-// goroutine while the read goroutine waited for the command. Issue #135.
+// Response processing normally waits for a Mailbox handler. A command awaited
+// inside it cannot complete until cancellation releases the reader (#135).
 func TestCloseReleasesHandlerWaitingForCommand(t *testing.T) {
 	clientConn, serverConn := net.Pipe()
 	defer clientConn.Close()
-
+	defer serverConn.Close()
+	notify := make(chan struct{})
 	go func() {
-		defer serverConn.Close()
 		br := bufio.NewReader(serverConn)
-		io.WriteString(serverConn, "* OK [CAPABILITY IMAP4rev1] ready\r\n* 3 EXISTS\r\n")
-		for {
-			line, err := br.ReadString('\n')
-			if err != nil {
-				return
-			}
-			if fields := strings.Fields(line); len(fields) > 0 {
-				io.WriteString(serverConn, fields[0]+" OK completed\r\n")
-			}
+		io.WriteString(serverConn, "* PREAUTH [CAPABILITY IMAP4rev1] ready\r\n")
+		line, err := br.ReadString('\n')
+		if err != nil {
+			return
 		}
+		io.WriteString(serverConn, "* 3 EXISTS\r\n"+strings.Fields(line)[0]+" OK selected\r\n")
+		<-notify
+		io.WriteString(serverConn, "* 4 EXISTS\r\n")
+		// Consume the callback's NOOP but deliberately leave it unanswered.
+		br.ReadString('\n')
 	}()
 
 	var client *imapclient.Client
-	ready := make(chan struct{})
+	waiting := make(chan struct{})
 	handlerErr := make(chan error, 1)
 	client = imapclient.New(clientConn, &imapclient.Options{
 		UnilateralDataHandler: &imapclient.UnilateralDataHandler{
 			Mailbox: func(*imapclient.UnilateralDataMailbox) {
-				<-ready
-				handlerErr <- client.Noop().Wait()
+				cmd := client.Noop()
+				close(waiting)
+				handlerErr <- cmd.Wait()
 			},
 		},
 	})
-	close(ready)
-
-	// Give the handler time to send its command and block.
-	time.Sleep(200 * time.Millisecond)
-
-	closed := make(chan struct{})
-	go func() {
-		client.Close()
-		close(closed)
-	}()
+	defer client.Close()
+	if _, err := client.Select("INBOX", nil).Wait(); err != nil {
+		t.Fatal(err)
+	}
+	close(notify)
 	select {
-	case <-closed:
+	case <-waiting:
 	case <-time.After(5 * time.Second):
-		t.Fatal("Close() still blocked after 5s: the handler waits for a command, Close for the handler")
+		t.Fatal("handler did not send its command")
+	}
+
+	closed := make(chan error, 1)
+	go func() { closed <- client.Close() }()
+	select {
+	case err := <-closed:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close waited for the handler which was waiting for a command")
 	}
 	select {
 	case err := <-handlerErr:
 		if err == nil {
-			t.Errorf("the handler's Noop().Wait() = nil after Close, want an error")
+			t.Fatal("handler's command succeeded after cancellation")
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("the handler's Noop().Wait() did not return after Close")
+		t.Fatal("handler's command did not complete after Close")
 	}
 }

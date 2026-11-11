@@ -6,14 +6,12 @@ import (
 	"net"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/migadu/go-imap"
 )
 
-// Hold completion at its notification to the waiter. Capabilities from before
-// LOGIN must already have been invalidated when that notification can happen;
-// otherwise Login().Wait followed immediately by Caps can return the old set.
+// Capabilities from before LOGIN must be invalidated before its completion is
+// published, so an immediate Caps call cannot return the pre-authentication set.
 func TestLoginInvalidatesCapsBeforeCompletion(t *testing.T) {
 	clientConn, serverConn := net.Pipe()
 	defer serverConn.Close()
@@ -38,13 +36,9 @@ func TestLoginInvalidatesCapsBeforeCompletion(t *testing.T) {
 	client := New(clientConn, nil)
 	defer client.Close()
 	cmd := client.Login("user", "pass")
-	// No response can arrive until allowLogin is closed. An unbuffered
-	// notification lets the test inspect the state the waiter will observe.
-	cmd.done = make(chan error)
 	close(allowLogin)
-	deadline := time.Now().Add(time.Second)
-	for client.State() != imap.ConnStateAuthenticated && time.Now().Before(deadline) {
-		time.Sleep(time.Millisecond)
+	if err := cmd.Wait(); err != nil {
+		t.Fatal(err)
 	}
 	client.mutex.Lock()
 	stale := client.caps.Has(imap.AuthCap("PLAIN"))

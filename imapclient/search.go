@@ -270,7 +270,8 @@ type MultiSearchCommand struct {
 }
 
 func (cmd *MultiSearchCommand) Wait() ([]*imap.SearchData, error) {
-	return cmd.data, cmd.wait()
+	err := cmd.wait()
+	return cmd.data, err
 }
 
 func writeSearchKey(enc *imapwire.Encoder, criteria *imap.SearchCriteria, condstore bool) {

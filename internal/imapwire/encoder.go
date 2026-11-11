@@ -51,6 +51,11 @@ func (enc *Encoder) setErr(err error) {
 	}
 }
 
+// SetError fails this encoder without writing to its underlying stream.
+func (enc *Encoder) SetError(err error) {
+	enc.setErr(err)
+}
+
 func (enc *Encoder) writeString(s string) *Encoder {
 	if enc.err != nil {
 		return enc
@@ -311,6 +316,9 @@ func (enc *Encoder) Literal8(size int64, sync *ContinuationRequest) io.WriteClos
 }
 
 func (enc *Encoder) writeLiteral(size int64, sync *ContinuationRequest, binary bool) io.WriteCloser {
+	if enc.err != nil {
+		return errorWriter{enc.err}
+	}
 	if sync != nil && enc.side == ConnSideServer {
 		panic("imapwire: sync must be nil on a server-side Encoder.Literal")
 	}

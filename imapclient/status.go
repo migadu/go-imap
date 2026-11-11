@@ -76,7 +76,7 @@ func (c *Client) handleStatus() error {
 	if cmd == nil {
 		// Unsolicited STATUS response (e.g., from NOTIFY)
 		if handler := c.options.unilateralDataHandler().Status; handler != nil && !c.ignoresUnsolicitedData() {
-			handler(data)
+			return c.runUnilateralHandler(func() { handler(data) })
 		}
 		return nil
 	}
@@ -86,7 +86,9 @@ func (c *Client) handleStatus() error {
 		mergeStatusData(&cmd.data, data)
 	case *ListCommand:
 		cmd.pendingData.Status = data
-		cmd.mailboxes <- cmd.pendingData
+		if err := c.deliverListData(cmd, cmd.pendingData); err != nil {
+			return err
+		}
 		cmd.pendingData = nil
 	}
 
