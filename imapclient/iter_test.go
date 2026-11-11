@@ -10,7 +10,7 @@ import (
 
 // Upstream proposal: emersion/go-imap#634. Issue #141.
 func TestFetchCommandAll(t *testing.T) {
-	client := newCodeServer(t, "* 1 FETCH (UID 11 FLAGS (\\Seen))\r\n* 2 FETCH (UID 12 FLAGS ())\r\n")
+	client := newSelectedCodeServer(t, "* 1 FETCH (UID 11 FLAGS (\\Seen))\r\n* 2 FETCH (UID 12 FLAGS ())\r\n")
 
 	cmd := client.Fetch(imap.SeqSetNum(1, 2), &imap.FetchOptions{UID: true, Flags: true})
 	var seqNums []uint32
@@ -34,7 +34,7 @@ func TestFetchCommandAll(t *testing.T) {
 // Leaving the loop early leaves the rest to Close, as an unfinished Next loop
 // does, and the connection stays usable.
 func TestFetchCommandAllBreak(t *testing.T) {
-	client := newCodeServer(t, "* 1 FETCH (UID 11)\r\n* 2 FETCH (UID 12)\r\n")
+	client := newSelectedCodeServer(t, "* 1 FETCH (UID 11)\r\n* 2 FETCH (UID 12)\r\n")
 
 	cmd := client.Fetch(imap.SeqSetNum(1, 2), &imap.FetchOptions{UID: true})
 	var n int
@@ -55,7 +55,7 @@ func TestFetchCommandAllBreak(t *testing.T) {
 
 // The loop ends when the data ends, for whatever reason; Close tells why.
 func TestFetchCommandAllError(t *testing.T) {
-	client := newCodeServer(t, "* 1 FETCH (UID 11)\r\n* 2 FETCH (UID twelve)\r\n")
+	client := newSelectedCodeServer(t, "* 1 FETCH (UID 11)\r\n* 2 FETCH (UID twelve)\r\n")
 
 	cmd := client.Fetch(imap.SeqSetNum(1, 2), &imap.FetchOptions{UID: true})
 	var seqNums []uint32
@@ -87,7 +87,7 @@ func TestListCommandAll(t *testing.T) {
 }
 
 func TestExpungeCommandAll(t *testing.T) {
-	client := newCodeServer(t, "* 3 EXPUNGE\r\n* 3 EXPUNGE\r\n* 5 EXPUNGE\r\n")
+	client := newSelectedCodeServer(t, "* 3 EXPUNGE\r\n* 3 EXPUNGE\r\n* 5 EXPUNGE\r\n")
 
 	cmd := client.Expunge()
 	var seqNums []uint32

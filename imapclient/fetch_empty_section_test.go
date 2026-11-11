@@ -11,7 +11,7 @@ import (
 // response does not carry, so they must not return nil for this one.
 func TestFetchFindEmptySection(t *testing.T) {
 	t.Run("body", func(t *testing.T) {
-		client := newCodeServer(t, "* 1 FETCH (BODY[] {0}\r\n)\r\n")
+		client := newSelectedCodeServer(t, "* 1 FETCH (BODY[] {0}\r\n)\r\n")
 		section := &imap.FetchItemBodySection{}
 		msgs, err := client.Fetch(imap.SeqSetNum(1), &imap.FetchOptions{
 			BodySection: []*imap.FetchItemBodySection{section},
@@ -30,7 +30,7 @@ func TestFetchFindEmptySection(t *testing.T) {
 		}
 	})
 	t.Run("binary", func(t *testing.T) {
-		client := newCodeServer(t, "* 1 FETCH (BINARY[] ~{0}\r\n)\r\n")
+		client := newSelectedCodeServer(t, "* 1 FETCH (BINARY[] ~{0}\r\n)\r\n")
 		section := &imap.FetchItemBinarySection{}
 		msgs, err := client.Fetch(imap.SeqSetNum(1), &imap.FetchOptions{
 			BinarySection: []*imap.FetchItemBinarySection{section},

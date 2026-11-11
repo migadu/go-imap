@@ -298,6 +298,8 @@ func TestClientLiteralNotCutShortByConcurrentCommand(t *testing.T) {
 	if err := client.WaitGreeting(); err != nil {
 		t.Fatalf("WaitGreeting() = %v", err)
 	}
+	// FETCH responses belong to a selected mailbox (RFC 9051 section 11.3).
+	client.SetStateForTest(imap.ConnStateSelected)
 
 	fetchCmd := client.Fetch(imap.SeqSetNum(1), &imap.FetchOptions{
 		BodySection: []*imap.FetchItemBodySection{{}},

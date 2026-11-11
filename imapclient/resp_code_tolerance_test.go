@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/migadu/go-imap"
 	"github.com/migadu/go-imap/imapclient"
 )
 
@@ -42,6 +43,16 @@ func newCodeServer(t *testing.T, respLines string) *imapclient.Client {
 	if err := client.WaitGreeting(); err != nil {
 		t.Fatalf("WaitGreeting() = %v", err)
 	}
+	return client
+}
+
+// newSelectedCodeServer is newCodeServer with a mailbox selected, for
+// responses about its messages: FETCH and EXPUNGE count only in the selected
+// state (RFC 9051 section 11.3).
+func newSelectedCodeServer(t *testing.T, respLines string) *imapclient.Client {
+	t.Helper()
+	client := newCodeServer(t, respLines)
+	client.SetStateForTest(imap.ConnStateSelected)
 	return client
 }
 
