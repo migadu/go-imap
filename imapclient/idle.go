@@ -120,6 +120,12 @@ func (c *Client) idle() (*idleCommand, error) {
 		cmd.enc.end()
 		return nil, err
 	}
+	c.mutex.Lock()
+	cmd.acknowledged = true
+	if c.awaitingResp {
+		c.setReadTimeout(c.readTimeoutLocked())
+	}
+	c.mutex.Unlock()
 
 	return cmd, nil
 }
@@ -128,6 +134,10 @@ func (c *Client) idle() (*idleCommand, error) {
 type idleCommand struct {
 	commandBase
 	enc *commandEncoder
+	// acknowledged is set after the continuation request arrives. Until then
+	// IDLE still owes a response and uses the ordinary response timeout.
+	// Guarded by Client.mutex.
+	acknowledged bool
 	// doneSent is set once DONE has been written: from then on the server
 	// owes the tagged response. Guarded by Client.mutex.
 	doneSent bool

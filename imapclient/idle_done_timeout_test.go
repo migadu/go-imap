@@ -64,3 +64,29 @@ func TestIdleDoneBoundByResponseTimeout(t *testing.T) {
 		t.Fatalf("IdleCommand.Wait() still blocked 5s after DONE with a 300ms ResponseTimeout")
 	}
 }
+
+// An IDLE command is not running until its continuation arrives. In
+// particular, a peer that advertises IDLE and then ignores the command must
+// not hold the encoder lock for the 30-minute idle timeout.
+func TestIdleContinuationBoundByResponseTimeout(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+	go func() {
+		io.WriteString(serverConn, "* OK [CAPABILITY IMAP4rev1 IDLE] ready\r\n")
+		// Accept the command but deliberately send no continuation.
+		bufio.NewReader(serverConn).ReadString('\n')
+	}()
+	client := imapclient.New(clientConn, &imapclient.Options{ResponseTimeout: 100 * time.Millisecond})
+	defer client.Close()
+	done := make(chan error, 1)
+	go func() { _, err := client.Idle(); done <- err }()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("Idle succeeded without a continuation")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Idle still waits for its continuation after ResponseTimeout")
+	}
+}

@@ -394,7 +394,7 @@ func DialStartTLS(address string, options *Options) (*Client, error) {
 func (c *Client) readTimeoutLocked() time.Duration {
 	var pending bool
 	for _, cmd := range c.pendingCmds {
-		if idle, ok := cmd.(*idleCommand); ok && !idle.doneSent {
+		if idle, ok := cmd.(*idleCommand); ok && idle.acknowledged && !idle.doneSent {
 			return idleReadTimeout
 		}
 		pending = true
