@@ -38,7 +38,7 @@ func generatePreview(ctx context.Context, r io.Reader) (string, bool, error) {
 		found bool
 	)
 	if err == nil || isUnknownBodyCoding(err) {
-		text, found, err = g.walk(entity, 1, err)
+		text, found, err = g.walk(entity, 1, "", err)
 	}
 	if found && err == nil {
 		return text, true, nil
@@ -82,7 +82,7 @@ func isUnknownBodyCoding(err error) bool {
 	return gomessage.IsUnknownCharset(err) || gomessage.IsUnknownEncoding(err)
 }
 
-func (g *previewGenerator) walk(entity *gomessage.Entity, depth int, partErr error) (string, bool, error) {
+func (g *previewGenerator) walk(entity *gomessage.Entity, depth int, parentMediaType string, partErr error) (string, bool, error) {
 	if err := g.readError(); err != nil {
 		return "", false, err
 	}
@@ -90,7 +90,23 @@ func (g *previewGenerator) walk(entity *gomessage.Entity, depth int, partErr err
 		return "", false, errPreviewBudget
 	}
 	g.parts++
+	disposition, _, dispErr := entity.Header.ContentDisposition()
+	if dispErr != nil {
+		disposition, _, _ = strings.Cut(disposition, ";")
+		disposition = strings.ToLower(strings.TrimSpace(disposition))
+	}
+	// A multipart disposition applies to its entire subtree (RFC 2183
+	// section 2.9). Unknown dispositions are attachments too (section 2.8).
+	if entity.Header.Get("Content-Disposition") != "" && disposition != "inline" {
+		return "", false, nil
+	}
 	mediaType, _, _ := entity.Header.ContentType()
+	if parentMediaType == "multipart/digest" && entity.Header.Get("Content-Type") == "" {
+		// go-message defaults every absent type to text/plain. Digest children
+		// instead default to message/rfc822 (RFC 2046 section 5.1.5), which this
+		// preview algorithm skips. Keep that default local to the direct child.
+		mediaType = "message/rfc822"
+	}
 	if strings.HasPrefix(mediaType, "multipart/") {
 		mr := entity.MultipartReader()
 		for {
@@ -107,18 +123,13 @@ func (g *previewGenerator) walk(entity *gomessage.Entity, depth int, partErr err
 			if nextErr != nil && !isUnknownBodyCoding(nextErr) {
 				return "", false, nextErr
 			}
-			text, found, err := g.walk(part, depth+1, nextErr)
+			text, found, err := g.walk(part, depth+1, mediaType, nextErr)
 			if found || err != nil {
 				return text, found, err
 			}
 		}
 	}
-	disposition, _, dispErr := entity.Header.ContentDisposition()
-	if dispErr != nil {
-		disposition, _, _ = strings.Cut(disposition, ";")
-		disposition = strings.ToLower(strings.TrimSpace(disposition))
-	}
-	if mediaType != "text/plain" || disposition == "attachment" || partErr != nil {
+	if mediaType != "text/plain" || partErr != nil {
 		return "", false, nil
 	}
 	// Body is already transfer/charset decoded by go-message. Keep a useful
