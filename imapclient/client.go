@@ -851,6 +851,7 @@ func (c *Client) completeCommand(cmd command, err error) {
 				c.state = imap.ConnStateNotAuthenticated
 				c.mailbox = nil
 				c.enabled = make(imap.CapSet)
+				c.dec.QuotedUTF8 = c.useQuotedUTF8Locked()
 			}
 			c.mutex.Unlock()
 		}
