@@ -99,7 +99,6 @@ func (c *Conn) availableCaps() []imap.Cap {
 				imap.CapListExtended,
 				imap.CapListStatus,
 				imap.CapStatusSize,
-				imap.CapBinary,
 				imap.CapChildren,
 			})
 
@@ -114,8 +113,12 @@ func (c *Conn) availableCaps() []imap.Cap {
 		}
 
 		// Capabilities which require backend support and apply to both
-		// IMAP4rev1 and IMAP4rev2
+		// IMAP4rev1 and IMAP4rev2. IMAP4rev2 has BINARY's FETCH items but not
+		// its APPEND extension, so a rev2 server with full RFC 3516 support
+		// still advertises BINARY (RFC 9051 Appendix B); IMAP4rev2 does not
+		// imply it.
 		addAvailableCaps(&caps, available, []imap.Cap{
+			imap.CapBinary,
 			imap.CapSpecialUse,
 			imap.CapCreateSpecialUse,
 			imap.CapLiteralPlus,
