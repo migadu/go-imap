@@ -21,7 +21,13 @@ type notifyTestConn struct {
 	conn net.Conn
 	br   *bufio.Reader
 	tag  int
+	// timeout bounds the greeting and each command, and is the read
+	// deadline readLine restores.
+	timeout time.Duration
 }
+
+// notifyTestTimeout is notifyTestConn.timeout for dialNotifyTest.
+const notifyTestTimeout = 10 * time.Second
 
 func newNotifyTestServer(t *testing.T) (addr string, user *imapmemserver.User, closer func()) {
 	t.Helper()
@@ -54,16 +60,21 @@ func newNotifyTestServer(t *testing.T) (addr string, user *imapmemserver.User, c
 
 func dialNotifyTest(t *testing.T, addr string) *notifyTestConn {
 	t.Helper()
+	return dialNotifyTestTimeout(t, addr, notifyTestTimeout)
+}
+
+func dialNotifyTestTimeout(t *testing.T, addr string, timeout time.Duration) *notifyTestConn {
+	t.Helper()
 
 	conn, err := net.Dial("tcp", addr)
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
-	if err := conn.SetDeadline(time.Now().Add(10 * time.Second)); err != nil {
+	if err := conn.SetDeadline(time.Now().Add(timeout)); err != nil {
 		t.Fatalf("SetDeadline: %v", err)
 	}
 
-	c := &notifyTestConn{t: t, conn: conn, br: bufio.NewReader(conn)}
+	c := &notifyTestConn{t: t, conn: conn, br: bufio.NewReader(conn), timeout: timeout}
 	if _, err := c.br.ReadString('\n'); err != nil { // greeting
 		t.Fatalf("reading greeting: %v", err)
 	}
@@ -74,6 +85,19 @@ func (c *notifyTestConn) close() {
 	c.conn.Close()
 }
 
+// write sends raw command or continuation bytes with a fresh write timeout.
+// It leaves the read deadline alone: a watcher may be polling with a much
+// shorter timeout than the one used for commands.
+func (c *notifyTestConn) write(line string) {
+	c.t.Helper()
+	if err := c.conn.SetWriteDeadline(time.Now().Add(c.timeout)); err != nil {
+		c.t.Fatalf("SetWriteDeadline: %v", err)
+	}
+	if _, err := c.conn.Write([]byte(line)); err != nil {
+		c.t.Fatalf("write %q: %v", line, err)
+	}
+}
+
 // cmd sends an IMAP command and returns every line up to and including the
 // tagged response.
 func (c *notifyTestConn) cmd(format string, args ...interface{}) string {
@@ -82,9 +106,12 @@ func (c *notifyTestConn) cmd(format string, args ...interface{}) string {
 	c.tag++
 	tag := fmt.Sprintf("T%d", c.tag)
 	line := tag + " " + fmt.Sprintf(format, args...)
-	if _, err := c.conn.Write([]byte(line + "\r\n")); err != nil {
-		c.t.Fatalf("write %q: %v", line, err)
+	// Each command gets its own time, however long the connection has been
+	// in use.
+	if err := c.conn.SetDeadline(time.Now().Add(c.timeout)); err != nil {
+		c.t.Fatalf("SetDeadline: %v", err)
 	}
+	c.write(line + "\r\n")
 
 	var buf bytes.Buffer
 	for {
@@ -102,8 +129,34 @@ func (c *notifyTestConn) cmd(format string, args ...interface{}) string {
 // readLine reads one server line, waiting up to the given duration.
 func (c *notifyTestConn) readLine(timeout time.Duration) (string, error) {
 	c.conn.SetReadDeadline(time.Now().Add(timeout))
-	defer c.conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+	defer c.conn.SetReadDeadline(time.Now().Add(c.timeout))
 	return c.br.ReadString('\n')
+}
+
+// The deadline bounds each command, not the connection's whole life: a test
+// that sends many commands on one connection, as
+// TestNotifyOverflowResumesDelivery does, must not run out of time on a
+// slow, loaded machine. Issue #177.
+func TestNotifyTestConnCommandDeadline(t *testing.T) {
+	addr, _, closer := newNotifyTestServer(t)
+	defer closer()
+
+	c := dialNotifyTest(t, addr)
+	defer c.close()
+	if resp := c.cmd("NOOP"); !strings.Contains(resp, " OK ") {
+		t.Fatalf("initial NOOP: %q", resp)
+	}
+	for i := 0; i < 3; i++ {
+		// Simulate the connection's previous deadline expiring while idle,
+		// without waiting for wall-clock time or narrowing the greeting's
+		// timeout on a loaded test machine.
+		if err := c.conn.SetDeadline(time.Now().Add(-time.Second)); err != nil {
+			t.Fatalf("expire deadline: %v", err)
+		}
+		if resp := c.cmd("NOOP"); !strings.Contains(resp, " OK ") {
+			t.Fatalf("NOOP %d: %q", i+1, resp)
+		}
+	}
 }
 
 func (c *notifyTestConn) login(t *testing.T) {
@@ -1101,9 +1154,7 @@ func TestNotifySelectedDelayedReleasedInIdle(t *testing.T) {
 
 	// Enter IDLE: the delayed expunge, and the append queued behind it, must
 	// be delivered.
-	if _, err := watcher.conn.Write([]byte("T99 IDLE\r\n")); err != nil {
-		t.Fatalf("write IDLE: %v", err)
-	}
+	watcher.write("T99 IDLE\r\n")
 	if line, err := watcher.readLine(5 * time.Second); err != nil || !strings.HasPrefix(line, "+") {
 		t.Fatalf("expected a continuation request for IDLE, got %q (%v)", line, err)
 	}
@@ -1123,7 +1174,7 @@ func TestNotifySelectedDelayedReleasedInIdle(t *testing.T) {
 			sawExists = true
 		}
 	}
-	watcher.conn.Write([]byte("DONE\r\n"))
+	watcher.write("DONE\r\n")
 	if !sawExpunge {
 		t.Error("the delayed EXPUNGE was not released during IDLE")
 	}
@@ -1169,9 +1220,7 @@ func TestCommandErrorLiteralRecovery(t *testing.T) {
 			// client is not going to send.
 			c.tag++
 			line := fmt.Sprintf("T%d %s\r\n", c.tag, tc.cmd)
-			if _, err := c.conn.Write([]byte(line)); err != nil {
-				t.Fatalf("write: %v", err)
-			}
+			c.write(line)
 			resp, err := c.readLine(5 * time.Second)
 			if err != nil {
 				t.Fatalf("no response to the failed command: %v", err)
@@ -1179,9 +1228,7 @@ func TestCommandErrorLiteralRecovery(t *testing.T) {
 			t.Logf("response: %q", resp)
 
 			// Whatever follows must not be executed as a command.
-			if _, err := c.conn.Write([]byte("T90 NOOP\r\n")); err != nil {
-				t.Fatalf("write: %v", err)
-			}
+			c.write("T90 NOOP\r\n")
 			next, err := c.readLine(5 * time.Second)
 			switch {
 			case tc.survive:
@@ -1215,9 +1262,7 @@ func TestNotifyNoneSilencesIdle(t *testing.T) {
 		t.Fatalf("NOTIFY NONE failed: %q", resp)
 	}
 
-	if _, err := watcher.conn.Write([]byte("T90 IDLE\r\n")); err != nil {
-		t.Fatalf("write IDLE: %v", err)
-	}
+	watcher.write("T90 IDLE\r\n")
 	if line, err := watcher.readLine(5 * time.Second); err != nil || !strings.HasPrefix(line, "+") {
 		t.Fatalf("expected a continuation request for IDLE, got %q (%v)", line, err)
 	}
@@ -1230,7 +1275,7 @@ func TestNotifyNoneSilencesIdle(t *testing.T) {
 	if line, err := watcher.readLine(500 * time.Millisecond); err == nil {
 		t.Errorf("IDLE pushed %q after NOTIFY NONE", line)
 	}
-	watcher.conn.Write([]byte("DONE\r\n"))
+	watcher.write("DONE\r\n")
 }
 
 // TestNotifyNoneBoundsSuppressedQueue verifies that the updates a NOTIFY NONE
@@ -1305,9 +1350,7 @@ func TestNotifyOverflowDuringIdle(t *testing.T) {
 				t.Fatalf("%s failed: %q", tc.notify, resp)
 			}
 
-			if _, err := watcher.conn.Write([]byte("T90 IDLE\r\n")); err != nil {
-				t.Fatalf("write IDLE: %v", err)
-			}
+			watcher.write("T90 IDLE\r\n")
 			if line, err := watcher.readLine(5 * time.Second); err != nil || !strings.HasPrefix(line, "+") {
 				t.Fatalf("expected a continuation request for IDLE, got %q (%v)", line, err)
 			}
@@ -1349,7 +1392,7 @@ func TestNotifyOverflowDuringIdle(t *testing.T) {
 				}
 			}
 
-			watcher.conn.Write([]byte("DONE\r\n"))
+			watcher.write("DONE\r\n")
 			for {
 				line, err := watcher.readLine(5 * time.Second)
 				if err != nil {
@@ -1384,9 +1427,7 @@ func TestNotifyRejectedFirstWatchLeavesDefaultDelivery(t *testing.T) {
 		t.Fatalf("expected the watch to be refused with BADEVENT, got %q", resp)
 	}
 
-	if _, err := watcher.conn.Write([]byte("T90 IDLE\r\n")); err != nil {
-		t.Fatalf("write IDLE: %v", err)
-	}
+	watcher.write("T90 IDLE\r\n")
 	if line, err := watcher.readLine(5 * time.Second); err != nil || !strings.HasPrefix(line, "+") {
 		t.Fatalf("expected a continuation request for IDLE, got %q (%v)", line, err)
 	}
@@ -1400,5 +1441,5 @@ func TestNotifyRejectedFirstWatchLeavesDefaultDelivery(t *testing.T) {
 	if err != nil || !strings.Contains(line, "1 EXISTS") {
 		t.Fatalf("expected IDLE to push EXISTS after a refused NOTIFY, got %q (%v)", line, err)
 	}
-	watcher.conn.Write([]byte("DONE\r\n"))
+	watcher.write("DONE\r\n")
 }
