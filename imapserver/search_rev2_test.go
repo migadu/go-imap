@@ -35,9 +35,18 @@ func newSearchRev2Conn(t *testing.T, caps imap.CapSet) *searchRev2Conn {
 // exercises on its own.
 func newSearchRev2ConnWrapped(t *testing.T, caps imap.CapSet, wrap func(imapserver.Session) imapserver.Session) *searchRev2Conn {
 	t.Helper()
+	rc := dialSearchRev2Conn(t, caps, wrap)
+	rc.do("LOGIN " + searchRev2Username + " " + searchRev2Password)
+	return rc
+}
 
-	const username, password = "user", "pass"
-	memUser := imapmemserver.NewUser(username, password)
+const searchRev2Username, searchRev2Password = "user", "pass"
+
+// dialSearchRev2Conn is newSearchRev2ConnWrapped before LOGIN.
+func dialSearchRev2Conn(t *testing.T, caps imap.CapSet, wrap func(imapserver.Session) imapserver.Session) *searchRev2Conn {
+	t.Helper()
+
+	memUser := imapmemserver.NewUser(searchRev2Username, searchRev2Password)
 	if err := memUser.Create(context.Background(), "INBOX", nil); err != nil {
 		t.Fatalf("Create INBOX: %v", err)
 	}
@@ -76,7 +85,6 @@ func newSearchRev2ConnWrapped(t *testing.T, caps imap.CapSet, wrap func(imapserv
 	if _, err := rc.br.ReadString('\n'); err != nil { // greeting
 		t.Fatalf("greeting: %v", err)
 	}
-	rc.do("LOGIN " + username + " " + password)
 	return rc
 }
 
