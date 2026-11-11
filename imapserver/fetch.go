@@ -3,6 +3,7 @@ package imapserver
 import (
 	"fmt"
 	"io"
+	"math"
 	"mime"
 	"sort"
 	"strings"
@@ -393,6 +394,10 @@ func readSectionPart(dec *imapwire.Decoder) (part []int, dot bool, err error) {
 		if num == 0 {
 			return nil, false, newClientBugError("Section part numbers start at 1")
 		}
+		// A 32-bit target's int would turn it negative.
+		if uint64(num) > math.MaxInt {
+			return nil, false, newClientBugError("Section part number too large")
+		}
 		part = append(part, int(num))
 	}
 }
@@ -426,6 +431,9 @@ func readSectionBinary(dec *imapwire.Decoder) ([]int, error) {
 		}
 		if num == 0 {
 			return l, newClientBugError("Section part numbers start at 1")
+		}
+		if uint64(num) > math.MaxInt {
+			return l, newClientBugError("Section part number too large")
 		}
 		l = append(l, int(num))
 

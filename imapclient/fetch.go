@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	netmail "net/mail"
 	"strings"
@@ -1840,6 +1841,10 @@ func readSectionPart(dec *imapwire.Decoder) (part []int, dot bool, err error) {
 		}
 		if num == 0 {
 			return nil, false, fmt.Errorf("in section-part: part numbers start at 1, got 0")
+		}
+		// A 32-bit target's int would turn it negative.
+		if uint64(num) > math.MaxInt {
+			return nil, false, fmt.Errorf("in section-part: part number %v is too large", num)
 		}
 		part = append(part, int(num))
 	}

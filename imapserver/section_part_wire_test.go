@@ -2,6 +2,7 @@ package imapserver_test
 
 import (
 	"fmt"
+	"math"
 	"strings"
 	"testing"
 )
@@ -42,7 +43,8 @@ func TestFetchSectionPartOutOfRange(t *testing.T) {
 		{"BINARY[4294967296]", false},
 		{"BINARY[0]", false},
 		{"BINARY.SIZE[0]", false},
-		{"BODY[4294967295]", true},
+		// Where int holds it; see TestFetchSectionPartBeyondInt.
+		{"BODY[4294967295]", math.MaxUint32 <= math.MaxInt},
 		{"BODY[1]", true},
 		{"BODY[1.1.MIME]", true},
 		{"BINARY[1]", true},
