@@ -1481,6 +1481,14 @@ func (ce *commandEncoder) end() {
 // A CRLF is written and the encoder is flushed. Callers must call
 // commandEncoder.end to release the lock.
 func (ce *commandEncoder) flush() {
+	if ce.Encoder.Refused() {
+		// The server answered the command in place of the continuation
+		// request for one of its literals (RFC 9051 section 4.3). That ends
+		// the command, at the CRLF which followed the literal's size: there
+		// is nothing to add, and no reason to give up on the connection.
+		ce.Encoder = nil
+		return
+	}
 	if err := ce.Encoder.CRLF(); err != nil {
 		// TODO: consider stashing the error in Client to return it in future
 		// calls
