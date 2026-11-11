@@ -901,8 +901,12 @@ func (dec *Decoder) LiteralReader() (lit *LiteralReader, nonSync, ok bool) {
 	if !dec.Special('{') {
 		return nil, false, false
 	}
-	var size int64
-	if !dec.ExpectNumber64(&size) {
+	// Defer a numeric overflow until after the complete header is validated.
+	// A valid synchronizing announcement has no payload before continuation,
+	// even when its size cannot be represented, and can still be answered BAD.
+	v, numberOK, numberErr := dec.number(63)
+	if !numberOK && numberErr == nil {
+		dec.Expect(false, "number64")
 		if dec.side == ConnSideServer {
 			dec.MarkDesynchronized()
 		}
@@ -926,6 +930,14 @@ func (dec *Decoder) LiteralReader() (lit *LiteralReader, nonSync, ok bool) {
 		}
 		return nil, false, false
 	}
+	if numberErr != nil {
+		if nonSync {
+			dec.MarkDesynchronized()
+		}
+		dec.returnErr(numberErr)
+		return nil, false, false
+	}
+	size := int64(v)
 	if size < 0 || size > absoluteMaxLiteralSize {
 		// Refused on sight, so the peer's syntax: an expect error, which a
 		// server answers with BAD. The octets of a non-synchronizing literal

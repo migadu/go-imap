@@ -29,6 +29,10 @@ func TestOversizedLiteralAnnouncementIsBad(t *testing.T) {
 			if !strings.HasPrefix(got, "a2 BAD") {
 				t.Errorf("answer was %q; want BAD", got)
 			}
+			fmt.Fprint(w.conn, "a3 NOOP\r\n")
+			if got := w.until("a3"); !strings.HasPrefix(got, "a3 OK") {
+				t.Errorf("NOOP after refused synchronizing literal = %q; want OK", got)
+			}
 		})
 	}
 }

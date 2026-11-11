@@ -7,6 +7,7 @@ func TestMalformedLiteralHeaderStopsRecovery(t *testing.T) {
 		"{3+}x\r\n",
 		"{3+x}\r\n",
 		"{9223372036854775808+}\r\n",
+		"{99999999999999999999999}x\r\n",
 		"{99999999999x+}\r\n",
 		"{-1+}\r\n",
 		"{x+}\r\n",
