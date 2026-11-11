@@ -119,6 +119,7 @@ func main() {
 			imap.CapIMAP4rev1: {},
 			imap.CapIMAP4rev2: {},
 			imap.CapWithin:    {},
+			imap.CapPreview:   {},
 		},
 		TLSConfig:    tlsConfig,
 		InsecureAuth: insecureAuth,

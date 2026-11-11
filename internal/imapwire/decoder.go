@@ -207,6 +207,43 @@ func (dec *Decoder) NextByteIsDigit() bool {
 	return ch >= '0' && ch <= '9'
 }
 
+// NextBytesFold reports whether the input continues with s, compared with
+// ASCII case folding, without consuming anything.
+//
+// It looks ahead one byte at a time and stops at the first byte that rules s
+// out, so it never waits for input a client has no reason to send: a single
+// Peek(len(s)) would hold a command line shorter than s until the read
+// deadline. On a read error it returns false and sets the decoder error, like
+// NextByteIs.
+func (dec *Decoder) NextBytesFold(s string) bool {
+	if dec.err != nil && !dec.discarding {
+		return false
+	}
+	if dec.literal {
+		return dec.returnErr(fmt.Errorf("imapwire: cannot decode while a literal is open"))
+	}
+	for i := 1; i <= len(s); i++ {
+		b, err := dec.r.Peek(i)
+		if err != nil {
+			if err == io.EOF {
+				err = io.ErrUnexpectedEOF
+			}
+			return dec.returnErr(err)
+		}
+		if foldASCII(b[i-1]) != foldASCII(s[i-1]) {
+			return false
+		}
+	}
+	return true
+}
+
+func foldASCII(ch byte) byte {
+	if 'a' <= ch && ch <= 'z' {
+		return ch - 'a' + 'A'
+	}
+	return ch
+}
+
 // EOF returns true if end-of-file is reached.
 //
 // A read failure that is not io.EOF -- a timeout, a reset connection, a TLS

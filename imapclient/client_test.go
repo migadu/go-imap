@@ -113,6 +113,7 @@ func newMemClientServerPair(t *testing.T) (net.Conn, io.Closer) {
 			imap.Cap("THREAD=REFERENCES"):     {},
 			imap.Cap("THREAD=ORDEREDSUBJECT"): {},
 			imap.Cap("MULTISEARCH"):           {},
+			imap.CapPreview:                   {},
 		},
 	})
 

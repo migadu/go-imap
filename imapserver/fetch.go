@@ -22,6 +22,10 @@ type fetchWriterOptions struct {
 		nonExtended bool // BODY
 	}
 	obsolete map[*imap.FetchItemBodySection]string
+	preview  struct {
+		requested bool // PREVIEW
+		lazy      bool // PREVIEW (LAZY)
+	}
 }
 
 func (c *Conn) handleFetch(dec *imapwire.Decoder, numKind NumKind) error {
@@ -218,6 +222,11 @@ func handleFetchAtt(c *Conn, dec *imapwire.Decoder, attName string, options *ima
 			// (RFC 7162 §3.1).
 			c.markCondStoreEnabled()
 		}
+	case "PREVIEW":
+		if !c.supportsPreview() {
+			return newClientBugError("Unknown FETCH data item")
+		}
+		return handleFetchPreview(dec, options, writerOptions)
 	case "RFC822": // equivalent to BODY[]
 		bs := &imap.FetchItemBodySection{}
 		writerOptions.obsolete[bs] = attName
@@ -305,6 +314,55 @@ func handleFetchBodyStructure(options *imap.FetchOptions, writerOptions *fetchWr
 	} else {
 		writerOptions.bodyStructure.nonExtended = true
 	}
+}
+
+// handleFetchPreview reads the optional modifiers of a PREVIEW data item
+// (RFC 8970 §6):
+//
+//	fetch-att =/ "PREVIEW" [SP "(" preview-mod *(SP preview-mod) ")"]
+//	preview-mod = "LAZY"
+//
+// A parenthesis after PREVIEW is not necessarily its own: in the bare form
+// "FETCH 1 PREVIEW (CHANGEDSINCE 5)" it opens the command's fetch-modifiers.
+// LAZY is the only preview-mod and no fetch-modifier starts with it, so the
+// list is PREVIEW's when it starts with LAZY, and anything else is left to the
+// caller.
+func handleFetchPreview(dec *imapwire.Decoder, options *imap.FetchOptions, writerOptions *fetchWriterOptions) error {
+	lazy := false
+	if dec.NextBytesFold(" (LAZY") {
+		if !dec.ExpectSP() || !dec.ExpectSpecial('(') {
+			return dec.Err()
+		}
+		for {
+			var mod string
+			if !dec.ExpectAtom(&mod) {
+				return dec.Err()
+			}
+			if strings.ToUpper(mod) != "LAZY" {
+				return newClientBugError("Unknown PREVIEW modifier")
+			}
+			lazy = true
+			if dec.Special(')') {
+				break
+			}
+			if !dec.ExpectSP() {
+				return dec.Err()
+			}
+		}
+	}
+	if err := dec.Err(); err != nil {
+		return err
+	}
+
+	// One response item answers every PREVIEW in the command, so NIL is only
+	// allowed if all of them were LAZY.
+	if options.Preview != nil {
+		lazy = lazy && options.Preview.Lazy
+	}
+	options.Preview = &imap.FetchItemPreview{Lazy: lazy}
+	writerOptions.preview.requested = true
+	writerOptions.preview.lazy = lazy
+	return nil
 }
 
 func readFetchAttName(dec *imapwire.Decoder) (string, error) {
@@ -635,6 +693,34 @@ func (w *FetchResponseWriter) WriteModSeq(modSeq uint64) {
 	}
 	w.writeItemSep()
 	w.enc.Atom("MODSEQ").SP().Special('(').ModSeq(modSeq).Special(')')
+}
+
+// WritePreview writes the message's PREVIEW (RFC 8970).
+//
+// Pass available=false when no preview could be produced without undue delay.
+// That is answered NIL only if the client asked for PREVIEW (LAZY); otherwise
+// it is the empty string, because a server MUST NOT return NIL to a request
+// made without LAZY. An empty text means the message has no preview, and
+// clients will not ask again.
+//
+// The item is dropped unless the command requested it, so backends may call
+// WritePreview unconditionally. The text is made safe for the wire: invalid
+// UTF-8 and control characters are removed and it is cut to 256 characters.
+func (w *FetchResponseWriter) WritePreview(text string, available bool) {
+	if !w.options.preview.requested {
+		return
+	}
+	w.writeItemSep()
+	w.enc.Atom("PREVIEW").SP()
+	if !available {
+		if w.options.preview.lazy {
+			w.enc.NIL()
+		} else {
+			w.enc.Quoted("")
+		}
+		return
+	}
+	w.enc.String(internal.SanitizePreview(text))
 }
 
 // WriteBodyStructure writes the message's body structure (either BODYSTRUCTURE

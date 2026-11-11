@@ -106,7 +106,7 @@ func hasFetchItems(options *imap.FetchOptions) bool {
 	}
 	return options.UID || options.BodyStructure != nil || options.Envelope ||
 		options.Flags || options.InternalDate || options.RFC822Size ||
-		options.ModSeq || len(options.BodySection) > 0 ||
+		options.ModSeq || options.Preview != nil || len(options.BodySection) > 0 ||
 		len(options.BinarySection) > 0 || len(options.BinarySectionSize) > 0
 }
 
@@ -131,6 +131,12 @@ func writeFetchItems(enc *imapwire.Encoder, numKind imapwire.NumKind, options *i
 	for k, req := range m {
 		if req {
 			listEnc.Item().Atom(k)
+		}
+	}
+	if options.Preview != nil {
+		item := listEnc.Item().Atom("PREVIEW")
+		if options.Preview.Lazy {
+			item.SP().Special('(').Atom("LAZY").Special(')')
 		}
 	}
 
@@ -489,6 +495,7 @@ var (
 	_ FetchItemData = FetchItemDataRFC822Size{}
 	_ FetchItemData = FetchItemDataUID{}
 	_ FetchItemData = FetchItemDataBodyStructure{}
+	_ FetchItemData = FetchItemDataPreview{}
 )
 
 type discarder interface {
@@ -620,6 +627,18 @@ type FetchItemDataModSeq struct {
 
 func (FetchItemDataModSeq) fetchItemData() {}
 
+// FetchItemDataPreview holds data returned by FETCH PREVIEW.
+//
+// This requires the PREVIEW extension (RFC 8970).
+type FetchItemDataPreview struct {
+	// Preview is nil when the server answered NIL: the preview was not
+	// readily available for a PREVIEW (LAZY) request, and may be asked for
+	// again without LAZY. An empty string means the message has no preview.
+	Preview *string
+}
+
+func (FetchItemDataPreview) fetchItemData() {}
+
 // FetchBodySectionBuffer is a buffer for the data returned by
 // FetchItemBodySection.
 type FetchBodySectionBuffer struct {
@@ -649,6 +668,9 @@ type FetchMessageBuffer struct {
 	BinarySection     []FetchBinarySectionBuffer
 	BinarySectionSize []FetchItemDataBinarySectionSize
 	ModSeq            uint64 // requires CONDSTORE
+	// Preview is nil if the server answered NIL or sent no preview; see
+	// FetchItemDataPreview. Requires PREVIEW.
+	Preview *string
 
 	opts *Options
 }
@@ -711,6 +733,8 @@ func (buf *FetchMessageBuffer) populateItemData(item FetchItemData) error {
 		buf.BinarySectionSize = append(buf.BinarySectionSize, item)
 	case FetchItemDataModSeq:
 		buf.ModSeq = item.ModSeq
+	case FetchItemDataPreview:
+		buf.Preview = item.Preview
 	default:
 		panic(fmt.Errorf("unsupported fetch item data %T", item))
 	}
@@ -1175,6 +1199,27 @@ func (c *Client) handleFetch(seqNum uint32) (err error) {
 				return dec.Err()
 			}
 			item = FetchItemDataModSeq{ModSeq: modSeq}
+		case "PREVIEW":
+			if !dec.ExpectSP() {
+				return dec.Err()
+			}
+			// ExpectNString would turn NIL into "", but the two mean different
+			// things here: "not available yet" and "no preview".
+			var s string
+			var preview *string
+			if dec.Atom(&s) {
+				if !dec.Expect(strings.EqualFold(s, "NIL"), "nstring") {
+					return dec.Err()
+				}
+			} else {
+				if !dec.ExpectString(&s) {
+					return dec.Err()
+				}
+				// Don't trust the server to keep RFC 8970's limits.
+				s = internal.SanitizePreview(s)
+				preview = &s
+			}
+			item = FetchItemDataPreview{Preview: preview}
 		default:
 			return fmt.Errorf("unsupported msg-att name: %q", attName)
 		}

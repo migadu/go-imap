@@ -61,6 +61,9 @@ func (msg *message) fetch(w *imapserver.FetchResponseWriter, options *imap.Fetch
 	if options.ModSeq {
 		w.WriteModSeq(msg.modSeq)
 	}
+	if options.Preview != nil {
+		w.WritePreview(msg.preview(), true)
+	}
 
 	for _, bs := range options.BodySection {
 		buf := imapserver.ExtractBodySection(bytes.NewReader(msg.buf), bs)
@@ -99,6 +102,36 @@ func (msg *message) fetch(w *imapserver.FetchResponseWriter, options *imap.Fetch
 
 func (msg *message) envelope() *imap.Envelope {
 	return imapserver.ExtractEnvelope(msg.header)
+}
+
+// preview returns the start of the message's first inline text/plain part,
+// whitespace collapsed, up to 200 characters. RFC 8970 leaves the algorithm
+// to the server; this one is only meant to be predictable in tests.
+func (msg *message) preview() string {
+	entity, err := gomessage.Read(bytes.NewReader(msg.buf))
+	if err != nil && !gomessage.IsUnknownCharset(err) {
+		return ""
+	}
+	mr := mail.NewReader(entity)
+	for {
+		part, err := mr.NextPart()
+		if err != nil {
+			return ""
+		}
+		h, ok := part.Header.(*mail.InlineHeader)
+		if !ok {
+			continue
+		}
+		if t, _, _ := h.ContentType(); t != "text/plain" {
+			continue
+		}
+		b, _ := io.ReadAll(io.LimitReader(part.Body, 64<<10))
+		text := strings.Join(strings.Fields(string(b)), " ")
+		if r := []rune(text); len(r) > 200 {
+			text = string(r[:200])
+		}
+		return text
+	}
 }
 
 func (msg *message) flagList() []imap.Flag {

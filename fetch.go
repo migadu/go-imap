@@ -19,6 +19,7 @@ type FetchOptions struct {
 	BinarySection     []*FetchItemBinarySection     // requires IMAP4rev2 or BINARY
 	BinarySectionSize []*FetchItemBinarySectionSize // requires IMAP4rev2 or BINARY
 	ModSeq            bool                          // requires CONDSTORE
+	Preview           *FetchItemPreview             // requires PREVIEW
 
 	ChangedSince uint64 // requires CONDSTORE
 	Vanished     bool   // requires QRESYNC, only valid for UID FETCH
@@ -27,6 +28,13 @@ type FetchOptions struct {
 // FetchItemBodyStructure contains FETCH options for the body structure.
 type FetchItemBodyStructure struct {
 	Extended bool
+}
+
+// FetchItemPreview contains FETCH options for the message preview (RFC 8970).
+type FetchItemPreview struct {
+	// Lazy lets the server answer NIL when it cannot produce the preview
+	// without undue delay. The client may ask again later without Lazy.
+	Lazy bool
 }
 
 // PartSpecifier describes whether to fetch a part's header, body, or both.
