@@ -63,6 +63,12 @@ func (c *Conn) handleAppend(tag string, dec *imapwire.Decoder) error {
 			if !dec.ExpectSP() || !dec.ExpectSpecial('(') || !dec.ExpectSpecial('~') {
 				return dec.Err()
 			}
+		case "CATENATE":
+			sess, ok := c.session.(SessionCatenate)
+			if !ok || !c.configuredCaps().Has(imap.CapCatenate) {
+				return newClientBugError("Unknown APPEND data extension")
+			}
+			return c.handleAppendCatenate(tag, dec, sess, mailbox, &options)
 		default:
 			return newClientBugError("Unknown APPEND data extension")
 		}
