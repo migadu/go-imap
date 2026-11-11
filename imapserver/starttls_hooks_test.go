@@ -29,7 +29,9 @@ func startTLSHookServer(t *testing.T, options *imapserver.Options) (*imapserver.
 		}
 	}
 	options.Caps = imap.CapSet{imap.CapIMAP4rev1: {}}
-	options.Logger = log.New(io.Discard, "", 0)
+	if options.Logger == nil {
+		options.Logger = log.New(io.Discard, "", 0)
+	}
 	srv := imapserver.New(options)
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -48,6 +50,23 @@ func startTLSHookServer(t *testing.T, options *imapserver.Options) (*imapserver.
 		t.Fatalf("greeting = %q, %v", line, err)
 	}
 	return srv, conn, br
+}
+
+type syncTLSHookLog struct {
+	mu  sync.Mutex
+	buf strings.Builder
+}
+
+func (l *syncTLSHookLog) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.buf.Write(p)
+}
+
+func (l *syncTLSHookLog) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.buf.String()
 }
 
 func readTLSHookResponse(t *testing.T, br *bufio.Reader, tag string) string {
@@ -229,8 +248,10 @@ func TestSTARTTLSHooksOmitRejectedCommands(t *testing.T) {
 
 func TestSTARTTLSHandshakeFailureOmitsCompletionAndPlaintextReply(t *testing.T) {
 	var starts, completions atomic.Int32
-	_, conn, br := startTLSHookServer(t, &imapserver.Options{
+	var logged syncTLSHookLog
+	srv, conn, br := startTLSHookServer(t, &imapserver.Options{
 		TLSConfig:              &tls.Config{Certificates: []tls.Certificate{debugTestCert(t)}},
+		Logger:                 log.New(&logged, "", 0),
 		OnStartTLS:             func(net.Conn) { starts.Add(1) },
 		OnTLSHandshakeComplete: func(net.Conn, *tls.Conn) { completions.Add(1) },
 	})
@@ -242,6 +263,15 @@ func TestSTARTTLSHandshakeFailureOmitsCompletionAndPlaintextReply(t *testing.T) 
 	got, err := io.ReadAll(br)
 	if err != nil {
 		t.Fatal(err)
+	}
+	// The failure is reported as what it is, not as a command-read error.
+	srv.Close()
+	deadline := time.Now().Add(2 * time.Second)
+	for logged.String() == "" && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if out := logged.String(); !strings.Contains(out, "STARTTLS handshake failed (remote ") || strings.Contains(out, "failed to read command") {
+		t.Fatalf("handshake failure log = %q", out)
 	}
 	if len(got) != 0 {
 		t.Fatalf("server wrote a protocol reply after failed TLS negotiation: %q", got)
