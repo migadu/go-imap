@@ -21,7 +21,13 @@ type notifyTestConn struct {
 	conn net.Conn
 	br   *bufio.Reader
 	tag  int
+	// timeout bounds the greeting, and is the read deadline readLine
+	// restores.
+	timeout time.Duration
 }
+
+// notifyTestTimeout is notifyTestConn.timeout for dialNotifyTest.
+const notifyTestTimeout = 10 * time.Second
 
 func newNotifyTestServer(t *testing.T) (addr string, user *imapmemserver.User, closer func()) {
 	t.Helper()
@@ -54,16 +60,21 @@ func newNotifyTestServer(t *testing.T) (addr string, user *imapmemserver.User, c
 
 func dialNotifyTest(t *testing.T, addr string) *notifyTestConn {
 	t.Helper()
+	return dialNotifyTestTimeout(t, addr, notifyTestTimeout)
+}
+
+func dialNotifyTestTimeout(t *testing.T, addr string, timeout time.Duration) *notifyTestConn {
+	t.Helper()
 
 	conn, err := net.Dial("tcp", addr)
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
-	if err := conn.SetDeadline(time.Now().Add(10 * time.Second)); err != nil {
+	if err := conn.SetDeadline(time.Now().Add(timeout)); err != nil {
 		t.Fatalf("SetDeadline: %v", err)
 	}
 
-	c := &notifyTestConn{t: t, conn: conn, br: bufio.NewReader(conn)}
+	c := &notifyTestConn{t: t, conn: conn, br: bufio.NewReader(conn), timeout: timeout}
 	if _, err := c.br.ReadString('\n'); err != nil { // greeting
 		t.Fatalf("reading greeting: %v", err)
 	}
@@ -102,8 +113,26 @@ func (c *notifyTestConn) cmd(format string, args ...interface{}) string {
 // readLine reads one server line, waiting up to the given duration.
 func (c *notifyTestConn) readLine(timeout time.Duration) (string, error) {
 	c.conn.SetReadDeadline(time.Now().Add(timeout))
-	defer c.conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+	defer c.conn.SetReadDeadline(time.Now().Add(c.timeout))
 	return c.br.ReadString('\n')
+}
+
+// The deadline bounds each command, not the connection's whole life: a test
+// that sends many commands on one connection, as
+// TestNotifyOverflowResumesDelivery does, must not run out of time on a
+// slow, loaded machine. Issue #177.
+func TestNotifyTestConnCommandDeadline(t *testing.T) {
+	addr, _, closer := newNotifyTestServer(t)
+	defer closer()
+
+	c := dialNotifyTestTimeout(t, addr, 300*time.Millisecond)
+	defer c.close()
+	for i := 0; i < 3; i++ {
+		time.Sleep(200 * time.Millisecond)
+		if resp := c.cmd("NOOP"); !strings.Contains(resp, " OK ") {
+			t.Fatalf("NOOP %d: %q", i+1, resp)
+		}
+	}
 }
 
 func (c *notifyTestConn) login(t *testing.T) {
