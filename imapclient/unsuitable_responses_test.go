@@ -144,3 +144,63 @@ func TestResponsesUnsuitableForState(t *testing.T) {
 		t.Errorf("Mailbox() = %+v after UNSELECT, want nil", mbox)
 	}
 }
+
+// A status response is allowed before authentication, but its response code
+// must not manufacture an authenticated state or deliver mailbox data. Include
+// a FETCH literal so dropping an unsuitable response also exercises draining.
+func TestUnsuitableResponseCodes(t *testing.T) {
+	for _, authenticated := range []bool{false, true} {
+		t.Run(map[bool]string{false: "before authentication", true: "without a selected mailbox"}[authenticated], func(t *testing.T) {
+			clientConn, serverConn := net.Pipe()
+			defer clientConn.Close()
+			defer serverConn.Close()
+			go func() {
+				greeting := "* OK [CAPABILITY IMAP4rev1] ready\r\n"
+				if authenticated {
+					greeting = "* PREAUTH [CAPABILITY IMAP4rev1] ready\r\n"
+				}
+				io.WriteString(serverConn, greeting)
+				br := bufio.NewReader(serverConn)
+				for {
+					line, err := br.ReadString('\n')
+					if err != nil {
+						return
+					}
+					tag := strings.Fields(line)[0]
+					io.WriteString(serverConn, "* OK [PERMANENTFLAGS (\\Seen)] flags\r\n"+
+						"* OK [NOTIFICATIONOVERFLOW] overflow\r\n"+
+						"* OK [CLOSED] closed\r\n"+
+						"* 1 FETCH (BODY[] {5}\r\nhello)\r\n"+
+						"* LIST () \"/\" Other\r\n"+
+						"* STATUS Other (MESSAGES 1)\r\n"+tag+" OK done\r\n")
+				}
+			}()
+			log := &handlerLog{}
+			client := imapclient.New(clientConn, &imapclient.Options{
+				UnilateralDataHandler: &imapclient.UnilateralDataHandler{
+					Mailbox:              func(*imapclient.UnilateralDataMailbox) { log.note("Mailbox") },
+					Fetch:                func(*imapclient.FetchMessageData) { log.note("Fetch") },
+					List:                 func(*imap.ListData) { log.note("List") },
+					Status:               func(*imap.StatusData) { log.note("Status") },
+					NotificationOverflow: func() { log.note("NotificationOverflow") },
+				},
+			})
+			defer client.Close()
+			if err := client.Noop().Wait(); err != nil {
+				t.Fatal(err)
+			}
+			wantState := imap.ConnStateNotAuthenticated
+			var wantCalls []string
+			if authenticated {
+				wantState = imap.ConnStateAuthenticated
+				wantCalls = []string{"List", "NotificationOverflow", "Status"}
+			}
+			if state := client.State(); state != wantState {
+				t.Errorf("State() = %v, want %v", state, wantState)
+			}
+			if calls := log.take(); !slices.Equal(calls, wantCalls) {
+				t.Errorf("handlers called = %v, want %v", calls, wantCalls)
+			}
+		})
+	}
+}

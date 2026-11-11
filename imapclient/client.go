@@ -1112,6 +1112,9 @@ func (c *Client) readResponseData(typ string) error {
 				if err != nil {
 					return err
 				}
+				if c.ignoresMailboxData() {
+					break
+				}
 
 				c.mutex.Lock()
 				if c.state == imap.ConnStateSelected {
@@ -1173,7 +1176,7 @@ func (c *Client) readResponseData(typ string) error {
 			case "NOMODSEQ":
 				// ignore
 			case "NOTIFICATIONOVERFLOW":
-				if handler := c.options.unilateralDataHandler().NotificationOverflow; handler != nil {
+				if handler := c.options.unilateralDataHandler().NotificationOverflow; handler != nil && !c.ignoresUnsolicitedData() {
 					handler()
 				}
 			default: // [SP 1*<any TEXT-CHAR except "]">]
@@ -1198,7 +1201,9 @@ func (c *Client) readResponseData(typ string) error {
 			return fmt.Errorf("in resp-text: %w", c.dec.Err())
 		}
 
-		if code == "CLOSED" {
+		// CLOSED ends a selection; it cannot authenticate an unauthenticated
+		// connection (and thereby admit unsolicited LIST/STATUS data).
+		if code == "CLOSED" && c.State() == imap.ConnStateSelected {
 			c.setState(imap.ConnStateAuthenticated)
 		}
 
