@@ -2,6 +2,7 @@ package imapwire
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io"
 	"strconv"
@@ -30,6 +31,10 @@ func IsAtomChar(ch byte) bool {
 func isAStringChar(ch byte) bool {
 	return IsAtomChar(ch) || ch == ']'
 }
+
+// ErrMaxSize is the decoder's error once it has read more than
+// Decoder.MaxSize.
+var ErrMaxSize = errors.New("imapwire: max size exceeded")
 
 // DecoderExpectError is an error due to the Decoder.Expect family of methods.
 type DecoderExpectError struct {
@@ -144,7 +149,7 @@ func (dec *Decoder) readByte() (byte, bool) {
 		return 0, false
 	}
 	if dec.MaxSize > 0 && dec.readBytes > dec.MaxSize {
-		return 0, dec.returnErr(fmt.Errorf("imapwire: max size exceeded"))
+		return 0, dec.returnErr(ErrMaxSize)
 	}
 	dec.crlf = false
 	if dec.literal {
