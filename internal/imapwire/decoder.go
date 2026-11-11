@@ -355,6 +355,9 @@ const MaxDiscardLiteralSize = 64 << 10
 // literal whose announcement was never parsed — the stream is marked
 // desynchronised instead of guessing; see Desynchronized.
 func (dec *Decoder) DiscardLine() {
+	if dec.desynced {
+		return
+	}
 	dec.discarding = true
 	defer func() { dec.discarding = false }()
 
@@ -387,6 +390,12 @@ func (dec *Decoder) DiscardLine() {
 	if dec.side == ConnSideServer && endsWithNonSyncLiteral(text) {
 		dec.desynced = true
 	}
+}
+
+// MarkDesynchronized prevents further command recovery when unread input can no
+// longer be classified safely. The server must close the connection.
+func (dec *Decoder) MarkDesynchronized() {
+	dec.desynced = true
 }
 
 // Desynchronized reports whether the decoder had to give up on resynchronising
@@ -894,6 +903,9 @@ func (dec *Decoder) LiteralReader() (lit *LiteralReader, nonSync, ok bool) {
 	}
 	var size int64
 	if !dec.ExpectNumber64(&size) {
+		if dec.side == ConnSideServer {
+			dec.MarkDesynchronized()
+		}
 		return nil, false, false
 	}
 	// Refuse obviously hostile sizes. The IMAP grammar permits arbitrary
@@ -903,6 +915,16 @@ func (dec *Decoder) LiteralReader() (lit *LiteralReader, nonSync, ok bool) {
 	const absoluteMaxLiteralSize = 1 << 30
 	if dec.side == ConnSideServer {
 		nonSync = dec.acceptByte('+')
+	}
+	// Once a literal prefix has been consumed, malformed framing cannot be
+	// recovered by discarding only the remaining header suffix. Payload may
+	// already follow it, so the server must stop instead of guessing a new
+	// command boundary.
+	if !dec.ExpectSpecial('}') || !dec.ExpectCRLF() {
+		if dec.side == ConnSideServer {
+			dec.MarkDesynchronized()
+		}
+		return nil, false, false
 	}
 	if size < 0 || size > absoluteMaxLiteralSize {
 		// Refused on sight, so the peer's syntax: an expect error, which a
@@ -918,9 +940,7 @@ func (dec *Decoder) LiteralReader() (lit *LiteralReader, nonSync, ok bool) {
 		})
 		return nil, false, false
 	}
-	if !dec.ExpectSpecial('}') || !dec.ExpectCRLF() {
-		return nil, false, false
-	}
+
 	dec.literal = true
 	lit = &LiteralReader{
 		dec:     dec,

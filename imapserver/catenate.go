@@ -213,6 +213,8 @@ func (r *catenateReader) drain() {
 			return errCatenateStopped
 		}
 		if size > r.drainLimit()-r.textSize {
+			r.stopped = true
+			r.dec.MarkDesynchronized()
 			return errCatenateStopped
 		}
 		r.textSize += size
@@ -293,23 +295,21 @@ func (r *catenateReader) nextText() (*CatenatePart, error) {
 		Text: "The TEXT parts exceed the APPEND limit",
 	}
 
-	// Refuse, before any of it is read, a literal that takes the TEXT parts
-	// over what may be read even to be dropped. The decoder then knows the
-	// octets of a non-synchronizing literal are still to come, and
-	// DiscardLine skips them, or gives up on the connection when they are
-	// too many to read for nothing.
-	prevCheck := dec.CheckLiteralFunc
-	dec.CheckLiteralFunc = func(size int64) error {
-		if size > r.drainLimit()-r.textSize {
-			return tooBig
-		}
-		return nil
-	}
+	// Read only the validated header before deciding whether any payload may
+	// be discarded. A failed aggregate budget must not hand the last literal
+	// to generic recovery under a fresh per-literal allowance.
 	lit, nonSync, err := dec.ExpectLiteralReader()
-	dec.CheckLiteralFunc = prevCheck
 	if err != nil {
 		return nil, err
 	}
+	if lit.Size() > r.drainLimit()-r.textSize {
+		r.stopped = true
+		if nonSync {
+			dec.MarkDesynchronized()
+		}
+		return nil, tooBig
+	}
+
 	r.textSize += lit.Size()
 
 	if r.draining {
