@@ -21,6 +21,11 @@ type searchCapsCommandCase struct {
 	send         func(*Client) error
 }
 
+type searchCapsTLSCapture struct {
+	bytes []byte
+	err   error
+}
+
 func searchCapsCommandCases() []searchCapsCommandCase {
 	criteria := &imap.SearchCriteria{Body: []string{"café"}, ModSeq: &imap.SearchCriteriaModSeq{ModSeq: 5}}
 	sortOptions := &SortOptions{SortCriteria: []imap.SortCriterion{{Key: imap.SortKeyArrival}}, SearchCriteria: criteria}
@@ -39,11 +44,12 @@ func searchCapsCommandCases() []searchCapsCommandCase {
 // Set up a real TLS, authenticated, selected session while CAPABILITY requests
 // are refused. The next request, initiated by the search constructor itself,
 // learns the capabilities supplied by the test. No scheduler ordering is used.
-func newSearchCapsTLSClient(t *testing.T, cert tls.Certificate, caps string, hold bool) (*Client, <-chan string, <-chan struct{}) {
+func newSearchCapsTLSClient(t *testing.T, cert tls.Certificate, caps string, hold bool) (*Client, <-chan string, <-chan struct{}, <-chan searchCapsTLSCapture) {
 	t.Helper()
 	clientConn, serverConn := net.Pipe()
 	commands := make(chan string, 1)
 	requested := make(chan struct{})
+	captured := make(chan searchCapsTLSCapture, 1)
 	go func() {
 		io.WriteString(serverConn, "* OK [CAPABILITY IMAP4rev1 STARTTLS] ready\r\n")
 		br := bufio.NewReader(serverConn)
@@ -68,7 +74,8 @@ func newSearchCapsTLSClient(t *testing.T, cert tls.Certificate, caps string, hol
 			case command == "CAPABILITY":
 				once.Do(func() { close(requested) })
 				if hold {
-					io.Copy(io.Discard, br)
+					bytes, err := io.ReadAll(br)
+					captured <- searchCapsTLSCapture{bytes: bytes, err: err}
 					return
 				}
 				io.WriteString(conn, "* CAPABILITY "+caps+"\r\n"+tag+" OK caps\r\n")
@@ -127,7 +134,7 @@ func newSearchCapsTLSClient(t *testing.T, cert tls.Certificate, caps string, hol
 	if _, err := client.Select("INBOX", nil).Wait(); err != nil {
 		t.Fatal(err)
 	}
-	return client, commands, requested
+	return client, commands, requested, captured
 }
 
 func TestSearchCommandsLearnPostTLSCharsetAndCapabilities(t *testing.T) {
@@ -142,7 +149,7 @@ func TestSearchCommandsLearnPostTLSCharsetAndCapabilities(t *testing.T) {
 	} {
 		for _, tc := range searchCapsCommandCases() {
 			t.Run(mode.name+"/"+tc.name, func(t *testing.T) {
-				client, commands, _ := newSearchCapsTLSClient(t, cert, mode.caps, false)
+				client, commands, _, _ := newSearchCapsTLSClient(t, cert, mode.caps, false)
 				done := make(chan error, 1)
 				go func() { done <- tc.send(client) }()
 				select {
@@ -177,7 +184,7 @@ func TestSearchCommandsCapabilityWaitIsCancellableAfterTLS(t *testing.T) {
 	cert := startTLSRefreshCertificate(t)
 	for _, tc := range searchCapsCommandCases() {
 		t.Run(tc.name, func(t *testing.T) {
-			client, commands, requested := newSearchCapsTLSClient(t, cert, "", true)
+			client, _, requested, captured := newSearchCapsTLSClient(t, cert, "", true)
 			done := make(chan error, 1)
 			go func() { done <- tc.send(client) }()
 			select {
@@ -196,8 +203,16 @@ func TestSearchCommandsCapabilityWaitIsCancellableAfterTLS(t *testing.T) {
 			case <-time.After(3 * time.Second):
 				t.Fatal("constructor did not observe cancellation")
 			}
-			if len(commands) != 0 {
-				t.Error("search command was sent after cancellation")
+			select {
+			case result := <-captured:
+				if len(result.bytes) != 0 {
+					t.Errorf("bytes sent while capabilities were unavailable or after cancellation: %q", result.bytes)
+				}
+				if result.err != nil && !errors.Is(result.err, io.ErrUnexpectedEOF) && !errors.Is(result.err, net.ErrClosed) && !errors.Is(result.err, io.ErrClosedPipe) {
+					t.Errorf("capture after Close: %v", result.err)
+				}
+			case <-time.After(3 * time.Second):
+				t.Fatal("server did not reach EOF after Close")
 			}
 		})
 	}
