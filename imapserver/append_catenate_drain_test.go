@@ -39,6 +39,21 @@ func TestAppendCatenateUnauthenticated(t *testing.T) {
 	}
 }
 
+// What is read for nothing is bounded, URL parts sent as literals included:
+// past that, the connection ends.
+func TestAppendCatenateUnauthenticatedBounded(t *testing.T) {
+	rc := dialCatenateConn(t, 1<<20)
+
+	url := strings.Repeat("u", 4000)
+	cmd := "t1 APPEND INBOX CATENATE (URL {4000+}\r\n" + url + strings.Repeat(" URL {4000+}\r\n"+url, 19) + ")\r\n"
+	// The server may stop reading before the end.
+	go rc.c.Write([]byte(cmd))
+	rest, _ := io.ReadAll(rc.br)
+	if !strings.HasPrefix(string(rest), "* BYE ") {
+		t.Errorf("APPEND CATENATE before LOGIN with 80000 octets of URL literals → %q, want BYE", rest)
+	}
+}
+
 // RFC 4469 §4.2 allows TOOBIG for a message over the server's limit. The
 // non-synchronizing parts after the one that went over are read too.
 func TestAppendCatenateTooBigDrainsLaterParts(t *testing.T) {

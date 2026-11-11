@@ -76,7 +76,15 @@ func (c *Conn) handleAppendCatenate(tag string, dec *imapwire.Decoder, sess Sess
 	if !dec.ExpectSP() || !dec.ExpectSpecial('(') {
 		return dec.Err()
 	}
+
+	c.setReadTimeout(literalReadTimeout)
+	defer c.setReadTimeout(cmdReadTimeout)
+
 	if err := c.checkState(imap.ConnStateAuthenticated); err != nil {
+		// As for a plain APPEND, what the client sent of the command is read
+		// first. Nothing is appended, so no APPEND limit applies: only what
+		// may be read for nothing.
+		(&catenateReader{conn: c, dec: dec}).drain()
 		return err
 	}
 
@@ -84,9 +92,6 @@ func (c *Conn) handleAppendCatenate(tag string, dec *imapwire.Decoder, sess Sess
 	if appendLimitSession, ok := c.session.(SessionAppendLimit); ok {
 		limit = int64(appendLimitSession.AppendLimit())
 	}
-
-	c.setReadTimeout(literalReadTimeout)
-	defer c.setReadTimeout(cmdReadTimeout)
 
 	parts := &catenateReader{conn: c, dec: dec, limit: limit}
 	data, appendErr := sess.AppendCatenate(c.ctx, mailbox, parts, options)
@@ -96,6 +101,8 @@ func (c *Conn) handleAppendCatenate(tag string, dec *imapwire.Decoder, sess Sess
 	if !parts.done {
 		// The command has failed, but the client may have sent more of it
 		// already. Read that, so the next command starts where it should.
+		// What the drain runs into is not reported: the command has failed
+		// already, for the reason below.
 		parts.drain()
 	}
 	if parts.err != nil {
@@ -163,10 +170,20 @@ type catenateReader struct {
 	// done is set once the closing parenthesis and the CRLF have been read.
 	done bool
 	// draining is set once the command has failed: literals are read and
-	// dropped, and none is asked for.
+	// dropped, and none is asked for. stopped is set at a synchronizing
+	// literal not asked for: the client sends nothing more.
 	draining bool
-	// err is the first error of the list itself, as opposed to the session's.
+	stopped  bool
+	// err is the first error of the list itself, as opposed to the session's,
+	// met before the command failed.
 	err error
+}
+
+// drainLimit bounds the octets of the TEXT parts once the command has failed:
+// the APPEND limit, which the server was prepared to read anyway, or what
+// Decoder.DiscardLine reads for nothing, if that is more.
+func (r *catenateReader) drainLimit() int64 {
+	return max(r.limit, imapwire.MaxDiscardLiteralSize)
 }
 
 func (r *catenateReader) Next() (*CatenatePart, error) {
@@ -187,29 +204,28 @@ func (r *catenateReader) Next() (*CatenatePart, error) {
 // have sent it.
 func (r *catenateReader) drain() {
 	r.draining = true
-	// A URL may come as a literal too.
+	// A URL may come as a literal too. Its octets count with the TEXT parts'
+	// against drainLimit.
 	checkBuffered := r.dec.CheckBufferedLiteralFunc
 	r.dec.CheckBufferedLiteralFunc = func(size int64, nonSync bool) error {
 		if !nonSync {
+			r.stopped = true
 			return errCatenateStopped
 		}
+		if size > r.drainLimit()-r.textSize {
+			return errCatenateStopped
+		}
+		r.textSize += size
 		return checkBuffered(size, nonSync)
 	}
 	defer func() { r.dec.CheckBufferedLiteralFunc = checkBuffered }()
-	for !r.done {
-		_, err := r.next()
-		if err == nil {
-			continue
-		}
-		if err == io.EOF || err == errCatenateStopped {
+	for !r.done && !r.stopped {
+		if _, err := r.next(); err != nil {
+			// At a synchronizing literal the client has stopped sending.
+			// Past an error of the decoder there is nothing more to parse;
+			// Decoder.DiscardLine takes over.
 			return
 		}
-		if r.err == nil {
-			r.err = err
-		}
-		// Past an error of the decoder there is nothing more to parse;
-		// Decoder.DiscardLine takes over.
-		return
 	}
 }
 
@@ -271,18 +287,21 @@ func (r *catenateReader) next() (*CatenatePart, error) {
 func (r *catenateReader) nextText() (*CatenatePart, error) {
 	dec := r.dec
 
-	// Refuse a literal that takes the TEXT parts over the limit before any
-	// of it is read. The decoder then knows the octets of a non-synchronizing
-	// literal are still to come, and DiscardLine skips them, or gives up on
-	// the connection when they are too many to read for nothing.
+	tooBig := &imap.Error{
+		Type: imap.StatusResponseTypeNo,
+		Code: imap.ResponseCodeTooBig,
+		Text: "The TEXT parts exceed the APPEND limit",
+	}
+
+	// Refuse, before any of it is read, a literal that takes the TEXT parts
+	// over what may be read even to be dropped. The decoder then knows the
+	// octets of a non-synchronizing literal are still to come, and
+	// DiscardLine skips them, or gives up on the connection when they are
+	// too many to read for nothing.
 	prevCheck := dec.CheckLiteralFunc
 	dec.CheckLiteralFunc = func(size int64) error {
-		if size > r.limit-r.textSize {
-			return &imap.Error{
-				Type: imap.StatusResponseTypeNo,
-				Code: imap.ResponseCodeTooBig,
-				Text: "The TEXT parts exceed the APPEND limit",
-			}
+		if size > r.drainLimit()-r.textSize {
+			return tooBig
 		}
 		return nil
 	}
@@ -295,10 +314,24 @@ func (r *catenateReader) nextText() (*CatenatePart, error) {
 
 	if r.draining {
 		if !nonSync {
+			r.stopped = true
 			return nil, errCatenateStopped
 		}
 		r.lit = lit
 		return &CatenatePart{Text: lit}, nil
+	}
+
+	if r.textSize > r.limit {
+		// Over the APPEND limit, but not over what may be read to drop it:
+		// a non-synchronizing literal is read like the parts after it, so
+		// the command ends cleanly. A synchronizing one was not sent, and is
+		// not asked for.
+		if nonSync {
+			r.lit = lit
+		} else {
+			r.stopped = true
+		}
+		return nil, tooBig
 	}
 
 	if err := r.conn.acceptLiteral(lit.Size(), nonSync); err != nil {

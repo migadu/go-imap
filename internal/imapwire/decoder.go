@@ -338,12 +338,12 @@ func (dec *Decoder) DiscardUntilByte(untilCh byte) {
 	}
 }
 
-// maxDiscardLiteralSize bounds how many octets of a non-synchronizing literal
+// MaxDiscardLiteralSize bounds how many octets of a non-synchronizing literal
 // DiscardLine drains while recovering from a command error. It is well above
 // the 4096-octet cap LITERAL- puts on non-synchronizing literals; a larger one
 // is refused rather than read, so recovery can never be turned into an
 // unbounded read.
-const maxDiscardLiteralSize = 64 << 10
+const MaxDiscardLiteralSize = 64 << 10
 
 // DiscardLine skips the remainder of the current line, so that the next
 // command can be read from a clean position.
@@ -360,7 +360,7 @@ func (dec *Decoder) DiscardLine() {
 
 	if n := dec.pendingLiteral; n > 0 {
 		dec.pendingLiteral = 0
-		if n > maxDiscardLiteralSize {
+		if n > MaxDiscardLiteralSize {
 			dec.desynced = true
 			return
 		}
