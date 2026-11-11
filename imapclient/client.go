@@ -1271,9 +1271,10 @@ func (c *Client) readResponseTagged(tag, typ string) (startTLS *startTLSCommand,
 		startTLS = cmd
 		// RFC 9051 §6.2.1: "Once TLS has been started, the client MUST
 		// discard cached information about server capabilities". The
-		// CAPABILITY command this sends waits for STARTTLS, which holds the
-		// command lock until the handshake is done, so it goes over TLS.
-		c.setCaps(nil)
+		// Capability refresh waits for STARTTLS, which holds the command
+		// lock until the handshake is done, so it goes over TLS. A request
+		// still waiting to send can satisfy the refresh without duplication.
+		c.resetCaps(cmd)
 	}
 
 	if cmdErr == nil && code != "CAPABILITY" {
