@@ -242,6 +242,9 @@ type Client struct {
 	pendingCmds []command
 	contReqs    []continuationRequest
 	closed      bool
+	// capsRefresh is the request for the capabilities the client has under
+	// way on its own account, if any.
+	capsRefresh *capsRefresh
 	// awaitingResp is true while the read goroutine is parked waiting for the
 	// first byte of the next response. Only then may another goroutine retune
 	// the read deadline: once a response is being decoded the deadline belongs
@@ -504,6 +507,21 @@ func (c *Client) Caps() imap.CapSet {
 		return caps
 	}
 
+	// A request already under way answers the question: wait for it rather
+	// than send another.
+	c.mutex.Lock()
+	refresh := c.capsRefresh
+	c.mutex.Unlock()
+	if refresh != nil {
+		<-refresh.done
+		c.mutex.Lock()
+		caps = c.caps
+		c.mutex.Unlock()
+		if caps != nil {
+			return caps
+		}
+	}
+
 	capCmd := c.Capability()
 	caps, err := capCmd.Wait()
 	if err != nil {
@@ -512,15 +530,22 @@ func (c *Client) Caps() imap.CapSet {
 	return caps
 }
 
+// capsRefresh is a CAPABILITY command the client sends on its own, after the
+// capabilities it knew stopped being valid.
+type capsRefresh struct {
+	// seq is the command's commandBase.seq, zero until it is sent. Guarded by
+	// Client.mutex.
+	seq uint64
+	// done is closed once the command has completed.
+	done chan struct{}
+}
+
 func (c *Client) setCaps(caps imap.CapSet) {
 	// If the capabilities are being reset, request the updated capabilities
 	// from the server
 	if caps == nil {
-		// We need to send the CAPABILITY command in a separate goroutine:
-		// setCaps might be called with Client.encMutex locked
-		go func() {
-			c.Capability().Wait()
-		}()
+		c.resetCaps(nil)
+		return
 	}
 
 	c.mutex.Lock()
@@ -528,6 +553,44 @@ func (c *Client) setCaps(caps imap.CapSet) {
 	quotedUTF8 := c.useQuotedUTF8Locked()
 	c.dec.QuotedUTF8 = quotedUTF8
 	c.mutex.Unlock()
+}
+
+// resetCaps forgets the capabilities and requests them again.
+//
+// after is the command whose completion made them invalid, if any, and if a
+// request sent after it may stand in for a new one. A request the client has
+// under way and not sent before that command asks about the state the
+// command brought about: the server answers the two in order (RFC 9051
+// section 5.5 rules out reordering commands when the result of one depends on
+// the other). So it is not repeated.
+func (c *Client) resetCaps(after command) {
+	c.mutex.Lock()
+	c.caps = nil
+	quotedUTF8 := c.useQuotedUTF8Locked()
+	c.dec.QuotedUTF8 = quotedUTF8
+
+	if refresh := c.capsRefresh; refresh != nil && after != nil && (refresh.seq == 0 || refresh.seq > after.base().seq) {
+		c.mutex.Unlock()
+		return
+	}
+	refresh := &capsRefresh{done: make(chan struct{})}
+	c.capsRefresh = refresh
+	c.mutex.Unlock()
+
+	// We need to send the CAPABILITY command in a separate goroutine:
+	// resetCaps might be called with Client.encMutex locked
+	go func() {
+		defer close(refresh.done)
+		cmd := &CapabilityCommand{refresh: refresh}
+		c.beginCommand("CAPABILITY", cmd).end()
+		cmd.Wait()
+
+		c.mutex.Lock()
+		if c.capsRefresh == refresh {
+			c.capsRefresh = nil
+		}
+		c.mutex.Unlock()
+	}()
 }
 
 // Mailbox returns the state of the currently selected mailbox.
@@ -621,7 +684,11 @@ func (c *Client) beginCommand(name string, cmd command) *commandEncoder {
 	baseCmd := cmd.base()
 	*baseCmd = commandBase{
 		tag:  tag,
+		seq:  c.cmdTag,
 		done: make(chan error, 1),
+	}
+	if capCmd, ok := cmd.(*CapabilityCommand); ok && capCmd.refresh != nil {
+		capCmd.refresh.seq = c.cmdTag
 	}
 
 	c.pendingCmds = append(c.pendingCmds, cmd)
@@ -1052,19 +1119,25 @@ func (c *Client) readResponseTagged(tag, typ string) (startTLS *startTLSCommand,
 		return nil, fmt.Errorf("in resp-cond-state: expected OK, NO or BAD status condition, but got %v", typ)
 	}
 
-	c.completeCommand(cmd, cmdErr)
-
 	if cmd, ok := cmd.(*startTLSCommand); ok && cmdErr == nil {
 		startTLS = cmd
 	}
 
 	if cmdErr == nil && code != "CAPABILITY" {
 		switch cmd.(type) {
-		case *startTLSCommand, *loginCommand, *authenticateCommand, *unauthenticateCommand:
+		case *loginCommand, *authenticateCommand:
 			// These commands invalidate the capabilities
+			c.resetCaps(cmd)
+		case *startTLSCommand, *unauthenticateCommand:
+			// So do these. What is known must not outlive the change of
+			// security layer or of user: always ask anew.
 			c.setCaps(nil)
 		}
 	}
+	// Waiters may immediately ask for capabilities in the new state. Publish
+	// their invalidation (and the refresh to await) before completing LOGIN or
+	// AUTHENTICATE, just as completeCommand publishes the connection state.
+	c.completeCommand(cmd, cmdErr)
 
 	return startTLS, nil
 }
@@ -1654,7 +1727,9 @@ type command interface {
 }
 
 type commandBase struct {
-	tag  string
+	tag string
+	// seq orders the commands by when they were sent.
+	seq  uint64
 	done chan error
 	err  error
 }
