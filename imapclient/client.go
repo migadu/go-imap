@@ -120,6 +120,12 @@ type Options struct {
 	// Raise it when fetching large messages over slow links. As with
 	// ResponseTimeout, there is no value meaning "no timeout".
 	LiteralReadTimeout time.Duration
+	// AutoIdle makes the client run IDLE by itself while it has nothing else
+	// to do. Once no command has been in flight for this long, and if the
+	// server supports IDLE, the client starts IDLE; it ends it before the
+	// next command is sent. Mailbox updates the server sends meanwhile reach
+	// UnilateralDataHandler. If zero, the client never idles on its own.
+	AutoIdle time.Duration
 }
 
 // responseTimeout returns ResponseTimeout, or the default if it is unset.
@@ -224,6 +230,9 @@ type Client struct {
 	bw       *bufio.Writer
 	dec      *imapwire.Decoder
 	encMutex sync.Mutex
+	// autoIdleMutex serializes starting the IDLE the client runs on its own
+	// account with sending any other command. It is taken before encMutex.
+	autoIdleMutex sync.Mutex
 
 	greetingCh   chan struct{}
 	greetingRecv bool
@@ -242,6 +251,13 @@ type Client struct {
 	pendingCmds []command
 	contReqs    []continuationRequest
 	closed      bool
+
+	// autoIdle is the IDLE command the client runs on its own account
+	// (Options.AutoIdle), if any; autoIdleTimer starts it, and
+	// autoIdleRefused is set once the server has refused one.
+	autoIdle        *IdleCommand
+	autoIdleTimer   *time.Timer
+	autoIdleRefused bool
 	// capsRefresh is the request for the capabilities the client has under
 	// way on its own account, if any.
 	capsRefresh *capsRefresh
@@ -618,6 +634,9 @@ func (c *Client) Close() error {
 	c.mutex.Lock()
 	alreadyClosed := c.closed
 	c.closed = true
+	if c.autoIdleTimer != nil {
+		c.autoIdleTimer.Stop()
+	}
 	if !alreadyClosed {
 		close(c.closeCh)
 	}
@@ -674,6 +693,18 @@ func (c *Client) beginCommand(name string, cmd command) *commandEncoder {
 	// bounded, and it unblocks early if the connection fails.
 	c.awaitGreeting()
 
+	// The IDLE the client runs on its own makes way for any command but
+	// itself.
+	// Until this command is among the pending ones, which keeps IDLE from
+	// starting, hold off the timer that starts it: IDLE keeps the encoder
+	// for as long as it runs.
+	holdsAutoIdle := false
+	if idle, ok := cmd.(*idleCommand); c.options.AutoIdle > 0 && (!ok || !idle.auto) {
+		c.autoIdleMutex.Lock()
+		holdsAutoIdle = true
+		c.stopAutoIdleLocked()
+	}
+
 	c.encMutex.Lock() // unlocked by commandEncoder.end
 
 	c.mutex.Lock()
@@ -703,6 +734,9 @@ func (c *Client) beginCommand(name string, cmd command) *commandEncoder {
 	literalPlus := c.caps.Has(imap.CapLiteralPlus)
 
 	c.mutex.Unlock()
+	if holdsAutoIdle {
+		c.autoIdleMutex.Unlock()
+	}
 
 	c.setWriteTimeout(cmdWriteTimeout)
 
@@ -833,6 +867,11 @@ func (c *Client) completeCommand(cmd command, err error) {
 	case *ExpungeCommand:
 		close(cmd.seqNums)
 	}
+
+	// Start the inactivity interval after state transitions have completed.
+	c.mutex.Lock()
+	c.armAutoIdleLocked()
+	c.mutex.Unlock()
 
 	// Wait must observe the final connection state, mailbox snapshot and
 	// closed result channels when it returns.
@@ -1323,6 +1362,9 @@ func (c *Client) readResponseData(typ string) error {
 				c.setCaps(nil) // request initial capabilities
 			}
 			close(c.greetingCh)
+			c.mutex.Lock()
+			c.armAutoIdleLocked()
+			c.mutex.Unlock()
 		}
 	case "ID":
 		return c.handleID()
