@@ -31,6 +31,9 @@ func (c *Client) handleCapability() error {
 type CapabilityCommand struct {
 	commandBase
 	caps imap.CapSet
+	// refresh is set on a command the client sends on its own; see
+	// Client.resetCaps.
+	refresh *capsRefresh
 }
 
 func (cmd *CapabilityCommand) Wait() (imap.CapSet, error) {

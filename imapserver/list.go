@@ -306,7 +306,14 @@ func readListMailbox(dec *imapwire.Decoder) (string, error) {
 	if dec.QuotedUTF8 {
 		return mailbox, nil
 	}
-	return utf7.Decode(mailbox)
+	pattern, err := utf7.Decode(mailbox)
+	if err != nil {
+		// The client's syntax, as in Decoder.ExpectMailbox.
+		return "", &imapwire.DecoderExpectError{
+			Message: fmt.Sprintf("invalid mailbox pattern: %v", err),
+		}
+	}
+	return pattern, nil
 }
 
 func isListChar(ch byte) bool {

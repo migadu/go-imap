@@ -350,6 +350,13 @@ func writeSearchKey(enc *imapwire.Encoder, criteria *imap.SearchCriteria, condst
 		encodeItem().Atom("SMALLER").SP().Number64(criteria.Smaller)
 	}
 
+	if criteria.Younger > 0 {
+		encodeItem().Atom("YOUNGER").SP().Number(criteria.Younger)
+	}
+	if criteria.Older > 0 {
+		encodeItem().Atom("OLDER").SP().Number(criteria.Older)
+	}
+
 	if modSeq := criteria.ModSeq; modSeq != nil && condstore {
 		encodeItem().Atom("MODSEQ")
 		if modSeq.MetadataName != "" && modSeq.MetadataType != "" {

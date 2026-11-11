@@ -51,7 +51,9 @@ func (c *Conn) handleAppend(tag string, dec *imapwire.Decoder) error {
 	// data-extension parsing. Otherwise an atom here is a data extension
 	// such as UTF8 (RFC 6855).
 	var dataExt string
-	if !dec.Special('~') && dec.Atom(&dataExt) {
+	if dec.Special('~') {
+		options.Binary = true
+	} else if dec.Atom(&dataExt) {
 		// Keywords are case-insensitive; normalize once so later comparisons
 		// (e.g. the closing ')' check) don't depend on the wire casing.
 		dataExt = strings.ToUpper(dataExt)

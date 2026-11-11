@@ -234,11 +234,17 @@ func canonicalMailboxAttr(s string) imap.MailboxAttr {
 }
 
 func canonicalCap(s string) imap.Cap {
-	// Only two caps are not fully uppercase
+	// Only two cap names are not fully uppercase
 	for _, cap := range []imap.Cap{imap.CapIMAP4rev1, imap.CapIMAP4rev2} {
 		if strings.EqualFold(s, string(cap)) {
 			return cap
 		}
+	}
+	// RIGHTS= lists rights, which are lowercase letters and digits and have
+	// no uppercase form (RFC 4314 sections 2 and 6): only its name is ours
+	// to canonicalize.
+	if name, rights, ok := strings.Cut(s, "="); ok && strings.EqualFold(name, "RIGHTS") {
+		return imap.Cap("RIGHTS=" + rights)
 	}
 	return imap.Cap(strings.ToUpper(s))
 }
