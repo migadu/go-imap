@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -65,7 +66,7 @@ acl_driver = vfile
 		t.Fatalf("failed to start Dovecot: %v", err)
 	}
 
-	srv := &dovecotServer{conn: serverConn, exited: make(chan struct{})}
+	srv := &dovecotServer{conn: serverConn, cfgFilename: cfgFilename, exited: make(chan struct{})}
 	go func() {
 		// Ends when the pipe is closed; Dovecot exits when its input ends.
 		io.Copy(stdin, serverConn)
@@ -90,10 +91,45 @@ acl_driver = vfile
 }
 
 type dovecotServer struct {
-	conn net.Conn
+	conn        net.Conn
+	cfgFilename string
 	// exited is closed once Dovecot has exited; waitErr is set by then.
 	exited  chan struct{}
 	waitErr error
+}
+
+// version returns the version of Dovecot, such as "2.4.5". It is the first
+// word of the first line of "doveadm config -n", which reads
+// "# 2.4.5 (0cbb641e3e): /path/to/dovecot.conf".
+func (srv *dovecotServer) version(t *testing.T) string {
+	t.Helper()
+	out, err := exec.Command("doveadm", "-c", srv.cfgFilename, "config", "-n").Output()
+	if err != nil {
+		t.Fatalf("doveadm config: %v", err)
+	}
+	line, _, _ := strings.Cut(string(out), "\n")
+	fields := strings.Fields(strings.TrimPrefix(line, "#"))
+	if !strings.HasPrefix(line, "#") || len(fields) == 0 {
+		t.Fatalf("doveadm config: no version in %q", line)
+	}
+	return fields[0]
+}
+
+// skipDovecotNotModSeq skips the test if server is a Dovecot whose SEARCH NOT
+// MODSEQ n matches no message (#157). For Dovecot 2.4.5 SEARCH NOT MODSEQ 100
+// is empty though the only message is at MODSEQ 3, while SEARCH NOT NOT MODSEQ
+// 1 and SEARCH OR MODSEQ 100 NOT MODSEQ 100 both find that message.
+// TestNotModSeqWire checks the commands these tests send.
+func skipDovecotNotModSeq(t *testing.T, server io.Closer) {
+	t.Helper()
+	srv, ok := server.(*dovecotServer)
+	if !ok {
+		return
+	}
+	switch v := srv.version(t); v {
+	case "2.4.5":
+		t.Skipf("Dovecot %v matches no message for SEARCH NOT MODSEQ (#157)", v)
+	}
 }
 
 func (srv *dovecotServer) Close() error {
