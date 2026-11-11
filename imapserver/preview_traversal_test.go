@@ -52,6 +52,17 @@ type previewTraversalFixture struct {
 }
 
 func previewTraversalFixtures() []previewTraversalFixture {
+	inline := "Content-Type: text/plain; charset=utf-8\r\n\r\nActual inline body\r\n"
+	attached := "Content-Type: multipart/mixed; boundary=attached\r\nContent-Disposition: attachment; filename=attached.mime\r\n\r\n" +
+		"--attached\r\nContent-Type: text/plain\r\n\r\nAttachment contents\r\n--attached--\r\n"
+	private := "Content-Type: text/plain\r\nContent-Disposition: x-private; filename=private.txt\r\n\r\nPrivate attachment\r\n"
+	privateMultipart := strings.Replace(attached, "attachment; filename=attached.mime", "x-private; filename=private.mime", 1)
+	digest := "Content-Type: multipart/digest; boundary=digest\r\n\r\n" +
+		"--digest\r\n\r\nFrom: sender@example.com\r\nSubject: Encapsulated message\r\nContent-Type: text/plain\r\n\r\nDigest message text\r\n--digest--\r\n"
+	mixed := func(parts ...string) string {
+		return "Content-Type: multipart/mixed; boundary=selection\r\n\r\n--selection\r\n" +
+			strings.Join(parts, "\r\n--selection\r\n") + "\r\n--selection--\r\n"
+	}
 	return []previewTraversalFixture{
 		{name: "depth limit", raw: previewDeepMIME(128), limited: true},
 		{name: "part limit", raw: previewWideMIME(2048), limited: true},
@@ -71,6 +82,19 @@ func previewTraversalFixtures() []previewTraversalFixture {
 			limited: true,
 		},
 		{name: "normal MIME", raw: previewNormalMIME, want: "Keep this inline text."},
+		{name: "multipart attachment before inline body", raw: mixed(attached, inline), want: "Actual inline body"},
+		{name: "unknown disposition before inline body", raw: mixed(private, inline), want: "Actual inline body"},
+		{name: "unknown multipart disposition before inline body", raw: mixed(privateMultipart, inline), want: "Actual inline body"},
+		{name: "digest implicit message before inline body", raw: mixed(digest, inline), want: "Actual inline body"},
+		{name: "only multipart attachment", raw: attached},
+		{name: "only unknown disposition", raw: private},
+		{name: "only implicit digest messages", raw: digest},
+		{
+			name: "explicit plain digest part",
+			raw: "Content-Type: multipart/digest; boundary=explicit\r\n\r\n" +
+				"--explicit\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nExplicit digest text.\r\n--explicit--\r\n",
+			want: "Explicit digest text.",
+		},
 		{
 			name: "chosen plain prefix kept on raw budget cutoff",
 			raw: "Content-Type: multipart/mixed; boundary=tailbudget\r\n\r\n" +
