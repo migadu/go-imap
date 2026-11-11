@@ -38,6 +38,9 @@ type SortData struct {
 }
 
 func (c *Client) sort(numKind imapwire.NumKind, options *SortOptions) *SortCommand {
+	// Learn the capabilities before taking the encoder, which a CAPABILITY
+	// command needs too.
+	condStore := c.Caps().Has(imap.CapCondStore)
 	cmd := &SortCommand{numKind: numKind}
 	enc := c.beginCommand(uidCmdName("SORT", numKind), cmd)
 
@@ -70,7 +73,7 @@ func (c *Client) sort(numKind imapwire.NumKind, options *SortOptions) *SortComma
 		enc.Atom(string(criterion.Key))
 	})
 	enc.SP().Atom("UTF-8").SP()
-	writeSearchKey(enc.Encoder, options.SearchCriteria, c.Caps().Has(imap.CapCondStore))
+	writeSearchKey(enc.Encoder, options.SearchCriteria, condStore)
 	enc.end()
 	return cmd
 }
