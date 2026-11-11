@@ -58,6 +58,18 @@ func TestLoginRefusedBeforeLiteral(t *testing.T) {
 	}
 }
 
+// IDLE also waits for a continuation, but flushes the command before waiting.
+// A refusal must release its encoder without adding bytes to the next command.
+func TestIdleRefusedBeforeContinuation(t *testing.T) {
+	client := newRefusingServer(t)
+	if _, err := client.Idle(); err == nil {
+		t.Fatal("Idle() = nil error, want refusal")
+	}
+	if err := client.Noop().Wait(); err != nil {
+		t.Fatalf("Noop() after a refused IDLE = %v", err)
+	}
+}
+
 // newRefusingServer starts a scripted server which answers APPEND and LOGIN
 // with a tagged NO as soon as it has read their first line, that is, in
 // place of the continuation request for their literal.
@@ -88,6 +100,8 @@ func newRefusingServer(t *testing.T) *imapclient.Client {
 				io.WriteString(serverConn, fields[0]+" NO [TRYCREATE] No such mailbox\r\n")
 			case "LOGIN":
 				io.WriteString(serverConn, fields[0]+" NO [AUTHENTICATIONFAILED] Not today\r\n")
+			case "IDLE":
+				io.WriteString(serverConn, fields[0]+" NO Not today\r\n")
 			case "NOOP":
 				io.WriteString(serverConn, fields[0]+" OK NOOP completed\r\n")
 			default:
