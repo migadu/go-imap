@@ -433,7 +433,7 @@ func (mbox *MailboxView) Fetch(ctx context.Context, w *imapserver.FetchWriter, n
 		}
 
 		respWriter := w.CreateMessage(mbox.tracker.EncodeSeqNum(seqNum))
-		err = msg.fetch(respWriter, options)
+		err = msg.fetch(ctx, respWriter, options)
 	})
 	if flagsChanged {
 		mbox.Mailbox.notifyEvent(evFlagChange)

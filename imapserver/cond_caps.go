@@ -97,6 +97,15 @@ func (c *Conn) supportsWithin() bool {
 	return c.availableCapsSet().Has(imap.CapWithin)
 }
 
+// supportsPreview reports whether the session supports the PREVIEW FETCH data
+// item (RFC 8970).
+func (c *Conn) supportsPreview() bool {
+	if capSession, ok := c.session.(SessionCapabilities); ok {
+		return capSession.GetCapabilities().Has(imap.CapPreview)
+	}
+	return c.availableCapsSet().Has(imap.CapPreview)
+}
+
 // supportsQResync returns true if the connection supports QRESYNC extension.
 // This checks both session-specific capabilities (if available) and server capabilities.
 func (c *Conn) supportsQResync() bool {

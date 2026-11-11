@@ -2,6 +2,7 @@ package imapmemserver
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"strings"
@@ -28,7 +29,7 @@ type message struct {
 	modSeq uint64
 }
 
-func (msg *message) fetch(w *imapserver.FetchResponseWriter, options *imap.FetchOptions) (err error) {
+func (msg *message) fetch(ctx context.Context, w *imapserver.FetchResponseWriter, options *imap.FetchOptions) (err error) {
 	// Close the response writer exactly once, even on an early error return.
 	// CreateMessage holds the connection's encMutex until Close, so a fetch
 	// that errored midway without closing would leak the mutex and wedge the
@@ -60,6 +61,13 @@ func (msg *message) fetch(w *imapserver.FetchResponseWriter, options *imap.Fetch
 	}
 	if options.ModSeq {
 		w.WriteModSeq(msg.modSeq)
+	}
+	if options.Preview != nil {
+		text, available, err := msg.preview(ctx)
+		if err != nil {
+			return err
+		}
+		w.WritePreview(text, available)
 	}
 
 	for _, bs := range options.BodySection {

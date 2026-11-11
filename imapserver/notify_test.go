@@ -45,6 +45,7 @@ func newNotifyTestServer(t *testing.T) (addr string, user *imapmemserver.User, c
 			imap.CapNotify:    {},
 			imap.CapMetadata:  {},
 			imap.CapIdle:      {},
+			imap.CapPreview:   {},
 		},
 		InsecureAuth: true,
 	})
@@ -789,6 +790,7 @@ func TestNotifyMessageNewFetchAttNames(t *testing.T) {
 		{name: "Body", fetchAtts: "UID BODY", want: "BODY "},
 		{name: "ObsoleteRFC822Text", fetchAtts: "UID RFC822.TEXT", want: "RFC822.TEXT"},
 		{name: "ObsoleteRFC822Header", fetchAtts: "UID RFC822.HEADER", want: "RFC822.HEADER"},
+		{name: "Preview", fetchAtts: "UID PREVIEW (LAZY)", want: "PREVIEW "},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			addr, _, closer := newNotifyTestServer(t)

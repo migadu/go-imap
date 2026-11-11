@@ -129,6 +129,7 @@ func (c *Conn) availableCaps() []imap.Cap {
 			imap.CapESort,
 			imap.CapID,
 			imap.CapWithin,
+			imap.CapPreview,
 			imap.Cap("THREAD=REFERENCES"),
 			imap.Cap("THREAD=REFS"),
 			imap.Cap("THREAD=ORDEREDSUBJECT"),
