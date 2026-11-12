@@ -161,7 +161,7 @@ func TestAppendFramingBeforeBackendCommit(t *testing.T) {
 
 type appendSuffixTimeoutSession struct {
 	imapserver.Session
-	conn    *appendDrainTimeoutConn
+	conn    *appendSuffixTimeoutConn
 	commits *atomic.Int64
 }
 
@@ -169,33 +169,46 @@ func (s *appendSuffixTimeoutSession) Append(ctx context.Context, mailbox string,
 	// The announcement has been read, but the synchronizing upload has not
 	// arrived yet. Expire the socket after its body is read, so only the
 	// command suffix encounters a timeout.
-	s.conn.armed.Store(true)
+	s.conn.remaining.Store(r.Size())
 	return (&appendFramingSession{readFull: true, commits: s.commits}).Append(ctx, mailbox, r, options)
 }
 
 // Unlike the rejected-literal helper, this expires the deadline after receiving
 // the body. This leaves buffered body bytes readable and makes the missing
 // suffix fail on the next socket read.
-type appendSuffixTimeoutConn struct{ *appendDrainTimeoutConn }
+type appendSuffixTimeoutConn struct {
+	net.Conn
+	remaining atomic.Int64
+	forced    *atomic.Bool
+}
 
 func (c *appendSuffixTimeoutConn) Read(p []byte) (int, error) {
+	if c.remaining.Load() > 0 && len(p) > 1 {
+		// Deliberately fragment the body, so the deadline cannot be tied to
+		// a single socket read completing the entire upload.
+		p = p[:1]
+	}
 	n, err := c.Conn.Read(p)
-	if n > 0 && c.armed.Swap(false) {
+	if n > 0 && c.remaining.Load() > 0 && c.remaining.Add(-int64(n)) == 0 {
 		if deadlineErr := c.Conn.SetReadDeadline(time.Now().Add(-time.Second)); deadlineErr != nil {
 			return n, deadlineErr
 		}
+		c.forced.Store(true)
 	}
 	return n, err
 }
 
-type appendSuffixTimeoutListener struct{ net.Listener }
+type appendSuffixTimeoutListener struct {
+	net.Listener
+	forced *atomic.Bool
+}
 
 func (l appendSuffixTimeoutListener) Accept() (net.Conn, error) {
 	conn, err := l.Listener.Accept()
 	if err != nil {
 		return nil, err
 	}
-	return &appendSuffixTimeoutConn{&appendDrainTimeoutConn{Conn: conn}}, nil
+	return &appendSuffixTimeoutConn{Conn: conn, forced: l.forced}, nil
 }
 
 func TestAppendIncompleteSuffixDoesNotCommit(t *testing.T) {
@@ -203,15 +216,18 @@ func TestAppendIncompleteSuffixDoesNotCommit(t *testing.T) {
 		for _, timeout := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/timeout=%v", format.name, timeout), func(t *testing.T) {
 				var commits atomic.Int64
+				var forced atomic.Bool
 				wrap := func(session imapserver.Session, conn *imapserver.Conn) imapserver.Session {
 					if timeout {
-						return &appendSuffixTimeoutSession{Session: session, conn: conn.NetConn().(*appendSuffixTimeoutConn).appendDrainTimeoutConn, commits: &commits}
+						return &appendSuffixTimeoutSession{Session: session, conn: conn.NetConn().(*appendSuffixTimeoutConn), commits: &commits}
 					}
 					return &appendFramingSession{Session: session, readFull: true, commits: &commits}
 				}
 				var listeners []func(net.Listener) net.Listener
 				if timeout {
-					listeners = append(listeners, func(listener net.Listener) net.Listener { return appendSuffixTimeoutListener{listener} })
+					listeners = append(listeners, func(listener net.Listener) net.Listener {
+						return appendSuffixTimeoutListener{Listener: listener, forced: &forced}
+					})
 				}
 				conn, br := dialAppendRecoveryServer(t, wrap, listeners...)
 				enableAppendUTF8(t, conn, br)
@@ -235,6 +251,9 @@ func TestAppendIncompleteSuffixDoesNotCommit(t *testing.T) {
 					}
 				}()
 				assertAppendTimeoutClosed(t, br)
+				if timeout && !forced.Load() {
+					t.Fatal("suffix timeout was not forced after the complete body")
+				}
 			})
 		}
 	}
