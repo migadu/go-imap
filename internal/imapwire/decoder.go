@@ -1049,6 +1049,7 @@ type LiteralReader struct {
 	dec     *Decoder
 	size    int64
 	r       io.Reader
+	err     error // first error Read returned, io.EOF included
 }
 
 func newLiteralReaderFromString(s string) *LiteralReader {
@@ -1063,6 +1064,9 @@ func (lit *LiteralReader) Size() int64 {
 }
 
 func (lit *LiteralReader) Read(b []byte) (int, error) {
+	if lit.err != nil {
+		return 0, lit.err
+	}
 	n, err := lit.r.Read(b)
 	if err == io.EOF {
 		lit.cancel(nil)
@@ -1072,6 +1076,14 @@ func (lit *LiteralReader) Read(b []byte) (int, error) {
 		// decodes report the i/o error instead of our own "cannot decode while
 		// a literal is open".
 		lit.cancel(err)
+	}
+	if err != nil {
+		// The literal is over: later reads return the same error and must
+		// not reach dec.r again. After a short or failed read the limitReader
+		// still has octets left and would read on, while dec.r now belongs to
+		// whatever decodes past the literal (in the client, the reader
+		// goroutine, running concurrently with the literal's consumer).
+		lit.err = err
 	}
 	return n, err
 }
