@@ -1480,7 +1480,7 @@ func readBodyDepth(dec *imapwire.Decoder, options *Options, depth int) (imap.Bod
 		// record one, and the decoder reads nothing more after an error.
 		token = "body-type-1part"
 		var subtype string
-		if !dec.Expect(atom == "NIL", "media type") || !dec.ExpectSP() || !dec.ExpectNString(&subtype) {
+		if !dec.Expect(strings.EqualFold(atom, "NIL"), "media type") || !dec.ExpectSP() || !dec.ExpectNString(&subtype) {
 			err = dec.Err()
 		} else {
 			bs, err = readBodyType1part(dec, "", subtype, options, depth)
