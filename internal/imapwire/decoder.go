@@ -796,6 +796,7 @@ func (dec *Decoder) List(f func() error) (isList bool, err error) {
 	if !dec.Special('(') {
 		return false, nil
 	}
+	dec.skipExtraListSP()
 	if dec.Special(')') {
 		return true, nil
 	}
@@ -819,7 +820,26 @@ func (dec *Decoder) List(f func() error) (isList bool, err error) {
 		} else if !dec.ExpectSP() {
 			return true, dec.Err()
 		}
+		if dec.skipExtraListSP() && dec.Special(')') {
+			return true, nil
+		}
 	}
+}
+
+// skipExtraListSP skips the SPs some servers put inside a parenthesized list
+// where the grammar has none or one: "( \HasNoChildren)", "(\Seen  \Draft)",
+// "(MESSAGES 11 UNSEEN 7 )". It reports whether this decoder tolerates them.
+//
+// Only a client does. A server keeps the grammar and answers such a list from
+// a client with BAD, as it always has. Only literal SP bytes are consumed:
+// SP() would report true without consuming before a "(".
+func (dec *Decoder) skipExtraListSP() bool {
+	if dec.side != ConnSideClient {
+		return false
+	}
+	for dec.Special(' ') {
+	}
+	return true
 }
 
 func (dec *Decoder) ExpectList(f func() error) error {
