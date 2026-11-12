@@ -1126,13 +1126,19 @@ func (lit *LiteralReader) cancel(err error) {
 	}
 	if err != nil {
 		lit.dec.returnErr(err)
+		// A failed upload may leave a live socket positioned inside a
+		// literal, including one whose continuation was already sent. Never
+		// resume server command parsing after a literal I/O failure.
+		if lit.dec.side == ConnSideServer {
+			lit.dec.MarkDesynchronized()
+		}
 	}
 	lit.dec.literal = false
 	// A non-synchronizing literal's octets are already on the wire: remember
 	// what is left so DiscardLine can skip it instead of parsing it as the next
-	// command. A synchronizing literal was never sent — the continuation
-	// request that would have asked for it is not coming — so there is nothing
-	// to skip.
+	// command. A synchronizing literal rejected before its continuation has
+	// nothing to skip; an I/O failure after acceptance already made the server
+	// stream unusable above.
 	if n := lit.remaining(); n > 0 && lit.nonSync {
 		lit.dec.pendingLiteral += n
 	}

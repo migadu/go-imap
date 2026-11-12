@@ -124,23 +124,11 @@ func (c *Conn) handleAppend(tag string, dec *imapwire.Decoder) error {
 
 	data, appendErr := c.session.Append(c.ctx, mailbox, lit, &options)
 	if _, discardErr := io.Copy(io.Discard, lit); discardErr != nil {
-		// Draining the unread remainder of the literal failed. lit reads only
-		// from the client socket, so this is provably a client-side disconnect
-		// — the client/proxy closed or reset the connection mid-upload (a
-		// truncated literal, which surfaces as io.ErrUnexpectedEOF), not a
-		// server bug. Returning the raw error here routes it through the
-		// handler-error path, which logs it as "[SERVERBUG] handling APPEND
-		// command: unexpected EOF". Instead return the session's own classified
-		// error when it set one, or a plain NO, so it is treated as a normal
-		// IMAP response. The reply won't reach a dead socket, but the resulting
-		// write failure is recognized as a clean disconnect by the read loop.
-		if appendErr != nil {
-			return appendErr
-		}
-		return &imap.Error{
-			Type: imap.StatusResponseTypeNo,
-			Text: "APPEND failed: connection closed before the message was fully received",
-		}
+		// A timeout need not close the socket. Unread literal octets still
+		// belong to this command, so an ordinary NO cannot make it safe to
+		// resume command parsing. The command loop will send BYE and close.
+		dec.MarkDesynchronized()
+		return discardErr
 	}
 	if dataExt == "UTF8" && !dec.ExpectSpecial(')') {
 		return dec.Err()
@@ -173,9 +161,8 @@ func (c *Conn) writeAppendOK(tag string, data *imap.AppendData) error {
 
 // drainLiteral consumes a rejected non-synchronizing literal's octets and the
 // trailing CRLF so they don't leak into the command parser and corrupt the next
-// command. It is best-effort: a read error here means the connection is already
-// broken, and the caller's protocol error (or the failed response write) is more
-// useful than a drain error, so errors are ignored. For synchronizing literals
+// command. If draining or framing fails, the command loop closes the connection
+// rather than reporting a recoverable rejection. For synchronizing literals
 // it is a no-op — their octets are never sent when the command is rejected
 // before the continuation request. The literal read timeout is used because a
 // drained payload can be large (e.g. a LITERAL+ message over appendLimit).
@@ -185,6 +172,11 @@ func (c *Conn) drainLiteral(lit *imapwire.LiteralReader, dec *imapwire.Decoder, 
 	}
 	c.setReadTimeout(literalReadTimeout)
 	defer c.setReadTimeout(cmdReadTimeout)
-	_, _ = io.Copy(io.Discard, lit)
-	_ = dec.CRLF()
+	if _, err := io.Copy(io.Discard, lit); err != nil {
+		dec.MarkDesynchronized()
+		return
+	}
+	if !dec.CRLF() {
+		dec.MarkDesynchronized()
+	}
 }
