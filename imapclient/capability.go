@@ -63,14 +63,17 @@ func (cmd *CapabilityCommand) Wait() (imap.CapSet, error) {
 
 func readCapabilities(dec *imapwire.Decoder) (imap.CapSet, error) {
 	caps := make(imap.CapSet)
-	for dec.SP() {
+	// capability-data has literal SP separators. Decoder.SP also tolerates
+	// omitted spaces before lists, which cannot occur in a capability list.
+	for dec.Special(' ') {
 		// Some IMAP servers send multiple SP between caps:
 		// https://github.com/emersion/go-imap/pull/652
-		for dec.SP() {
+		for dec.Special(' ') {
 		}
-		// Some IMAP servers send a trailing SP in a CAPABILITY resp-text-code:
-		// "[CAPABILITY IMAP4rev1 IDLE ]"
-		if dec.PeekSpecial(']') {
+		// Tolerate trailing spaces in both response codes and untagged lines.
+		// Leave the delimiter for the caller to validate and consume, without
+		// looking past this response into whatever the server sends next.
+		if dec.PeekSpecial(']') || dec.PeekSpecial('\r') || dec.PeekSpecial('\n') {
 			break
 		}
 
@@ -80,5 +83,5 @@ func readCapabilities(dec *imapwire.Decoder) (imap.CapSet, error) {
 		}
 		caps[cap] = struct{}{}
 	}
-	return caps, nil
+	return caps, dec.Err()
 }
