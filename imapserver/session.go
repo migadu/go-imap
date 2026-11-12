@@ -70,6 +70,10 @@ type Session interface {
 	Unsubscribe(ctx context.Context, mailbox string) error
 	List(ctx context.Context, w *ListWriter, ref string, patterns []string, options *imap.ListOptions) error
 	Status(ctx context.Context, mailbox string, options *imap.StatusOptions) (*imap.StatusData, error)
+
+	// Append must consume all r.Size() bytes and check read errors before
+	// committing the message. A read error, including invalid command framing,
+	// must leave the mailbox unchanged.
 	Append(ctx context.Context, mailbox string, r imap.LiteralReader, options *imap.AppendOptions) (*imap.AppendData, error)
 
 	// Poll delivers pending updates for the selected mailbox at a command sync
