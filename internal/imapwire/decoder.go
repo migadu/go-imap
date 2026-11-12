@@ -346,7 +346,7 @@ func (dec *Decoder) ExpectAtom(ptr *string) bool {
 
 func (dec *Decoder) ExpectNIL() bool {
 	var s string
-	return dec.ExpectAtom(&s) && dec.Expect(s == "NIL", "NIL")
+	return dec.ExpectAtom(&s) && dec.Expect(strings.EqualFold(s, "NIL"), "NIL")
 }
 
 func (dec *Decoder) Special(b byte) bool {
@@ -712,7 +712,7 @@ func (dec *Decoder) quoted(ptr *string, allowStrayQuotes bool) bool {
 func (dec *Decoder) ExpectNStringAllowStrayQuotes(ptr *string) bool {
 	var s string
 	if dec.Atom(&s) {
-		if !dec.Expect(s == "NIL", "nstring") {
+		if !dec.Expect(strings.EqualFold(s, "NIL"), "nstring") {
 			return false
 		}
 		*ptr = ""
@@ -764,7 +764,7 @@ func (dec *Decoder) ExpectString(ptr *string) bool {
 func (dec *Decoder) ExpectNString(ptr *string) bool {
 	var s string
 	if dec.Atom(&s) {
-		if !dec.Expect(s == "NIL", "nstring") {
+		if !dec.Expect(strings.EqualFold(s, "NIL"), "nstring") {
 			return false
 		}
 		*ptr = ""
@@ -776,7 +776,7 @@ func (dec *Decoder) ExpectNString(ptr *string) bool {
 func (dec *Decoder) ExpectNStringReader() (lit *LiteralReader, nonSync, ok bool) {
 	var s string
 	if dec.Atom(&s) {
-		if !dec.Expect(s == "NIL", "nstring") {
+		if !dec.Expect(strings.EqualFold(s, "NIL"), "nstring") {
 			return nil, false, false
 		}
 		return nil, true, true
@@ -855,7 +855,7 @@ func (dec *Decoder) ExpectList(f func() error) error {
 func (dec *Decoder) ExpectNList(f func() error) error {
 	var s string
 	if dec.Atom(&s) {
-		if !dec.Expect(s == "NIL", "NIL") {
+		if !dec.Expect(strings.EqualFold(s, "NIL"), "NIL") {
 			return dec.Err()
 		}
 		return nil

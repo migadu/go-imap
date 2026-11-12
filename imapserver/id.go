@@ -112,7 +112,7 @@ func readID(dec *imapwire.Decoder) (*imap.IDData, error) {
 	// Check for NIL without using ExpectNIL which leaves decoder in error state
 	// Use Atom() instead of ExpectAtom() to avoid setting error
 	var nilCheck string
-	if dec.Atom(&nilCheck) && nilCheck == "NIL" {
+	if dec.Atom(&nilCheck) && strings.EqualFold(nilCheck, "NIL") {
 		return nil, nil
 	}
 
