@@ -46,10 +46,18 @@ func TestExpectMailboxInvalidUTF7(t *testing.T) {
 	expectDecoderExpectError(t, dec)
 }
 
+// newClientTestDecoder is newTestDecoder for a client, which decodes what a
+// server sends.
+func newClientTestDecoder(s string) *imapwire.Decoder {
+	return imapwire.NewDecoder(bufio.NewReader(strings.NewReader(s)), imapwire.ConnSideClient)
+}
+
+var listExtraSPInputs = []string{"( a b)", "(a b )", "(a  b)", "(  a  b  )"}
+
 func TestExpectListExtraSP(t *testing.T) {
 	// Some servers send extra SPs in lists, e.g. "FLAGS (\Seen )" or "LIST ( \HasNoChildren)"
-	for _, s := range []string{"( a b)", "(a b )", "(a  b)", "(  a  b  )"} {
-		dec := newTestDecoder(s + "\r\n")
+	for _, s := range listExtraSPInputs {
+		dec := newClientTestDecoder(s + "\r\n")
 
 		var items []string
 		err := dec.ExpectList(func() error {
@@ -70,9 +78,29 @@ func TestExpectListExtraSP(t *testing.T) {
 
 func TestDiscardValueNestedList(t *testing.T) {
 	for _, s := range []string{"((a))", "(a (b))", "( (a) )"} {
-		dec := newTestDecoder(s + "\r\n")
+		dec := newClientTestDecoder(s + "\r\n")
 		if !dec.DiscardValue() || !dec.ExpectCRLF() {
 			t.Errorf("DiscardValue(%q) = %v", s, dec.Err())
 		}
+	}
+}
+
+// The extra-SP leniency is for a client reading a server. A server decodes
+// client commands to the grammar, so the same lists are syntax errors there.
+func TestExpectListExtraSPServer(t *testing.T) {
+	for _, s := range listExtraSPInputs {
+		dec := newTestDecoder(s + "\r\n")
+		err := dec.ExpectList(func() error {
+			var item string
+			if !dec.ExpectAtom(&item) {
+				return dec.Err()
+			}
+			return nil
+		})
+		if err == nil {
+			t.Errorf("server ExpectList(%q) = nil, want a syntax error", s)
+			continue
+		}
+		expectDecoderExpectError(t, dec)
 	}
 }
