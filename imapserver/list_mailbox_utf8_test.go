@@ -11,9 +11,9 @@ import (
 // TestReadListMailboxUTF8NoUnescaping covers the LIST mailbox pattern, which
 // has its own decode path separate from Decoder.ExpectMailbox.
 //
-// The rule is the same: with UTF-8 mode negotiated, modified UTF-7 does not
-// apply (RFC 9051 Appendix E, RFC 6855 §3), so '&' is an ordinary character and
-// the pattern is taken verbatim. Unescaping here would turn a client's LIST of
+// The rule is the same: with UTF-8 mode negotiated, the library does not use
+// modified UTF-7 (see imapwire's Encoder.Mailbox for the basis), so '&' is an
+// ordinary character and the pattern is taken verbatim. Unescaping here would turn a client's LIST of
 // "A&-B" -- four literal characters -- into a LIST of "A&B", quietly matching
 // the wrong mailboxes.
 func TestReadListMailboxUTF8NoUnescaping(t *testing.T) {
