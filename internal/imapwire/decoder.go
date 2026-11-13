@@ -63,8 +63,9 @@ type Decoder struct {
 	// MaxSize defines a maximum number of bytes to be read from the input.
 	// Literals are ignored.
 	MaxSize int64
-	// QuotedUTF8 allows raw UTF-8 in quoted strings. This requires IMAP4rev2
-	// to be available, or UTF8=ACCEPT to be enabled.
+	// QuotedUTF8 selects UTF-8 mode, under the conditions documented on
+	// Encoder.QuotedUTF8: ExpectMailbox then takes names verbatim instead of
+	// decoding modified UTF-7. Quoted strings accept 8-bit bytes either way.
 	QuotedUTF8 bool
 
 	r    *bufio.Reader

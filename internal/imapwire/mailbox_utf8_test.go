@@ -10,10 +10,10 @@ import (
 // Mailbox names that exercise '&', the one character modified UTF-7 gives a
 // special meaning to (RFC 3501 §5.1.3: a literal '&' is sent as "&-").
 //
-// In UTF-8 mode that special meaning is gone. RFC 9051 Appendix E removes
-// modified UTF-7 from IMAP4rev2 outright, and RFC 6855 §3 forbids it once
-// UTF8=ACCEPT is enabled, so '&' is an ordinary character and the name goes on
-// the wire verbatim.
+// In UTF-8 mode the library drops that special meaning: '&' is an ordinary
+// character and the name goes on the wire verbatim. Encoder.Mailbox explains
+// the basis (RFC 9051 §5.1 and Appendix A.1, RFC 9755 §3, and how Dovecot
+// behaves). No RFC forbids modified UTF-7 there in so many words.
 //
 // These are not exotic names: "R&D" and "Sales & Marketing" are the kind of
 // folder people actually have.
@@ -33,8 +33,8 @@ var utf8MailboxNames = []struct {
 // TestEncodeMailboxUTF8NoUTF7Escaping checks that UTF-8 mode puts the mailbox
 // name on the wire verbatim.
 //
-// Escaping '&' here corrupts the name for any conformant peer: a server reading
-// IMAP4rev2 takes the bytes literally, so a CREATE of "R&D" that goes out as
+// Escaping '&' here corrupts the name for a server in UTF-8 mode, which takes
+// the bytes literally (Dovecot does), so a CREATE of "R&D" that goes out as
 // "R&-D" creates a mailbox actually named "R&-D".
 func TestEncodeMailboxUTF8NoUTF7Escaping(t *testing.T) {
 	for _, tc := range utf8MailboxNames {

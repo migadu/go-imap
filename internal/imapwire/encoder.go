@@ -18,8 +18,16 @@ import (
 // CRLF is called. These methods return the Encoder so that calls can be
 // chained.
 type Encoder struct {
-	// QuotedUTF8 allows raw UTF-8 in quoted strings. This requires IMAP4rev2
-	// to be available, or UTF8=ACCEPT to be enabled.
+	// QuotedUTF8 selects UTF-8 mode: raw UTF-8 may be written in quoted
+	// strings, and Mailbox writes names verbatim instead of as modified UTF-7.
+	//
+	// Set it once IMAP4rev2 or UTF8=ACCEPT has been enabled, or when the
+	// server does not offer IMAP4rev1 at all. The capability being advertised
+	// is not enough. RFC 9755 §3 would already let a client send UTF-8 in
+	// quoted strings at that point, but this flag also switches mailbox names,
+	// and a server offering both IMAP4rev1 and IMAP4rev2 must keep handling
+	// modified UTF-7 names (RFC 9051 Appendix A). Dovecot reads them that way
+	// until ENABLE (emersion/go-imap#790).
 	QuotedUTF8 bool
 	// LiteralMinus enables non-synchronizing literals for short payloads.
 	// This requires IMAP4rev2 or LITERAL-. This is only meaningful for
@@ -201,11 +209,15 @@ func (enc *Encoder) Mailbox(name string) *Encoder {
 	if strings.EqualFold(name, "INBOX") {
 		return enc.Atom("INBOX")
 	}
-	// In UTF-8 mode the name goes out verbatim. Modified UTF-7 is not merely
-	// unnecessary there, it is forbidden: RFC 9051 Appendix E removes it from
-	// IMAP4rev2, and RFC 6855 §3 rules it out once UTF8=ACCEPT is enabled. So
-	// '&' carries no special meaning and must not be escaped -- escaping it
-	// would make a CREATE of "R&D" arrive as the name "R&-D".
+	// In UTF-8 mode the name goes out verbatim, with no modified UTF-7.
+	// IMAP4rev2 mailbox names are Net-Unicode (RFC 9051 §5.1), modified UTF-7
+	// survives only for IMAP4rev1 compatibility (RFC 9051 Appendix A.1), and
+	// a UTF8=ACCEPT server accepts UTF-8 names (RFC 9755 §3). No RFC says in so
+	// many words that modified UTF-7 must not be used after ENABLE, but
+	// servers in UTF-8 mode take the bytes as the name: Dovecot answers NO to
+	// "R&-D" for a mailbox called "R&D" (emersion/go-imap#790). So '&' is an
+	// ordinary character here and is not escaped, or a CREATE of "R&D" would
+	// arrive as the name "R&-D".
 	if !enc.QuotedUTF8 {
 		name = utf7.Encode(name)
 	}
