@@ -126,6 +126,8 @@ func TestListExtendedDataItemGating(t *testing.T) {
 				NewSession: func(conn *imapserver.Conn) (imapserver.Session, *imapserver.GreetingData, error) {
 					return memServer.NewSession(), nil, nil
 				},
+				// The commands use LIST-EXTENDED syntax, which needs the capability.
+				Caps:         imap.CapSet{imap.CapIMAP4rev1: {}, imap.CapListExtended: {}},
 				InsecureAuth: true,
 			})
 
