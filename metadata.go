@@ -53,7 +53,8 @@ type MetadataResponseCodeData struct {
 //     case-insensitive, so the prefix is matched case-insensitively)
 //   - Not contain * or %
 //   - Not contain consecutive slashes
-//   - Not end with a slash (unless it's just the prefix)
+//   - Not end with a slash (RFC 5464 §3.2), so the scope roots /private/ and
+//     /shared/ are not entry names either
 func ValidateMetadataEntry(entry string) error {
 	if entry == "" {
 		return fmt.Errorf("empty entry name")
@@ -76,8 +77,8 @@ func ValidateMetadataEntry(entry string) error {
 		return fmt.Errorf("entry name cannot contain consecutive slashes")
 	}
 
-	// Cannot end with slash (except for the base /private/ or /shared/)
-	if entry != "/private/" && entry != "/shared/" && hasSuffix(entry, "/") {
+	// Cannot end with slash (RFC 5464 §3.2), the scope roots included
+	if hasSuffix(entry, "/") {
 		return fmt.Errorf("entry name cannot end with a slash")
 	}
 
