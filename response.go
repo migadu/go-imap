@@ -43,11 +43,20 @@ const (
 	ResponseCodeUnavailable          ResponseCode = "UNAVAILABLE"
 	ResponseCodeUnknownCTE           ResponseCode = "UNKNOWN-CTE"
 
-	// METADATA
+	// METADATA: the words that follow "METADATA" in the response code of
+	// RFC 5464 §5. A SETMETADATA failure carries the full code, see
+	// ResponseCodeMetadataTooMany, ResponseCodeMetadataNoPrivate and
+	// MetadataMaxSizeResponseCode.
 	ResponseCodeTooMany     ResponseCode = "TOOMANY"
 	ResponseCodeNoPrivate   ResponseCode = "NOPRIVATE"
 	ResponseCodeLongEntries ResponseCode = "LONGENTRIES"
 	ResponseCodeMaxSize     ResponseCode = "MAXSIZE"
+
+	// RFC 5464 §4.3: SETMETADATA fails with these when the maximum number of
+	// annotations is reached, or when the mailbox does not support private
+	// annotations.
+	ResponseCodeMetadataTooMany   ResponseCode = "METADATA TOOMANY"
+	ResponseCodeMetadataNoPrivate ResponseCode = "METADATA NOPRIVATE"
 
 	// APPENDLIMIT
 	ResponseCodeTooBig ResponseCode = "TOOBIG"
@@ -62,6 +71,13 @@ const (
 	// CONDSTORE
 	ResponseCodeModified ResponseCode = "MODIFIED"
 )
+
+// MetadataMaxSizeResponseCode returns the "METADATA MAXSIZE NNN" response
+// code with which SETMETADATA fails for a value larger than maxSize octets, the
+// largest the server accepts (RFC 5464 §4.3).
+func MetadataMaxSizeResponseCode(maxSize uint32) ResponseCode {
+	return ResponseCode(fmt.Sprintf("METADATA MAXSIZE %d", maxSize))
+}
 
 // ModifiedResponseCode returns the MODIFIED response code (RFC 7162 §3.1.3)
 // carrying the messages that a conditional STORE left untouched because they
