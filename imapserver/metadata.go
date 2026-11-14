@@ -135,7 +135,16 @@ func (c *Conn) handleSetMetadata(dec *imapwire.Decoder) error {
 	// a "[METADATA MAXSIZE NNN]" response code when NNN is the maximum octet
 	// count that it is willing to accept." The literal is refused by its
 	// announced size, before it is read.
+	//
+	// The values are held in memory together until the session sees the
+	// command, and literal octets do not count against maxCommandSize, so
+	// their sum is bounded as well: by maxMetadataValuesSize, or by one value
+	// at the session's limit if that is more. A literal past the bound is
+	// refused the same way, with [LIMIT] (RFC 5530 §3: "The operation ran up
+	// against an implementation limit of some kind").
 	maxSize := c.metadataMaxSize()
+	maxTotal := max(int64(maxSize), maxMetadataValuesSize)
+	var total int64
 	checkBuffered := dec.CheckBufferedLiteralFunc
 	checkValue := func(size int64, nonSync bool) error {
 		if size > int64(maxSize) {
@@ -145,6 +154,14 @@ func (c *Conn) handleSetMetadata(dec *imapwire.Decoder) error {
 				Text: fmt.Sprintf("Metadata values are limited to %d bytes", maxSize),
 			}
 		}
+		if size > maxTotal-total {
+			return &imap.Error{
+				Type: imap.StatusResponseTypeNo,
+				Code: imap.ResponseCodeLimit,
+				Text: fmt.Sprintf("Metadata values of one command are limited to %d bytes in all", maxTotal),
+			}
+		}
+		total += size
 		return c.acceptLiteral(size, nonSync)
 	}
 
@@ -209,6 +226,11 @@ func (c *Conn) handleSetMetadata(dec *imapwire.Decoder) error {
 // session that does not implement SessionMetadataMaxSize: the bound of every
 // other buffered literal (checkBufferedLiteral).
 const defaultMetadataMaxSize = 4096
+
+// maxMetadataValuesSize bounds the octets of the literal values of one
+// SETMETADATA together, unless a single value the session accepts is larger.
+// It is the bound of a buffered literal the decoder is not told how to check.
+const maxMetadataValuesSize = 4 << 20
 
 // metadataMaxSize returns the largest SETMETADATA value the connection
 // accepts. The session's limit applies once the client has authenticated;

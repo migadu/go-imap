@@ -309,6 +309,10 @@ type SessionMetadata interface {
 // RFC 5464 §4.3. Without this interface the limit is 4096 octets, the bound of
 // other buffered literals. A value sent as a quoted string is not checked: it
 // is bounded by the command size, and the session checks it as it sees fit.
+//
+// The literal values of one command together are limited to 4 MiB, or to one
+// value at this limit if that is more; a literal past that is refused with
+// NO [LIMIT].
 type SessionMetadataMaxSize interface {
 	SessionMetadata
 
