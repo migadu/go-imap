@@ -710,6 +710,12 @@ func (c *Conn) readCommand(dec *imapwire.Decoder) (err error) {
 		err = c.handleListRights(dec)
 	case "MYRIGHTS":
 		err = c.handleMyRights(dec)
+	case "GETQUOTAROOT":
+		err = c.handleGetQuotaRoot(dec)
+	case "GETQUOTA":
+		err = c.handleGetQuota(dec)
+	case "SETQUOTA":
+		err = c.handleSetQuota(dec)
 	case "IDLE":
 		err = c.handleIdle(dec)
 	case "NOTIFY":
