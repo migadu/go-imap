@@ -164,47 +164,199 @@ func extractPartial(b []byte, partial *imap.SectionPartial) []byte {
 	return b[partial.Offset : partial.Offset+size]
 }
 
-func ExtractBinarySection(r io.Reader, item *imap.FetchItemBinarySection) []byte {
-	var (
-		header textproto.Header
-		body   io.Reader
-	)
+// ErrUnknownCTE is the error DecodeBinarySection and DecodeBinarySectionSize
+// return for a section whose Content-Transfer-Encoding they cannot decode. RFC
+// 9051 §7.5.2: "If the server does not know how to decode the section's
+// Content-Transfer-Encoding, it MUST fail the request and issue a "NO"
+// response that contains the "UNKNOWN-CTE" response code."
+var ErrUnknownCTE = &imap.Error{
+	Type: imap.StatusResponseTypeNo,
+	Code: imap.ResponseCodeUnknownCTE,
+	Text: "Cannot decode the section's Content-Transfer-Encoding",
+}
 
+// DecodeBinarySection returns a section of a message body as FETCH BINARY
+// sends it: after decoding its Content-Transfer-Encoding (RFC 9051 §6.4.5),
+// in the charset it is stored in, and for a text/* section with CRLF line
+// endings (RFC 9051 §7.5.2). It returns ErrUnknownCTE for a section whose
+// Content-Transfer-Encoding it does not know.
+//
+// It can be used by server backends to implement Session.Fetch.
+func DecodeBinarySection(r io.Reader, item *imap.FetchItemBinarySection) ([]byte, error) {
+	var buf bytes.Buffer
+	if err := writeBinarySection(&buf, r, item.Part, false); err != nil {
+		return nil, err
+	}
+	return extractPartial(buf.Bytes(), item.Partial), nil
+}
+
+// DecodeBinarySectionSize returns the size of the section DecodeBinarySection
+// returns, as FETCH BINARY.SIZE sends it, without holding the section. It
+// returns ErrUnknownCTE for a section whose Content-Transfer-Encoding it does
+// not know.
+//
+// It can be used by server backends to implement Session.Fetch.
+func DecodeBinarySectionSize(r io.Reader, item *imap.FetchItemBinarySectionSize) (uint32, error) {
+	var n countingWriter
+	if err := writeBinarySection(&n, r, item.Part, false); err != nil {
+		return 0, err
+	}
+	return uint32(n), nil
+}
+
+// ExtractBinarySection is DecodeBinarySection, except that it returns a
+// section whose Content-Transfer-Encoding it does not know as stored.
+//
+// Deprecated: Use DecodeBinarySection. RFC 9051 §7.5.2 requires FETCH BINARY
+// to fail with NO [UNKNOWN-CTE] for such a section.
+func ExtractBinarySection(r io.Reader, item *imap.FetchItemBinarySection) []byte {
+	var buf bytes.Buffer
+	_ = writeBinarySection(&buf, r, item.Part, true)
+	return extractPartial(buf.Bytes(), item.Partial)
+}
+
+// ExtractBinarySectionSize returns the size of the section
+// ExtractBinarySection returns.
+//
+// Deprecated: Use DecodeBinarySectionSize. RFC 9051 §7.5.2 requires FETCH
+// BINARY.SIZE to fail with NO [UNKNOWN-CTE] for a section whose
+// Content-Transfer-Encoding the server does not know.
+func ExtractBinarySectionSize(r io.Reader, item *imap.FetchItemBinarySectionSize) uint32 {
+	var n countingWriter
+	_ = writeBinarySection(&n, r, item.Part, true)
+	return uint32(n)
+}
+
+// writeBinarySection writes the section at part of the message in r to w
+// after decoding its Content-Transfer-Encoding, and nothing else: BINARY is
+// the section "after performing decoding of the section's
+// Content-Transfer-Encoding" (RFC 9051 §6.4.5), so the charset stays as
+// stored. A text/* section is written with CRLF line endings: "servers MUST
+// ensure that textual line-oriented sections are always transmitted using the
+// IMAP CRLF line termination syntax, regardless of the underlying storage
+// representation of the data on the server" (RFC 9051 §7.5.2). A section whose
+// Content-Transfer-Encoding is unknown fails with ErrUnknownCTE, or with
+// lenient is written as stored. A section that does not exist writes nothing.
+func writeBinarySection(w io.Writer, r io.Reader, part []int, lenient bool) error {
 	br := bufio.NewReader(r)
 	// Tolerate a malformed header block, matching ExtractBodySection and the
 	// lenient ExtractBodyStructure the BODYSTRUCTURE is derived from.
-	header, _ = textproto.ReadHeader(br)
-	body = br
+	header, _ := textproto.ReadHeader(br)
 
-	_, header, body = findMessagePart(header, body, item.Part)
+	parentMediaType, header, body := findMessagePart(header, br, part)
 	if body == nil {
 		return nil
 	}
 
-	// gomessage.New returns a usable *Entity even alongside a non-fatal
-	// UnknownEncoding / UnknownCharset error (the body is left identity-decoded);
-	// serve it rather than discarding a part the BODYSTRUCTURE advertises.
-	part, _ := gomessage.New(gomessage.Header{Header: header}, body)
+	h := gomessage.Header{Header: header}
+	mediaType, _, _ := h.ContentType()
+	if !h.Has("Content-Type") && parentMediaType == "multipart/digest" {
+		mediaType = "message/rfc822" // RFC 2046 §5.1.5
+	}
+	textual := strings.HasPrefix(mediaType, "text/")
 
-	// Write the requested data to a buffer
-	var buf bytes.Buffer
-
-	if len(item.Part) == 0 {
-		if err := textproto.WriteHeader(&buf, part.Header.Header); err != nil {
-			return nil
+	// gomessage.New decodes the Content-Transfer-Encoding, but also converts a
+	// text/* body to UTF-8 when a CharsetReader is installed, so it is given
+	// the encoding alone. Like New, ignore the encoding of a multipart, which
+	// RFC 2045 §6.4 restricts to the identity encodings.
+	if !strings.HasPrefix(mediaType, "multipart/") {
+		var cte gomessage.Header
+		cte.Set("Content-Transfer-Encoding", cteMechanism(header.Get("Content-Transfer-Encoding")))
+		// New returns a usable *Entity even alongside an UnknownEncoding error,
+		// with the body left as stored.
+		entity, err := gomessage.New(cte, body)
+		if gomessage.IsUnknownEncoding(err) {
+			if !lenient {
+				return ErrUnknownCTE
+			}
+			textual = false
 		}
+		body = entity.Body
 	}
 
+	if len(part) == 0 {
+		if err := textproto.WriteHeader(w, header); err != nil {
+			return err
+		}
+	}
+	if textual {
+		w = &crlfWriter{w: w}
+	}
 	// Keep the bytes read; a truncated or malformed part yields io.ErrUnexpectedEOF.
-	_, _ = io.Copy(&buf, part.Body)
-
-	return extractPartial(buf.Bytes(), item.Partial)
+	_, _ = io.Copy(w, body)
+	return nil
 }
 
-func ExtractBinarySectionSize(r io.Reader, item *imap.FetchItemBinarySectionSize) uint32 {
-	// TODO: optimize
-	b := ExtractBinarySection(r, &imap.FetchItemBinarySection{Part: item.Part})
-	return uint32(len(b))
+// cteMechanism returns the mechanism a Content-Transfer-Encoding field value
+// names, without the comments around it: MIME fields "can include RFC 822
+// comments, which have no semantic content and should be ignored during MIME
+// processing" (RFC 2045 §1). gomessage.New takes the whole value for the
+// mechanism, so "base64 (comment)" would otherwise be an unknown encoding.
+func cteMechanism(v string) string {
+	if !strings.ContainsRune(v, '(') {
+		return v
+	}
+	var b strings.Builder
+	depth := 0
+	for i := 0; i < len(v); i++ {
+		switch c := v[i]; {
+		case depth > 0 && c == '\\':
+			i++ // quoted-pair
+		case c == '(':
+			depth++
+			b.WriteByte(' ')
+		case depth > 0 && c == ')':
+			depth--
+		case depth == 0:
+			b.WriteByte(c)
+		}
+	}
+	return strings.TrimSpace(b.String())
+}
+
+// crlfWriter writes each LF that does not end a CRLF as CRLF.
+type crlfWriter struct {
+	w  io.Writer
+	cr bool // the last octet written was CR
+}
+
+func (cw *crlfWriter) Write(p []byte) (int, error) {
+	for done := 0; done < len(p); {
+		rest := p[done:]
+		i := bytes.IndexByte(rest, '\n')
+		if i < 0 {
+			if _, err := cw.w.Write(rest); err != nil {
+				return done, err
+			}
+			cw.cr = rest[len(rest)-1] == '\r'
+			break
+		}
+		cr := cw.cr
+		if i > 0 {
+			cr = rest[i-1] == '\r'
+		}
+		eol := "\r\n"
+		if cr {
+			eol = "\n"
+		}
+		if _, err := cw.w.Write(rest[:i]); err != nil {
+			return done, err
+		}
+		if _, err := io.WriteString(cw.w, eol); err != nil {
+			return done, err
+		}
+		cw.cr = false
+		done += i + 1
+	}
+	return len(p), nil
+}
+
+// countingWriter counts the octets written to it.
+type countingWriter int64
+
+func (n *countingWriter) Write(p []byte) (int, error) {
+	*n += countingWriter(len(p))
+	return len(p), nil
 }
 
 // ExtractEnvelope returns a message envelope from its header.
