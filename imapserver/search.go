@@ -95,8 +95,8 @@ func (c *Conn) handleSearch(tag string, dec *imapwire.Decoder, numKind NumKind) 
 		options.ReturnAll = true
 	}
 
-	// Read before the session can rewrite the criteria. readSearchKey keeps a
-	// MODSEQ key only when CONDSTORE is supported.
+	// Read before the session can rewrite the criteria. readSearchKey accepts
+	// a MODSEQ key only when CONDSTORE is supported.
 	hasModSeq := searchCriteriaHasModSeq(&criteria)
 
 	backendCalled = true
@@ -555,15 +555,18 @@ func readSearchKeyWithAtomDepth(c *Conn, criteria *imap.SearchCriteria, dec *ima
 			return dec.Err()
 		}
 
-		// Only apply MODSEQ criteria if CONDSTORE is supported, otherwise ignore
-		if c.supportsCondStore() {
-			// SEARCH MODSEQ is a CONDSTORE-enabling command (RFC 7162 §3.1).
-			c.markCondStoreEnabled()
-			criteria.ModSeq = &imap.SearchCriteriaModSeq{
-				ModSeq:       modSeq,
-				MetadataName: name,
-				MetadataType: metadataType,
-			}
+		// The MODSEQ search key is CONDSTORE's (RFC 7162 §3.1.5). Dropping
+		// it instead would widen the search to every message it was meant
+		// to leave out.
+		if !c.supportsCondStore() {
+			return newClientBugError("MODSEQ requires CONDSTORE")
+		}
+		// SEARCH MODSEQ is a CONDSTORE-enabling command (RFC 7162 §3.1).
+		c.markCondStoreEnabled()
+		criteria.ModSeq = &imap.SearchCriteriaModSeq{
+			ModSeq:       modSeq,
+			MetadataName: name,
+			MetadataType: metadataType,
 		}
 	default:
 		seqSet, err := imapwire.ParseSeqSet(key)
