@@ -100,13 +100,8 @@ func (c *Conn) handleFetch(dec *imapwire.Decoder, numKind NumKind) error {
 				}
 				switch strings.ToUpper(param) {
 				case "CHANGEDSINCE":
-					if !dec.ExpectSP() || !dec.ExpectModSeq(&options.ChangedSince) {
-						return dec.Err()
-					}
-					if c.supportsCondStore() {
-						options.ModSeq = true
-						// CHANGEDSINCE is a CONDSTORE-enabling modifier (RFC 7162 §3.1).
-						c.markCondStoreEnabled()
+					if err := handleChangedSince(c, dec, &options); err != nil {
+						return err
 					}
 				case "VANISHED":
 					if numKind != NumKindUID {
@@ -153,13 +148,8 @@ func (c *Conn) handleFetch(dec *imapwire.Decoder, numKind NumKind) error {
 				}
 				switch strings.ToUpper(modifier) {
 				case "CHANGEDSINCE":
-					if !dec.ExpectSP() || !dec.ExpectModSeq(&options.ChangedSince) {
-						return dec.Err()
-					}
-					if c.supportsCondStore() {
-						options.ModSeq = true
-						// CHANGEDSINCE is a CONDSTORE-enabling modifier (RFC 7162 §3.1).
-						c.markCondStoreEnabled()
+					if err := handleChangedSince(c, dec, &options); err != nil {
+						return err
 					}
 				case "VANISHED":
 					if numKind != NumKindUID {
@@ -200,6 +190,25 @@ func (c *Conn) handleFetch(dec *imapwire.Decoder, numKind NumKind) error {
 	return nil
 }
 
+// handleChangedSince reads the value of a CHANGEDSINCE fetch modifier whose
+// name has been consumed. The modifier is CONDSTORE's (RFC 7162 §3.1.4.1),
+// and "any modifiers not defined by extensions that the server supports must
+// be rejected with a BAD response" (RFC 4466 §2.4): ignoring it would return
+// every message the client asked to leave out.
+func handleChangedSince(c *Conn, dec *imapwire.Decoder, options *imap.FetchOptions) error {
+	if !dec.ExpectSP() || !dec.ExpectModSeq(&options.ChangedSince) {
+		return dec.Err()
+	}
+	if !c.supportsCondStore() {
+		return newClientBugError("CHANGEDSINCE requires CONDSTORE")
+	}
+	// CHANGEDSINCE implicitly adds the MODSEQ data item (RFC 7162 §3.1.4.1)
+	// and is a CONDSTORE-enabling modifier (RFC 7162 §3.1).
+	options.ModSeq = true
+	c.markCondStoreEnabled()
+	return nil
+}
+
 func handleFetchAtt(c *Conn, dec *imapwire.Decoder, attName string, options *imap.FetchOptions, writerOptions *fetchWriterOptions) error {
 	switch attName {
 	case "BODYSTRUCTURE":
@@ -215,13 +224,16 @@ func handleFetchAtt(c *Conn, dec *imapwire.Decoder, attName string, options *ima
 	case "UID":
 		options.UID = true
 	case "MODSEQ":
-		// Only enable ModSeq if CONDSTORE is supported, otherwise ignore
-		if c.supportsCondStore() {
-			options.ModSeq = true
-			// Requesting the MODSEQ data item is a CONDSTORE-enabling command
-			// (RFC 7162 §3.1).
-			c.markCondStoreEnabled()
+		// MODSEQ is CONDSTORE's (RFC 7162 §3.1.4.2). Dropping it instead
+		// would leave a lone MODSEQ with nothing to answer, and msg-att needs
+		// at least one item (RFC 9051 §9).
+		if !c.supportsCondStore() {
+			return newClientBugError("MODSEQ requires CONDSTORE")
 		}
+		options.ModSeq = true
+		// Requesting the MODSEQ data item is a CONDSTORE-enabling command
+		// (RFC 7162 §3.1).
+		c.markCondStoreEnabled()
 	case "PREVIEW":
 		if !c.supportsPreview() {
 			return newClientBugError("Unknown FETCH data item")
