@@ -425,6 +425,9 @@ func (c *Conn) serve() {
 			readTimeout = idleReadTimeout
 		default:
 			readTimeout = cmdReadTimeout
+			if t := c.server.options.AuthIdleTimeout; t > 0 {
+				readTimeout = t
+			}
 		}
 		c.setReadTimeout(readTimeout)
 
@@ -451,6 +454,16 @@ func (c *Conn) serve() {
 			break
 		}
 		if eof {
+			break
+		}
+		// The wait ended in a read error: the read timeout above expired, or
+		// the connection failed. Going on to readCommand would wait for input
+		// once more, under cmdReadTimeout, before giving up, so every idle
+		// timeout would run 30 seconds long.
+		if err := dec.Err(); err != nil {
+			if !isConnectionClosedError(err) {
+				c.server.logger().Printf("failed to read command (remote %v): %v", c.conn.RemoteAddr(), err)
+			}
 			break
 		}
 
