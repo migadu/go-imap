@@ -75,6 +75,13 @@ type Options struct {
 	// InsecureAuth allows clients to authenticate without TLS. In this mode,
 	// the server is susceptible to man-in-the-middle attacks.
 	InsecureAuth bool
+	// AuthIdleTimeout is how long the server waits for the next command from
+	// a client that has not authenticated before it closes the connection.
+	// Zero means 30 seconds. Once a command has started arriving, the rest of
+	// it is still bounded by the 30-second command read timeout. The read
+	// deadline is owned by the server: one an application sets on the
+	// connection is replaced before every command.
+	AuthIdleTimeout time.Duration
 	// IsTLS is called to determine if a connection should be considered
 	// TLS-secured for authentication purposes. This is useful when TLS is
 	// terminated by a reverse proxy and the server receives a plain TCP
