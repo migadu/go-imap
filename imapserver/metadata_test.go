@@ -76,15 +76,32 @@ func TestValidateMetadataEntry(t *testing.T) {
 			entry:   "/private/comment/",
 			wantErr: true,
 		},
+		// RFC 5464 §3.2: an entry name "MUST NOT end with a "/" character"
+		// and has at least two components; the scope roots are not entries.
 		{
-			name:    "base private with slash - allowed",
+			name:    "private scope root with slash",
 			entry:   "/private/",
-			wantErr: false,
+			wantErr: true,
 		},
 		{
-			name:    "base shared with slash - allowed",
+			name:    "shared scope root with slash",
 			entry:   "/shared/",
-			wantErr: false,
+			wantErr: true,
+		},
+		{
+			name:    "private scope root with slash, upper case",
+			entry:   "/PRIVATE/",
+			wantErr: true,
+		},
+		{
+			name:    "private scope root",
+			entry:   "/private",
+			wantErr: true,
+		},
+		{
+			name:    "shared scope root",
+			entry:   "/shared",
+			wantErr: true,
 		},
 	}
 
