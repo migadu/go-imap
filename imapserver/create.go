@@ -12,6 +12,7 @@ func (c *Conn) handleCreate(dec *imapwire.Decoder) error {
 	var (
 		name    string
 		options imap.CreateOptions
+		use     bool
 	)
 	if !dec.ExpectSP() || !dec.ExpectMailbox(&name) {
 		return dec.Err()
@@ -23,6 +24,7 @@ func (c *Conn) handleCreate(dec *imapwire.Decoder) error {
 		}
 		switch strings.ToUpper(name) {
 		case "USE":
+			use = true
 			var err error
 			options.SpecialUse, err = internal.ExpectMailboxAttrList(dec)
 			if err != nil {
@@ -40,6 +42,13 @@ func (c *Conn) handleCreate(dec *imapwire.Decoder) error {
 	}
 	if err := c.checkState(imap.ConnStateAuthenticated); err != nil {
 		return err
+	}
+	// RFC 4466 §2.2: "Any parameter not defined by extensions that the server
+	// supports must be rejected with a BAD response." USE is
+	// CREATE-SPECIAL-USE's (RFC 6154 §3). The session cannot refuse "USE ()"
+	// itself: an empty attribute list reaches it as no USE parameter.
+	if use && !c.availableCapsSet().Has(imap.CapCreateSpecialUse) {
+		return newClientBugError("CREATE-SPECIAL-USE is not supported")
 	}
 	return c.session.Create(c.ctx, name, &options)
 }
