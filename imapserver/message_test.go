@@ -219,3 +219,85 @@ func TestExtractBodyStructure_ValidMultipart(t *testing.T) {
 		t.Errorf("expected text/plain child, got %s/%s", child.Type, child.Subtype)
 	}
 }
+
+// crlfWriter sees the decoded section in arbitrary chunks, so a CRLF split
+// across two writes must stay one line ending.
+func TestCRLFWriter(t *testing.T) {
+	for _, tc := range []struct {
+		chunks []string
+		want   string
+	}{
+		{[]string{"a\nb\n"}, "a\r\nb\r\n"},
+		{[]string{"\n\n"}, "\r\n\r\n"},
+		{[]string{"a\r\nb\r\n"}, "a\r\nb\r\n"},
+		{[]string{"a\r", "\nb"}, "a\r\nb"},
+		{[]string{"a", "\n", "\n"}, "a\r\n\r\n"},
+		{[]string{"a\r", "b\n"}, "a\rb\r\n"},
+		{[]string{"\r\r\n"}, "\r\r\n"},
+		{[]string{"", "a"}, "a"},
+	} {
+		var buf bytes.Buffer
+		cw := &crlfWriter{w: &buf}
+		for _, chunk := range tc.chunks {
+			if n, err := cw.Write([]byte(chunk)); n != len(chunk) || err != nil {
+				t.Errorf("%q: Write(%q) = %d, %v", tc.chunks, chunk, n, err)
+			}
+		}
+		if got := buf.String(); got != tc.want {
+			t.Errorf("%q: wrote %q, want %q", tc.chunks, got, tc.want)
+		}
+	}
+}
+
+func TestDecodeBinarySection(t *testing.T) {
+	const msg = "Content-Type: multipart/mixed; boundary=b\r\n\r\n" +
+		"--b\r\nContent-Type: text/plain\r\nContent-Transfer-Encoding: base64\r\n\r\nbGluZTEKbGluZTIK\r\n" +
+		"--b\r\nContent-Type: text/plain\r\nContent-Transfer-Encoding: x-uuencode\r\n\r\nencoded\n\r\n" +
+		"--b\r\nContent-Type: multipart/digest; boundary=d\r\n\r\n" +
+		"--d\r\n\r\nSubject: digested\n\nbody\n\r\n" +
+		"--d--\r\n" +
+		"--b--\r\n"
+	for _, tc := range []struct {
+		part    []int
+		partial *imap.SectionPartial
+		want    string
+		err     error
+	}{
+		{part: []int{1}, want: "line1\r\nline2\r\n"},
+		{part: []int{1}, partial: &imap.SectionPartial{Offset: 5, Size: 4}, want: "\r\nli"},
+		{part: []int{2}, err: ErrUnknownCTE},
+		// A digest part without a Content-Type is message/rfc822 (RFC 2046
+		// §5.1.5), not text, so its octets are kept.
+		{part: []int{3, 1}, want: "Subject: digested\n\nbody\n"},
+		{part: []int{4}, want: ""},
+	} {
+		got, err := DecodeBinarySection(strings.NewReader(msg), &imap.FetchItemBinarySection{Part: tc.part, Partial: tc.partial})
+		if err != tc.err || string(got) != tc.want {
+			t.Errorf("DecodeBinarySection(%v %v) = %q, %v; want %q, %v", tc.part, tc.partial, got, err, tc.want, tc.err)
+		}
+		size, err := DecodeBinarySectionSize(strings.NewReader(msg), &imap.FetchItemBinarySectionSize{Part: tc.part})
+		full, _ := DecodeBinarySection(strings.NewReader(msg), &imap.FetchItemBinarySection{Part: tc.part})
+		if err != tc.err || size != uint32(len(full)) {
+			t.Errorf("DecodeBinarySectionSize(%v) = %d, %v; want %d, %v", tc.part, size, err, len(full), tc.err)
+		}
+	}
+
+	// ExtractBinarySection keeps serving an unknown encoding as stored.
+	if got := ExtractBinarySection(strings.NewReader(msg), &imap.FetchItemBinarySection{Part: []int{2}}); string(got) != "encoded\n" {
+		t.Errorf("ExtractBinarySection([2]) = %q, want %q", got, "encoded\n")
+	}
+	if got := ExtractBinarySectionSize(strings.NewReader(msg), &imap.FetchItemBinarySectionSize{Part: []int{2}}); got != 8 {
+		t.Errorf("ExtractBinarySectionSize([2]) = %d, want 8", got)
+	}
+
+	// BINARY[] is the header and the decoded body of the whole message.
+	const single = "Content-Type: text/plain\r\nContent-Transfer-Encoding: base64\r\n\r\nYQpiCg==\r\n"
+	const wantSingle = "Content-Type: text/plain\r\nContent-Transfer-Encoding: base64\r\n\r\na\r\nb\r\n"
+	got, err := DecodeBinarySection(strings.NewReader(single), &imap.FetchItemBinarySection{})
+	if err != nil || string(got) != wantSingle {
+		t.Errorf("DecodeBinarySection([]) = %q, %v; want %q", got, err, wantSingle)
+	}
+	if size, err := DecodeBinarySectionSize(strings.NewReader(single), &imap.FetchItemBinarySectionSize{}); err != nil || size != uint32(len(wantSingle)) {
+		t.Errorf("DecodeBinarySectionSize([]) = %d, %v; want %d", size, err, len(wantSingle))
+	}
+}
