@@ -11,7 +11,7 @@ import (
 )
 
 func (c *Conn) handleList(dec *imapwire.Decoder) error {
-	ref, pattern, options, syntax, err := readListCmd(dec)
+	ref, pattern, options, syntax, err := readListCmd(c, dec)
 	if err != nil {
 		return err
 	}
@@ -246,7 +246,7 @@ func (syntax listCommandSyntax) supportedByOptionCaps(options *imap.ListOptions,
 
 // readListCmd reads the arguments of LIST, retaining syntax that cannot be
 // inferred from the resulting options or non-empty mailbox patterns alone.
-func readListCmd(dec *imapwire.Decoder) (ref string, patterns []string, options *imap.ListOptions, syntax listCommandSyntax, err error) {
+func readListCmd(c *Conn, dec *imapwire.Decoder) (ref string, patterns []string, options *imap.ListOptions, syntax listCommandSyntax, err error) {
 	options = &imap.ListOptions{}
 
 	if !dec.ExpectSP() {
@@ -312,7 +312,7 @@ func readListCmd(dec *imapwire.Decoder) (ref string, patterns []string, options 
 		}
 
 		err := dec.ExpectList(func() error {
-			return readReturnOption(dec, options)
+			return readReturnOption(c, dec, options)
 		})
 		if err != nil {
 			return "", nil, nil, syntax, fmt.Errorf("in list-return-opts: %w", err)
@@ -367,7 +367,7 @@ func isListChar(ch byte) bool {
 	}
 }
 
-func readReturnOption(dec *imapwire.Decoder, options *imap.ListOptions) error {
+func readReturnOption(c *Conn, dec *imapwire.Decoder, options *imap.ListOptions) error {
 	var name string
 	if !dec.ExpectAtom(&name) {
 		return dec.Err()
@@ -386,7 +386,7 @@ func readReturnOption(dec *imapwire.Decoder, options *imap.ListOptions) error {
 		}
 		options.ReturnStatus = new(imap.StatusOptions)
 		return dec.ExpectList(func() error {
-			return readStatusItem(dec, options.ReturnStatus)
+			return readStatusItem(c, dec, options.ReturnStatus)
 		})
 	case "METADATA":
 		options.ReturnMetadata = []string{}

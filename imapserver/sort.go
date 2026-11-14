@@ -137,8 +137,8 @@ func (c *Conn) handleSort(tag string, dec *imapwire.Decoder, numKind NumKind) er
 		options.ReturnAll = true
 	}
 
-	// Read before the session can rewrite the criteria. readSearchKey keeps a
-	// MODSEQ key only when CONDSTORE is supported.
+	// Read before the session can rewrite the criteria. readSearchKey accepts
+	// a MODSEQ key only when CONDSTORE is supported.
 	hasModSeq := searchCriteriaHasModSeq(&searchCriteria)
 
 	// Call the session's Sort method

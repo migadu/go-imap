@@ -16,7 +16,7 @@ func (c *Conn) handleStatus(dec *imapwire.Decoder) error {
 
 	var options imap.StatusOptions
 	err := dec.ExpectList(func() error {
-		err := readStatusItem(dec, &options)
+		err := readStatusItem(c, dec, &options)
 		if err != nil {
 			return err
 		}
@@ -128,7 +128,7 @@ func (c *Conn) writeStatus(data *imap.StatusData, options *imap.StatusOptions) e
 	return enc.CRLF()
 }
 
-func readStatusItem(dec *imapwire.Decoder, options *imap.StatusOptions) error {
+func readStatusItem(c *Conn, dec *imapwire.Decoder, options *imap.StatusOptions) error {
 	var name string
 	if !dec.ExpectAtom(&name) {
 		return dec.Err()
@@ -153,6 +153,10 @@ func readStatusItem(dec *imapwire.Decoder, options *imap.StatusOptions) error {
 	case "RECENT":
 		options.NumRecent = true
 	case "HIGHESTMODSEQ":
+		// The status data item is CONDSTORE's (RFC 7162 §3.1.7).
+		if !c.supportsCondStore() {
+			return newClientBugError("HIGHESTMODSEQ requires CONDSTORE")
+		}
 		options.HighestModSeq = true
 	default:
 		return &imap.Error{
