@@ -301,3 +301,33 @@ func TestDecodeBinarySection(t *testing.T) {
 		t.Errorf("DecodeBinarySectionSize([]) = %d, %v; want %d", size, err, len(wantSingle))
 	}
 }
+
+// MIME fields "can include RFC 822 comments, which have no semantic content
+// and should be ignored during MIME processing" (RFC 2045 §1), so a
+// Content-Transfer-Encoding the server knows stays decodable with comments
+// around it, and only an unknown mechanism is NO [UNKNOWN-CTE].
+func TestDecodeBinarySectionCTEComments(t *testing.T) {
+	for _, tc := range []struct {
+		cte, body, want string
+		err             error
+	}{
+		{cte: "base64 (encoded)", body: "bGluZTEKbGluZTIK\r\n", want: "line1\r\nline2\r\n"},
+		{cte: "(encoded) BASE64", body: "bGluZTEKbGluZTIK\r\n", want: "line1\r\nline2\r\n"},
+		{cte: "base64(a (nested \\) comment))", body: "bGluZTEKbGluZTIK\r\n", want: "line1\r\nline2\r\n"},
+		{cte: "quoted-printable (qp)", body: "caf=E9\r\n", want: "caf\xe9\r\n"},
+		{cte: "7bit (plain text)", body: "plain\r\n", want: "plain\r\n"},
+		{cte: "(only a comment)", body: "plain\r\n", want: "plain\r\n"},
+		{cte: "x-uuencode (comment)", body: "begin 644 a\r\nend\r\n", err: ErrUnknownCTE},
+		{cte: "base 64", body: "bGluZTEKbGluZTIK\r\n", err: ErrUnknownCTE},
+	} {
+		msg := "Content-Type: text/plain\r\nContent-Transfer-Encoding: " + tc.cte + "\r\n\r\n" + tc.body
+		got, err := DecodeBinarySection(strings.NewReader(msg), &imap.FetchItemBinarySection{Part: []int{1}})
+		if err != tc.err || string(got) != tc.want {
+			t.Errorf("CTE %q: DecodeBinarySection = %q, %v; want %q, %v", tc.cte, got, err, tc.want, tc.err)
+		}
+		size, err := DecodeBinarySectionSize(strings.NewReader(msg), &imap.FetchItemBinarySectionSize{Part: []int{1}})
+		if err != tc.err || size != uint32(len(tc.want)) {
+			t.Errorf("CTE %q: DecodeBinarySectionSize = %d, %v; want %d, %v", tc.cte, size, err, len(tc.want), tc.err)
+		}
+	}
+}
