@@ -11,7 +11,7 @@ import (
 )
 
 func (c *Conn) handleList(dec *imapwire.Decoder) error {
-	ref, pattern, options, extended, err := readListCmd(dec)
+	ref, pattern, options, syntax, err := readListCmd(dec)
 	if err != nil {
 		return err
 	}
@@ -25,8 +25,11 @@ func (c *Conn) handleList(dec *imapwire.Decoder) error {
 	// BAD response." The session cannot tell this syntax apart itself: LSUB
 	// reaches it as LIST (SUBSCRIBED RECURSIVEMATCH), and "()" or a one-pattern
 	// list as a plain LIST.
-	if extended && !c.configuredCaps().Has(imap.CapListExtended) {
-		return newClientBugError("LIST-EXTENDED is not supported")
+	if syntax.extended {
+		caps := c.availableCapsSet()
+		if !caps.Has(imap.CapListExtended) && !syntax.supportedByOptionCaps(options, caps) {
+			return newClientBugError("LIST-EXTENDED is not supported")
+		}
 	}
 
 	w := &ListWriter{
@@ -218,14 +221,36 @@ func lsubAttrs(data *imap.ListData) []imap.MailboxAttr {
 	return attrs
 }
 
-// readListCmd reads the arguments of LIST. extended reports whether they use
-// the LIST-EXTENDED syntax of RFC 5258: selection options, a parenthesized
-// pattern list or return options, each possibly empty.
-func readListCmd(dec *imapwire.Decoder) (ref string, patterns []string, options *imap.ListOptions, extended bool, err error) {
+type listCommandSyntax struct {
+	extended    bool
+	patternList bool
+}
+
+// supportedByOptionCaps preserves independently advertised LIST options without
+// enabling unrelated LIST-EXTENDED syntax. Each requested option needs its own
+// capability; an allowed option cannot authorize a different one alongside it.
+func (syntax listCommandSyntax) supportedByOptionCaps(options *imap.ListOptions, caps imap.CapSet) bool {
+	if syntax.patternList || options.SelectSubscribed || options.SelectRemote ||
+		options.SelectRecursiveMatch || options.ReturnSubscribed || options.ReturnChildren {
+		return false
+	}
+
+	specialUse := options.SelectSpecialUse || options.ReturnSpecialUse
+	status := options.ReturnStatus != nil
+	metadata := options.ReturnMetadata != nil
+	return (specialUse || status || metadata) &&
+		(!specialUse || caps.Has(imap.CapSpecialUse)) &&
+		(!status || caps.Has(imap.CapListStatus)) &&
+		(!metadata || caps.Has(imap.CapListMetadata))
+}
+
+// readListCmd reads the arguments of LIST, retaining syntax that cannot be
+// inferred from the resulting options or non-empty mailbox patterns alone.
+func readListCmd(dec *imapwire.Decoder) (ref string, patterns []string, options *imap.ListOptions, syntax listCommandSyntax, err error) {
 	options = &imap.ListOptions{}
 
 	if !dec.ExpectSP() {
-		return "", nil, nil, false, dec.Err()
+		return "", nil, nil, syntax, dec.Err()
 	}
 
 	hasSelectOpts, err := dec.List(func() error {
@@ -248,14 +273,14 @@ func readListCmd(dec *imapwire.Decoder) (ref string, patterns []string, options 
 		return nil
 	})
 	if err != nil {
-		return "", nil, nil, false, fmt.Errorf("in list-select-opts: %w", err)
+		return "", nil, nil, syntax, fmt.Errorf("in list-select-opts: %w", err)
 	}
 	if hasSelectOpts && !dec.ExpectSP() {
-		return "", nil, nil, false, dec.Err()
+		return "", nil, nil, syntax, dec.Err()
 	}
 
 	if !dec.ExpectMailbox(&ref) || !dec.ExpectSP() {
-		return "", nil, nil, false, dec.Err()
+		return "", nil, nil, syntax, dec.Err()
 	}
 
 	hasPatterns, err := dec.List(func() error {
@@ -266,13 +291,13 @@ func readListCmd(dec *imapwire.Decoder) (ref string, patterns []string, options 
 		return err
 	})
 	if err != nil {
-		return "", nil, nil, false, err
+		return "", nil, nil, syntax, err
 	} else if hasPatterns && len(patterns) == 0 {
-		return "", nil, nil, false, newClientBugError("LIST-EXTENDED requires a non-empty parenthesized pattern list")
+		return "", nil, nil, syntax, newClientBugError("LIST-EXTENDED requires a non-empty parenthesized pattern list")
 	} else if !hasPatterns {
 		pattern, err := readListMailbox(dec)
 		if err != nil {
-			return "", nil, nil, false, err
+			return "", nil, nil, syntax, err
 		}
 		if pattern != "" {
 			patterns = append(patterns, pattern)
@@ -283,27 +308,28 @@ func readListCmd(dec *imapwire.Decoder) (ref string, patterns []string, options 
 	if hasReturnOpts { // list-return-opts
 		var atom string
 		if !dec.ExpectAtom(&atom) || !dec.Expect(strings.EqualFold(atom, "RETURN"), "RETURN") || !dec.ExpectSP() {
-			return "", nil, nil, false, dec.Err()
+			return "", nil, nil, syntax, dec.Err()
 		}
 
 		err := dec.ExpectList(func() error {
 			return readReturnOption(dec, options)
 		})
 		if err != nil {
-			return "", nil, nil, false, fmt.Errorf("in list-return-opts: %w", err)
+			return "", nil, nil, syntax, fmt.Errorf("in list-return-opts: %w", err)
 		}
 	}
 
 	if !dec.ExpectCRLF() {
-		return "", nil, nil, false, dec.Err()
+		return "", nil, nil, syntax, dec.Err()
 	}
 
 	if options.SelectRecursiveMatch && !options.SelectSubscribed {
-		return "", nil, nil, false, newClientBugError("The LIST RECURSIVEMATCH select option requires SUBSCRIBED")
+		return "", nil, nil, syntax, newClientBugError("The LIST RECURSIVEMATCH select option requires SUBSCRIBED")
 	}
 
-	extended = hasSelectOpts || hasPatterns || hasReturnOpts
-	return ref, patterns, options, extended, nil
+	syntax.extended = hasSelectOpts || hasPatterns || hasReturnOpts
+	syntax.patternList = hasPatterns
+	return ref, patterns, options, syntax, nil
 }
 
 func readListMailbox(dec *imapwire.Decoder) (string, error) {
