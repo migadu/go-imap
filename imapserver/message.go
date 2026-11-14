@@ -261,7 +261,7 @@ func writeBinarySection(w io.Writer, r io.Reader, part []int, lenient bool) erro
 	// RFC 2045 §6.4 restricts to the identity encodings.
 	if !strings.HasPrefix(mediaType, "multipart/") {
 		var cte gomessage.Header
-		cte.Set("Content-Transfer-Encoding", header.Get("Content-Transfer-Encoding"))
+		cte.Set("Content-Transfer-Encoding", cteMechanism(header.Get("Content-Transfer-Encoding")))
 		// New returns a usable *Entity even alongside an UnknownEncoding error,
 		// with the body left as stored.
 		entity, err := gomessage.New(cte, body)
@@ -285,6 +285,33 @@ func writeBinarySection(w io.Writer, r io.Reader, part []int, lenient bool) erro
 	// Keep the bytes read; a truncated or malformed part yields io.ErrUnexpectedEOF.
 	_, _ = io.Copy(w, body)
 	return nil
+}
+
+// cteMechanism returns the mechanism a Content-Transfer-Encoding field value
+// names, without the comments around it: MIME fields "can include RFC 822
+// comments, which have no semantic content and should be ignored during MIME
+// processing" (RFC 2045 §1). gomessage.New takes the whole value for the
+// mechanism, so "base64 (comment)" would otherwise be an unknown encoding.
+func cteMechanism(v string) string {
+	if !strings.ContainsRune(v, '(') {
+		return v
+	}
+	var b strings.Builder
+	depth := 0
+	for i := 0; i < len(v); i++ {
+		switch c := v[i]; {
+		case depth > 0 && c == '\\':
+			i++ // quoted-pair
+		case c == '(':
+			depth++
+			b.WriteByte(' ')
+		case depth > 0 && c == ')':
+			depth--
+		case depth == 0:
+			b.WriteByte(c)
+		}
+	}
+	return strings.TrimSpace(b.String())
 }
 
 // crlfWriter writes each LF that does not end a CRLF as CRLF.
