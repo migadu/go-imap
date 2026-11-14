@@ -128,6 +128,26 @@ func (c *Conn) handleSetMetadata(dec *imapwire.Decoder) error {
 		return dec.Err()
 	}
 
+	// A value sent as a literal is held to the largest value the session
+	// accepts instead of the 4096 octets of other buffered literals. RFC 5464
+	// §4.3: "If the server is unable to set an annotation because the size of
+	// its value is too large, the server MUST return a tagged NO response with
+	// a "[METADATA MAXSIZE NNN]" response code when NNN is the maximum octet
+	// count that it is willing to accept." The literal is refused by its
+	// announced size, before it is read.
+	maxSize := c.metadataMaxSize()
+	checkBuffered := dec.CheckBufferedLiteralFunc
+	checkValue := func(size int64, nonSync bool) error {
+		if size > int64(maxSize) {
+			return &imap.Error{
+				Type: imap.StatusResponseTypeNo,
+				Code: imap.MetadataMaxSizeResponseCode(maxSize),
+				Text: fmt.Sprintf("Metadata values are limited to %d bytes", maxSize),
+			}
+		}
+		return c.acceptLiteral(size, nonSync)
+	}
+
 	// Parse entry-value list
 	entries := make(map[string]*[]byte)
 	if err := dec.ExpectList(func() error {
@@ -149,7 +169,10 @@ func (c *Conn) handleSetMetadata(dec *imapwire.Decoder) error {
 		// first already failed -- either there was no literal at all, or one was
 		// refused and the decoder is poisoned. It never read a literal the first
 		// call missed; it only ever re-read from a stream left inside the payload.
-		if dec.String(&s) {
+		dec.CheckBufferedLiteralFunc = checkValue
+		isString := dec.String(&s)
+		dec.CheckBufferedLiteralFunc = checkBuffered
+		if isString {
 			b := []byte(s)
 			value = &b
 		} else if !dec.ExpectNIL() {
@@ -180,6 +203,25 @@ func (c *Conn) handleSetMetadata(dec *imapwire.Decoder) error {
 	}
 
 	return nil
+}
+
+// defaultMetadataMaxSize is the largest SETMETADATA value accepted from a
+// session that does not implement SessionMetadataMaxSize: the bound of every
+// other buffered literal (checkBufferedLiteral).
+const defaultMetadataMaxSize = 4096
+
+// metadataMaxSize returns the largest SETMETADATA value the connection
+// accepts. The session's limit applies once the client has authenticated;
+// before that every literal keeps the default bound.
+func (c *Conn) metadataMaxSize() uint32 {
+	if c.state == imap.ConnStateAuthenticated || c.state == imap.ConnStateSelected {
+		if session, ok := c.session.(SessionMetadataMaxSize); ok {
+			if maxSize := session.MetadataMaxSize(); maxSize > 0 {
+				return maxSize
+			}
+		}
+	}
+	return defaultMetadataMaxSize
 }
 
 // writeMetadataEntryList writes an untagged METADATA response in the entry-list

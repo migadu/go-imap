@@ -300,3 +300,19 @@ type SessionMetadata interface {
 	// To remove an entry, set its value to nil.
 	SetMetadata(ctx context.Context, mailbox string, entries map[string]*[]byte) error
 }
+
+// SessionMetadataMaxSize is an IMAP session which accepts SETMETADATA values
+// up to a given size.
+//
+// A value sent as a literal larger than the limit is refused before it is
+// read, with a tagged NO and the "[METADATA MAXSIZE NNN]" response code of
+// RFC 5464 §4.3. Without this interface the limit is 4096 octets, the bound of
+// other buffered literals. A value sent as a quoted string is not checked: it
+// is bounded by the command size, and the session checks it as it sees fit.
+type SessionMetadataMaxSize interface {
+	SessionMetadata
+
+	// MetadataMaxSize returns the largest value, in octets, that SETMETADATA
+	// accepts. 0 keeps the default limit.
+	MetadataMaxSize() uint32
+}
