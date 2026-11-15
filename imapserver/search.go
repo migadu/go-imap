@@ -551,7 +551,7 @@ func readSearchKeyWithAtomDepth(c *Conn, criteria *imap.SearchCriteria, dec *ima
 		}
 
 		var modSeq uint64
-		if !dec.ExpectModSeq(&modSeq) {
+		if !dec.ExpectModSequenceValzer(&modSeq) {
 			return dec.Err()
 		}
 
