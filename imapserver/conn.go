@@ -1356,6 +1356,15 @@ func (w *UpdateWriter) ExpungeAllowed() bool {
 	return true
 }
 
+// FlagChangeAllowed reports whether unsolicited flag changes for the selected
+// mailbox are enabled by the current NOTIFY event filter. Before NOTIFY is
+// used it returns true. A filtered WriteMessageFlags returns nil without
+// writing a response, so a backend must not count it as a delivered change
+// when reporting a synchronization watermark.
+func (w *UpdateWriter) FlagChangeAllowed() bool {
+	return w.conn.notifySelectedEventEnabled(imap.NotifyEventFlagChange)
+}
+
 // DelayedExpungeAllowed reports whether an expunge withheld by the
 // SELECTED-DELAYED specifier may be released now.
 //
@@ -1533,7 +1542,7 @@ func (w *UpdateWriter) WriteMessageFlags(seqNum uint32, uid imap.UID, flags []im
 	// unrequested flag update is safe (unlike EXISTS/EXPUNGE, it carries no
 	// sequence-number change), so the whole tracker queue can still be drained
 	// while FlagChange stays filtered out.
-	if !w.conn.notifySelectedEventEnabled(imap.NotifyEventFlagChange) {
+	if !w.FlagChangeAllowed() {
 		return nil
 	}
 
