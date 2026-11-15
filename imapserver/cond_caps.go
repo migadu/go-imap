@@ -2,6 +2,7 @@ package imapserver
 
 import (
 	"github.com/migadu/go-imap"
+	"github.com/migadu/go-imap/internal/imapwire"
 )
 
 // supportsCondStore returns true if the connection supports CONDSTORE extension.
@@ -102,7 +103,7 @@ func (c *Conn) CondStoreEnabled() bool {
 // The response follows the command's own responses and its post-command poll
 // (RFC 7162 does not place it within the command), so the session can report
 // every change those delivered.
-func (c *Conn) finishCondStore(resp *imap.StatusResponse, wasCondStore, wasSelected bool) error {
+func (c *Conn) finishCondStore(enc *imapwire.Encoder, resp *imap.StatusResponse, wasCondStore, wasSelected bool) error {
 	if !wasCondStore && resp.Type == imap.StatusResponseTypeBad {
 		c.mutex.Lock()
 		c.condStore = false
@@ -125,9 +126,7 @@ func (c *Conn) finishCondStore(resp *imap.StatusResponse, wasCondStore, wasSelec
 	if modSeq == 0 || (!firstEnabling && fetchModSeq <= modSeq) {
 		return nil
 	}
-	enc := newResponseEncoder(c)
-	defer enc.end()
-	return writeHighestModSeq(enc.Encoder, modSeq)
+	return writeHighestModSeq(enc, modSeq)
 }
 
 // noteFetchModSeq records that a MODSEQ FETCH data item was written, for

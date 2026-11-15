@@ -422,6 +422,9 @@ func validateNotifyOptions(options *imap.NotifyOptions) error {
 func (c *Conn) writeBadEvent(tag string, supported []imap.NotifyEvent) error {
 	enc := newResponseEncoder(c)
 	defer enc.end()
+	if err := enc.prepareTaggedResponse(tag, &imap.StatusResponse{Type: imap.StatusResponseTypeNo}, true, false); err != nil {
+		return err
+	}
 	if tag == "" {
 		tag = "*"
 	}

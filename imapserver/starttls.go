@@ -54,6 +54,7 @@ func (c *Conn) handleStartTLS(tag string, dec *imapwire.Decoder) error {
 	// locked until the end
 	enc := newResponseEncoder(c)
 	defer enc.end()
+	enc.tagged = tag != ""
 	plain := c.NetConn()
 	if h := c.server.options.OnStartTLS; h != nil {
 		h(plain)
