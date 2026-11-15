@@ -39,7 +39,7 @@ func TestFetchPartialOffsetEchoedInFull(t *testing.T) {
 	}{
 		{"a4", "BODY[]<4294967301.10>", " BODY[]<4294967301> {0}"},
 		{"a5", "BODY[]<4294967296.10>", " BODY[]<4294967296> {0}"},
-		{"a6", "BINARY[]<4294967301.10>", " BINARY[]<4294967301> ~{0}"},
+		{"a6", "BINARY[]<4294967301.10>", " BINARY[]<4294967301> {0}"},
 	} {
 		t.Run(tc.item, func(t *testing.T) {
 			fmt.Fprintf(w.conn, "%s FETCH 1 %s\r\n", tc.tag, tc.item)
