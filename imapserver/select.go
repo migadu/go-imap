@@ -4,8 +4,6 @@ import (
 	"errors"
 	"fmt"
 
-	"strings"
-
 	"github.com/migadu/go-imap"
 	"github.com/migadu/go-imap/internal/imapwire"
 )
@@ -27,7 +25,7 @@ func (c *Conn) handleSelect(tag string, dec *imapwire.Decoder, readOnly bool) er
 				return dec.Err()
 			}
 
-			switch strings.ToUpper(param) {
+			switch imapwire.ToUpperASCII(param) {
 			case "CONDSTORE":
 				// The parameter is CONDSTORE's (RFC 7162 §3.1.8), and "any
 				// parameter not defined by extensions that the server

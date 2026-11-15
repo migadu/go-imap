@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"runtime/debug"
-	"strings"
 	"time"
 
 	"github.com/migadu/go-imap"
@@ -55,7 +54,7 @@ var notifyEventNames = map[string]imap.NotifyEvent{
 // atoms (user-defined events, event-ext) are preserved verbatim so the
 // backend can reject them with UnsupportedNotifyEventError.
 func canonicalNotifyEvent(name string) imap.NotifyEvent {
-	if ev, ok := notifyEventNames[strings.ToUpper(name)]; ok {
+	if ev, ok := notifyEventNames[imapwire.ToUpperASCII(name)]; ok {
 		return ev
 	}
 	return imap.NotifyEvent(name)
@@ -75,7 +74,7 @@ func (c *Conn) handleNotify(tag string, dec *imapwire.Decoder) error {
 		options  *imap.NotifyOptions
 		overflow bool // a size cap was exceeded; refuse once the command is fully parsed
 	)
-	switch strings.ToUpper(verb) {
+	switch imapwire.ToUpperASCII(verb) {
 	case "NONE":
 		// options stays nil: disable all notifications
 	case "SET":
@@ -106,7 +105,7 @@ func (c *Conn) handleNotify(tag string, dec *imapwire.Decoder) error {
 			if !dec.ExpectAtom(&atom) {
 				return dec.Err()
 			}
-			if strings.EqualFold(atom, "STATUS") && !options.Status && len(options.Items) == 0 {
+			if imapwire.EqualFoldASCII(atom, "STATUS") && !options.Status && len(options.Items) == 0 {
 				options.Status = true
 				continue
 			}
@@ -222,7 +221,7 @@ func (c *Conn) readNotifyEventGroup(dec *imapwire.Decoder, pendingFetchWriterOpt
 	}
 
 	var group imap.NotifyItem
-	switch strings.ToUpper(filter) {
+	switch imapwire.ToUpperASCII(filter) {
 	case "SELECTED":
 		group.MailboxSpec = imap.NotifyMailboxSpecSelected
 	case "SELECTED-DELAYED":
@@ -234,7 +233,7 @@ func (c *Conn) readNotifyEventGroup(dec *imapwire.Decoder, pendingFetchWriterOpt
 	case "SUBSCRIBED":
 		group.MailboxSpec = imap.NotifyMailboxSpecSubscribed
 	case "SUBTREE", "MAILBOXES":
-		group.Subtree = strings.EqualFold(filter, "SUBTREE")
+		group.Subtree = imapwire.EqualFoldASCII(filter, "SUBTREE")
 		if !dec.ExpectSP() {
 			return nil, false, dec.Err()
 		}
@@ -315,7 +314,7 @@ func (c *Conn) readNotifyEventGroup(dec *imapwire.Decoder, pendingFetchWriterOpt
 		if !dec.ExpectAtom(&atom) {
 			return nil, false, dec.Err()
 		}
-		if !strings.EqualFold(atom, "NONE") {
+		if !imapwire.EqualFoldASCII(atom, "NONE") {
 			return nil, false, newClientBugError("NOTIFY: expected event list or NONE")
 		}
 	}

@@ -1258,10 +1258,14 @@ func (c *Client) handleFetch(seqNum uint32) (err error) {
 	if !dec.ExpectSpecial('(') {
 		return dec.Err()
 	}
-	if dec.Special(')') {
-		return finish()
-	}
 	for {
+		// Like Decoder.List, tolerate the extra spaces some servers put
+		// around and between attributes. Consume only literal SP bytes.
+		for dec.Special(' ') {
+		}
+		if dec.Special(')') {
+			return finish()
+		}
 		if err := readItem(); err != nil {
 			return err
 		}

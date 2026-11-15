@@ -2,7 +2,6 @@ package imapserver
 
 import (
 	"fmt"
-	"strings"
 
 	"github.com/migadu/go-imap"
 	"github.com/migadu/go-imap/internal/imapwire"
@@ -20,7 +19,7 @@ func (c *Conn) handleSort(tag string, dec *imapwire.Decoder, numKind NumKind) er
 	)
 
 	// Check for RETURN options (ESORT)
-	if maybeReadSearchKeyAtom(dec, &atom) && strings.EqualFold(atom, "RETURN") {
+	if maybeReadSearchKeyAtom(dec, &atom) && imapwire.EqualFoldASCII(atom, "RETURN") {
 		if err := readSortReturnOpts(dec, &options); err != nil {
 			return fmt.Errorf("in sort-return-opts: %w", err)
 		}
@@ -39,7 +38,7 @@ func (c *Conn) handleSort(tag string, dec *imapwire.Decoder, numKind NumKind) er
 			return dec.Err()
 		}
 
-		atom = strings.ToUpper(atom)
+		atom = imapwire.ToUpperASCII(atom)
 		criterion := imap.SortCriterion{}
 
 		if atom == "REVERSE" {
@@ -47,7 +46,7 @@ func (c *Conn) handleSort(tag string, dec *imapwire.Decoder, numKind NumKind) er
 			if !dec.ExpectSP() || !dec.ExpectAtom(&atom) {
 				return dec.Err()
 			}
-			atom = strings.ToUpper(atom)
+			atom = imapwire.ToUpperASCII(atom)
 		}
 
 		switch atom {
@@ -90,7 +89,7 @@ func (c *Conn) handleSort(tag string, dec *imapwire.Decoder, numKind NumKind) er
 	}
 
 	// Validate charset
-	switch strings.ToUpper(charset) {
+	switch imapwire.ToUpperASCII(charset) {
 	case "US-ASCII", "UTF-8":
 		// supported charsets
 	default:
@@ -259,7 +258,7 @@ func readSortReturnOpts(dec *imapwire.Decoder, options *imap.SortOptions) error 
 		if !dec.ExpectAtom(&name) {
 			return dec.Err()
 		}
-		switch strings.ToUpper(name) {
+		switch imapwire.ToUpperASCII(name) {
 		case "MIN":
 			options.ReturnMin = true
 			numRecognizedOpts++

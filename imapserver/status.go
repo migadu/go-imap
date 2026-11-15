@@ -2,7 +2,6 @@ package imapserver
 
 import (
 	"fmt"
-	"strings"
 
 	"github.com/migadu/go-imap"
 	"github.com/migadu/go-imap/internal/imapwire"
@@ -139,7 +138,7 @@ func readStatusItem(c *Conn, dec *imapwire.Decoder, options *imap.StatusOptions)
 	if !dec.ExpectAtom(&name) {
 		return dec.Err()
 	}
-	switch strings.ToUpper(name) {
+	switch imapwire.ToUpperASCII(name) {
 	case "MESSAGES":
 		options.NumMessages = true
 	case "UIDNEXT":
