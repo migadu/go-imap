@@ -214,7 +214,8 @@ func (c *Conn) handleSelect(tag string, dec *imapwire.Decoder, readOnly bool) er
 	}
 
 	// CondStore could be disabled for this client or not enabled in session
-	if c.supportsCondStore() {
+	condStoreSupported := c.supportsCondStore()
+	if condStoreSupported {
 		if data.HighestModSeq > 0 {
 			writeHighestModSeq(enc.Encoder, data.HighestModSeq)
 		} else {
@@ -223,6 +224,10 @@ func (c *Conn) handleSelect(tag string, dec *imapwire.Decoder, readOnly bool) er
 	}
 
 	c.state = imap.ConnStateSelected
+	// Only a NOMODSEQ response actually sent for this mailbox exempts the
+	// first enabling command; omitted data while CONDSTORE was filtered out
+	// says nothing about whether a later enabling command needs the response.
+	c.selectedNoModSeq = condStoreSupported && data.HighestModSeq == 0
 	c.selectedReadOnly = readOnly || data.ReadOnly
 	c.selectedPrivateStore = !readOnly && data.ReadOnly && len(data.PermanentFlags) > 0
 
