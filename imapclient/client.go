@@ -821,6 +821,20 @@ func findPendingCmdByType[T command](c *Client) T {
 	return cmd
 }
 
+func oldestPendingCmdByType[T command](c *Client) T {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+
+	if len(c.pendingCmds) > 0 {
+		if cmd, ok := c.pendingCmds[0].(T); ok {
+			return cmd
+		}
+	}
+
+	var cmd T
+	return cmd
+}
+
 func (c *Client) completeCommand(cmd command, err error) {
 	// Only the reader completes registered commands. A rejected command has
 	// never been exposed to it and can be completed by its creating goroutine.
@@ -1443,11 +1457,13 @@ func (c *Client) readResponseData(typ string) error {
 					malformedCode = true
 					break
 				}
-				if cmd := findPendingCmdByType[*SelectCommand](c); cmd != nil {
+				if cmd := oldestPendingCmdByType[*SelectCommand](c); cmd != nil {
 					cmd.data.HighestModSeq = modSeq
 				}
 			case "NOMODSEQ":
-				// ignore
+				if cmd := oldestPendingCmdByType[*SelectCommand](c); cmd != nil {
+					cmd.data.HighestModSeq = 0
+				}
 			case "NOTIFICATIONOVERFLOW":
 				if handler := c.options.unilateralDataHandler().NotificationOverflow; handler != nil && !c.ignoresUnsolicitedData() {
 					if err := c.runUnilateralHandler(func() { handler() }); err != nil {
@@ -1477,9 +1493,14 @@ func (c *Client) readResponseData(typ string) error {
 		}
 
 		// CLOSED ends a selection; it cannot authenticate an unauthenticated
-		// connection (and thereby admit unsolicited LIST/STATUS data).
+		// connection (and thereby admit unsolicited LIST/STATUS data). All
+		// responses before CLOSED belong to the closing mailbox (RFC 7162
+		// §3.2.11), so discard any provisional SelectData recorded before it.
 		if code == "CLOSED" && c.State() == imap.ConnStateSelected {
 			c.setState(imap.ConnStateAuthenticated)
+			if cmd := oldestPendingCmdByType[*SelectCommand](c); cmd != nil {
+				cmd.data = imap.SelectData{}
+			}
 		}
 
 		if !c.greetingRecv {
