@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"strings"
 
 	"github.com/migadu/go-imap"
 	"github.com/migadu/go-imap/internal"
@@ -57,7 +56,7 @@ func (c *Conn) handleAppend(tag string, dec *imapwire.Decoder) error {
 	} else if dec.Atom(&dataExt) {
 		// Keywords are case-insensitive; normalize once so later comparisons
 		// (e.g. the closing ')' check) don't depend on the wire casing.
-		dataExt = strings.ToUpper(dataExt)
+		dataExt = imapwire.ToUpperASCII(dataExt)
 		switch dataExt {
 		case "UTF8":
 			// '~' is the literal8 prefix

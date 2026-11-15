@@ -25,7 +25,7 @@ func (c *Conn) handleStore(dec *imapwire.Decoder, numKind NumKind) error {
 			return dec.Err()
 		}
 
-		if strings.ToUpper(param) == "UNCHANGEDSINCE" {
+		if imapwire.ToUpperASCII(param) == "UNCHANGEDSINCE" {
 			if !dec.ExpectSP() || !dec.ExpectModSequenceValzer(&options.UnchangedSince) {
 				return dec.Err()
 			}
@@ -85,7 +85,7 @@ func (c *Conn) handleStore(dec *imapwire.Decoder, numKind NumKind) error {
 		return dec.Err()
 	}
 
-	item = strings.ToUpper(item)
+	item = imapwire.ToUpperASCII(item)
 	silent := strings.HasSuffix(item, ".SILENT")
 	item = strings.TrimSuffix(item, ".SILENT")
 
