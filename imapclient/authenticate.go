@@ -2,7 +2,6 @@ package imapclient
 
 import (
 	"encoding/base64"
-	"fmt"
 
 	"github.com/emersion/go-sasl"
 
@@ -44,11 +43,7 @@ func (c *Client) Authenticate(saslClient sasl.Client) error {
 			return cmd.wait()
 		}
 
-		if challengeStr == "" {
-			if initialResp == nil {
-				return fmt.Errorf("imapclient: server requested SASL initial response, but we don't have one")
-			}
-
+		if challengeStr == "" && initialResp != nil {
 			contReq = c.registerContReq(cmd)
 			if err := c.writeSASLResp(initialResp); err != nil {
 				return err
