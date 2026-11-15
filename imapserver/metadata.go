@@ -2,7 +2,6 @@ package imapserver
 
 import (
 	"fmt"
-	"strings"
 
 	"github.com/migadu/go-imap"
 	"github.com/migadu/go-imap/internal/imapwire"
@@ -30,7 +29,7 @@ func (c *Conn) handleGetMetadata(tag string, dec *imapwire.Decoder) error {
 		if !dec.ExpectAtom(&optName) {
 			return dec.Err()
 		}
-		if err := readGetMetadataOption(dec, strings.ToUpper(optName), &options); err != nil {
+		if err := readGetMetadataOption(dec, imapwire.ToUpperASCII(optName), &options); err != nil {
 			return err
 		}
 		numOptions++
@@ -298,7 +297,7 @@ func readGetMetadataOption(dec *imapwire.Decoder, name string, options *imap.Get
 		if !dec.ExpectAtom(&depthStr) {
 			return dec.Err()
 		}
-		switch strings.ToLower(depthStr) {
+		switch imapwire.ToLowerASCII(depthStr) {
 		case "0":
 			options.Depth = imap.GetMetadataDepthZero
 		case "1":

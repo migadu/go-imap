@@ -2,7 +2,6 @@ package imapserver
 
 import (
 	"fmt"
-	"strings"
 
 	"github.com/emersion/go-sasl"
 
@@ -16,7 +15,7 @@ func (c *Conn) handleAuthenticate(tag string, dec *imapwire.Decoder) error {
 	if !dec.ExpectSP() || !dec.ExpectAtom(&mech) {
 		return dec.Err()
 	}
-	mech = strings.ToUpper(mech)
+	mech = imapwire.ToUpperASCII(mech)
 
 	var initialResp []byte
 	if dec.SP() {
