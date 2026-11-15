@@ -13,6 +13,7 @@ import (
 	"github.com/emersion/go-message/textproto"
 	"github.com/migadu/go-imap"
 	"github.com/migadu/go-imap/imapserver"
+	"github.com/migadu/go-imap/internal/imapwire"
 )
 
 type message struct {
@@ -367,5 +368,5 @@ func matchEntity(e *gomessage.Entity, pattern string, includeHeader bool) bool {
 }
 
 func canonicalFlag(flag imap.Flag) imap.Flag {
-	return imap.Flag(strings.ToLower(string(flag)))
+	return imap.Flag(imapwire.ToLowerASCII(string(flag)))
 }

@@ -2,7 +2,6 @@ package imapserver
 
 import (
 	"fmt"
-	"strings"
 
 	"github.com/migadu/go-imap"
 	"github.com/migadu/go-imap/internal/imapwire"
@@ -80,7 +79,7 @@ func (c *Conn) handleID(tag string, dec *imapwire.Decoder) error {
 				"arguments": {}, "environment": {},
 			}
 			for k, v := range serverIDData.Raw {
-				if _, ok := stdKeys[strings.ToLower(k)]; !ok {
+				if _, ok := stdKeys[imapwire.ToLowerASCII(k)]; !ok {
 					addIDKeyValue(enc.Encoder, &isFirstKey, k, v)
 				}
 			}

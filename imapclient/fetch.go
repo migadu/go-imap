@@ -372,7 +372,7 @@ func stringSliceEqualFold(a, b []string) bool {
 		return false
 	}
 	for i := range a {
-		if !strings.EqualFold(a[i], b[i]) {
+		if !imapwire.EqualFoldASCII(a[i], b[i]) {
 			return false
 		}
 	}
