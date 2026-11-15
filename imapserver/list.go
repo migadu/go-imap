@@ -385,7 +385,9 @@ func readReturnOption(c *Conn, dec *imapwire.Decoder, options *imap.ListOptions)
 			return dec.Err()
 		}
 		options.ReturnStatus = new(imap.StatusOptions)
-		return dec.ExpectList(func() error {
+		// status-option = "STATUS" SP "(" status-att *(SP status-att) ")"
+		// (RFC 5819 §4)
+		return dec.ExpectNonEmptyList(func() error {
 			return readStatusItem(c, dec, options.ReturnStatus)
 		})
 	case "METADATA":
@@ -393,7 +395,8 @@ func readReturnOption(c *Conn, dec *imapwire.Decoder, options *imap.ListOptions)
 		if !dec.SP() {
 			return nil
 		}
-		return dec.ExpectList(func() error {
+		// "METADATA" SP "(" entry *(SP entry) ")" (RFC 9590 §5)
+		return dec.ExpectNonEmptyList(func() error {
 			var entry string
 			if !dec.ExpectAString(&entry) {
 				return dec.Err()

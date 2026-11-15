@@ -31,8 +31,9 @@ func (c *Conn) handleSort(tag string, dec *imapwire.Decoder, numKind NumKind) er
 	}
 
 	// Parse sort criteria list: (REVERSE DATE CC FROM)
+	// sort-criteria = "(" sort-criterion *(SP sort-criterion) ")" (RFC 5256 §5)
 	var sortCriteria []imap.SortCriterion
-	if err := dec.ExpectList(func() error {
+	if err := dec.ExpectNonEmptyList(func() error {
 		var atom string
 		if !dec.ExpectAtom(&atom) {
 			return dec.Err()
