@@ -641,12 +641,29 @@ func (dec *Decoder) ModSeq(ptr *uint64) bool {
 	return true
 }
 
+// ExpectModSeq reads a mod-sequence, accepting 0 as mod-sequence-valzer does
+// (RFC 7162 Section 7) and any 64-bit value. Where the grammar takes a
+// mod-sequence-value, read it with ExpectModSequenceValue.
 func (dec *Decoder) ExpectModSeq(ptr *uint64) bool {
 	v, ok := dec.expectNumber(64, "mod-sequence-value")
 	if ok {
 		*ptr = v
 	}
 	return ok
+}
+
+// ExpectModSequenceValue reads a mod-sequence-value: "Positive unsigned 63-bit
+// integer ... (1 <= n <= 9,223,372,036,854,775,807)" (RFC 7162 Section 7).
+func (dec *Decoder) ExpectModSequenceValue(ptr *uint64) bool {
+	v, ok := dec.expectNumber(63, "mod-sequence-value")
+	if !ok {
+		return false
+	}
+	if v == 0 {
+		return dec.returnErr(&DecoderExpectError{Message: "expected mod-sequence-value, got 0"})
+	}
+	*ptr = v
+	return true
 }
 
 func (dec *Decoder) Quoted(ptr *string) bool {

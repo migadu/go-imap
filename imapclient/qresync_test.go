@@ -181,15 +181,16 @@ func TestSelect_QResync_ModifiedModSeq(t *testing.T) {
 		t.Fatalf("Unselect() = %v", err)
 	}
 
-	// Second SELECT with QRESYNC and ModSeq=0.  Every message in the mailbox
-	// has modSeq > 0, so the server will include all of them in the Modified
+	// Second SELECT with QRESYNC and ModSeq=1, the lowest mod-sequence-value
+	// (RFC 7162 Section 7 does not allow 0).  Every message in the mailbox
+	// has modSeq > 1, so the server will include all of them in the Modified
 	// list and call writeQResyncFetch for each.  If MODSEQ is not wrapped in
 	// parentheses the client FETCH parser will return an error and
 	// Select().Wait() will fail.
 	secondData, err := client.Select("INBOX", &imap.SelectOptions{
 		QResync: &imap.QResyncData{
 			UIDValidity: firstData.UIDValidity,
-			ModSeq:      0, // request all modifications
+			ModSeq:      1, // request all modifications
 		},
 	}).Wait()
 	if err != nil {
