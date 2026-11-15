@@ -2,7 +2,6 @@ package imapserver
 
 import (
 	"fmt"
-	"strings"
 
 	"github.com/migadu/go-imap"
 	"github.com/migadu/go-imap/internal"
@@ -258,7 +257,7 @@ func readListCmd(c *Conn, dec *imapwire.Decoder) (ref string, patterns []string,
 		if !dec.ExpectAString(&selectOpt) {
 			return dec.Err()
 		}
-		switch strings.ToUpper(selectOpt) {
+		switch imapwire.ToUpperASCII(selectOpt) {
 		case "SUBSCRIBED":
 			options.SelectSubscribed = true
 		case "REMOTE":
@@ -307,7 +306,7 @@ func readListCmd(c *Conn, dec *imapwire.Decoder) (ref string, patterns []string,
 	hasReturnOpts := dec.SP()
 	if hasReturnOpts { // list-return-opts
 		var atom string
-		if !dec.ExpectAtom(&atom) || !dec.Expect(strings.EqualFold(atom, "RETURN"), "RETURN") || !dec.ExpectSP() {
+		if !dec.ExpectAtom(&atom) || !dec.Expect(imapwire.EqualFoldASCII(atom, "RETURN"), "RETURN") || !dec.ExpectSP() {
 			return "", nil, nil, syntax, dec.Err()
 		}
 
@@ -373,7 +372,7 @@ func readReturnOption(c *Conn, dec *imapwire.Decoder, options *imap.ListOptions)
 		return dec.Err()
 	}
 
-	switch strings.ToUpper(name) {
+	switch imapwire.ToUpperASCII(name) {
 	case "SUBSCRIBED":
 		options.ReturnSubscribed = true
 	case "CHILDREN":

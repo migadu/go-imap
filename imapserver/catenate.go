@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"io"
-	"strings"
 
 	"github.com/migadu/go-imap"
 	"github.com/migadu/go-imap/internal/imapwire"
@@ -272,7 +271,7 @@ func (r *catenateReader) next() (*CatenatePart, error) {
 	if !dec.ExpectAtom(&kind) || !dec.ExpectSP() {
 		return nil, dec.Err()
 	}
-	switch strings.ToUpper(kind) {
+	switch imapwire.ToUpperASCII(kind) {
 	case "URL":
 		var url string
 		if !dec.ExpectAString(&url) {
