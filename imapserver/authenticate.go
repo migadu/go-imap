@@ -1,6 +1,7 @@
 package imapserver
 
 import (
+	"encoding/base64"
 	"fmt"
 	"strings"
 
@@ -88,11 +89,10 @@ func (c *Conn) handleAuthenticate(tag string, dec *imapwire.Decoder) error {
 			break
 		}
 
-		var challengeStr string
-		if challenge != nil {
-			challengeStr = internal.EncodeSASL(challenge)
-		}
-		if err := writeContReq(enc.Encoder, challengeStr); err != nil {
+		// A challenge is plain base64 (RFC 9051 §6.2.2), so an empty one is
+		// sent as "+ " (RFC 4648 §10: BASE64("") = ""). The "=" of
+		// internal.EncodeSASL marks a zero-length initial response only.
+		if err := writeContReq(enc.Encoder, base64.StdEncoding.EncodeToString(challenge)); err != nil {
 			return err
 		}
 
@@ -100,7 +100,15 @@ func (c *Conn) handleAuthenticate(tag string, dec *imapwire.Decoder) error {
 		if err != nil {
 			return err
 		} else if isPrefix {
-			return fmt.Errorf("SASL response too long")
+			// The response does not fit the read buffer. That is the
+			// client's doing: skip the rest of the line so the next command
+			// is read from a command boundary, and refuse the exchange.
+			for isPrefix {
+				if _, isPrefix, err = c.br.ReadLine(); err != nil {
+					return err
+				}
+			}
+			return newClientBugError("SASL response too long")
 		} else if string(encodedResp) == "*" {
 			return &imap.Error{
 				Type: imap.StatusResponseTypeBad,
