@@ -14,8 +14,9 @@ func (c *Conn) handleStatus(dec *imapwire.Decoder) error {
 		return dec.Err()
 	}
 
+	// "(" status-att *(SP status-att) ")" (RFC 9051 §9)
 	var options imap.StatusOptions
-	err := dec.ExpectList(func() error {
+	err := dec.ExpectNonEmptyList(func() error {
 		err := readStatusItem(c, dec, &options)
 		if err != nil {
 			return err

@@ -368,7 +368,8 @@ func readSearchKeyDepth(c *Conn, criteria *imap.SearchCriteria, dec *imapwire.De
 	if maybeReadSearchKeyAtom(dec, &key) {
 		return readSearchKeyWithAtomDepth(c, criteria, dec, key, depth)
 	}
-	return dec.ExpectList(func() error {
+	// "(" search-key *(SP search-key) ")" (RFC 9051 §9)
+	return dec.ExpectNonEmptyList(func() error {
 		for {
 			if err := readSearchKeyDepth(c, criteria, dec, depth+1); err != nil {
 				return err

@@ -101,7 +101,6 @@ func TestListAdvertisedOptionsWithoutListExtended(t *testing.T) {
 			extra: []imap.Cap{imap.CapListMetadata},
 			served: []string{
 				`LIST "" "*" RETURN (METADATA)`,
-				`LIST "" "*" RETURN (METADATA ())`,
 				`LIST "" "*" RETURN (METADATA (/private/comment))`,
 			},
 			refused: []string{
@@ -119,7 +118,7 @@ func TestListAdvertisedOptionsWithoutListExtended(t *testing.T) {
 			extra: []imap.Cap{imap.CapListMetadata},
 			served: []string{
 				`LIST (SPECIAL-USE) "" "*" RETURN (STATUS (MESSAGES) METADATA)`,
-				`LIST "" "*" RETURN (SPECIAL-USE STATUS (MESSAGES) METADATA ())`,
+				`LIST "" "*" RETURN (SPECIAL-USE STATUS (MESSAGES) METADATA (/private/comment))`,
 				`LIST () "" "*" RETURN (STATUS (MESSAGES))`,
 				`LIST (SPECIAL-USE) "" "*" RETURN ()`,
 			},
