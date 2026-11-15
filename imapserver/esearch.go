@@ -121,10 +121,10 @@ func (c *Conn) handleESearch(tag string, dec *imapwire.Decoder) (err error) {
 		source.Selected = true
 	}
 
-	// A search limited to the selected mailbox needs one selected; anything wider
-	// only needs an authenticated session.
+	// RFC 7377 §2.2 requires selected state whenever selected is a source,
+	// even when other source options are also present.
 	requiredState := imap.ConnStateAuthenticated
-	if source.SelectedOnly() {
+	if source.Selected {
 		requiredState = imap.ConnStateSelected
 	}
 	if err := c.checkState(requiredState); err != nil {
