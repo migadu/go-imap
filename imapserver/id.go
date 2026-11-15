@@ -113,7 +113,7 @@ func readID(dec *imapwire.Decoder) (*imap.IDData, error) {
 	// after any other atom would silently accept a list immediately after it.
 	var atom string
 	if dec.Atom(&atom) {
-		if !dec.Expect(strings.EqualFold(atom, "NIL"), "NIL") {
+		if !dec.Expect(imapwire.EqualFoldASCII(atom, "NIL"), "NIL") {
 			return nil, dec.Err()
 		}
 		return nil, nil
@@ -166,7 +166,7 @@ func readID(dec *imapwire.Decoder) (*imap.IDData, error) {
 
 		params = append(params, value)
 
-		lowerKey := strings.ToLower(currKey)
+		lowerKey := imapwire.ToLowerASCII(currKey)
 		data.Raw[lowerKey] = value
 
 		switch lowerKey {

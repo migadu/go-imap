@@ -12,6 +12,7 @@ import (
 	"github.com/emersion/go-message/textproto"
 
 	"github.com/migadu/go-imap"
+	"github.com/migadu/go-imap/internal/imapwire"
 )
 
 // ExtractBodySection extracts a section of a message body.
@@ -47,10 +48,10 @@ func ExtractBodySection(r io.Reader, item *imap.FetchItemBodySection) []byte {
 	if len(item.HeaderFields) > 0 {
 		keep := make(map[string]struct{})
 		for _, k := range item.HeaderFields {
-			keep[strings.ToLower(k)] = struct{}{}
+			keep[imapwire.ToLowerASCII(k)] = struct{}{}
 		}
 		for field := header.Fields(); field.Next(); {
-			if _, ok := keep[strings.ToLower(field.Key())]; !ok {
+			if _, ok := keep[imapwire.ToLowerASCII(field.Key())]; !ok {
 				field.Del()
 			}
 		}

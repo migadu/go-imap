@@ -10,7 +10,6 @@ import (
 	"net"
 	"os"
 	"runtime/debug"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -616,7 +615,7 @@ func (c *Conn) readCommand(dec *imapwire.Decoder) (err error) {
 	if !dec.ExpectAtom(&tag) || !dec.ExpectSP() || !dec.ExpectAtom(&name) {
 		return fmt.Errorf("in command: %w", dec.Err())
 	}
-	name = strings.ToUpper(name)
+	name = imapwire.ToUpperASCII(name)
 
 	numKind := NumKindSeq
 	if name == "UID" {
@@ -625,7 +624,7 @@ func (c *Conn) readCommand(dec *imapwire.Decoder) (err error) {
 		if !dec.ExpectSP() || !dec.ExpectAtom(&subName) {
 			return fmt.Errorf("in command: %w", dec.Err())
 		}
-		name = "UID " + strings.ToUpper(subName)
+		name = "UID " + imapwire.ToUpperASCII(subName)
 	}
 
 	// Record the in-progress command so the NOTIFY pump can defer

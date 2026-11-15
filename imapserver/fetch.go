@@ -100,7 +100,7 @@ func (c *Conn) handleFetch(dec *imapwire.Decoder, numKind NumKind) error {
 				if !dec.ExpectAtom(&param) {
 					return dec.Err()
 				}
-				switch strings.ToUpper(param) {
+				switch imapwire.ToUpperASCII(param) {
 				case "CHANGEDSINCE":
 					if err := handleChangedSince(c, dec, &options); err != nil {
 						return err
@@ -132,7 +132,7 @@ func (c *Conn) handleFetch(dec *imapwire.Decoder, numKind NumKind) error {
 				if !dec.ExpectAtom(&atom) {
 					return dec.Err()
 				}
-				if strings.ToUpper(atom) != "VANISHED" {
+				if imapwire.ToUpperASCII(atom) != "VANISHED" {
 					return newClientBugError(fmt.Sprintf("Unexpected FETCH modifier: %v", atom))
 				}
 				if numKind != NumKindUID {
@@ -148,7 +148,7 @@ func (c *Conn) handleFetch(dec *imapwire.Decoder, numKind NumKind) error {
 				if !dec.Atom(&modifier) {
 					break
 				}
-				switch strings.ToUpper(modifier) {
+				switch imapwire.ToUpperASCII(modifier) {
 				case "CHANGEDSINCE":
 					if err := handleChangedSince(c, dec, &options); err != nil {
 						return err
@@ -354,7 +354,7 @@ func handleFetchPreview(dec *imapwire.Decoder, options *imap.FetchOptions, write
 			if !dec.ExpectAtom(&mod) {
 				return dec.Err()
 			}
-			if strings.ToUpper(mod) != "LAZY" {
+			if imapwire.ToUpperASCII(mod) != "LAZY" {
 				return newClientBugError("Unknown PREVIEW modifier")
 			}
 			lazy = true
@@ -386,7 +386,7 @@ func readFetchAttName(dec *imapwire.Decoder) (string, error) {
 	if !dec.Expect(dec.Func(&attName, isMsgAttNameChar), "msg-att name") {
 		return "", dec.Err()
 	}
-	return strings.ToUpper(attName), nil
+	return imapwire.ToUpperASCII(attName), nil
 }
 
 func isMsgAttNameChar(ch byte) bool {
@@ -416,7 +416,7 @@ func readSection(dec *imapwire.Decoder, section *imap.FetchItemBodySection) erro
 			dec.Atom(&specifier)
 		}
 
-		switch specifier := imap.PartSpecifier(strings.ToUpper(specifier)); specifier {
+		switch specifier := imap.PartSpecifier(imapwire.ToUpperASCII(specifier)); specifier {
 		case imap.PartSpecifierNone, imap.PartSpecifierHeader, imap.PartSpecifierMIME, imap.PartSpecifierText:
 			section.Specifier = specifier
 		case "HEADER.FIELDS", "HEADER.FIELDS.NOT":
