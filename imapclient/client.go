@@ -821,20 +821,6 @@ func findPendingCmdByType[T command](c *Client) T {
 	return cmd
 }
 
-func oldestPendingCmdByType[T command](c *Client) T {
-	c.mutex.Lock()
-	defer c.mutex.Unlock()
-
-	if len(c.pendingCmds) > 0 {
-		if cmd, ok := c.pendingCmds[0].(T); ok {
-			return cmd
-		}
-	}
-
-	var cmd T
-	return cmd
-}
-
 func (c *Client) completeCommand(cmd command, err error) {
 	// Only the reader completes registered commands. A rejected command has
 	// never been exposed to it and can be completed by its creating goroutine.
@@ -1457,11 +1443,14 @@ func (c *Client) readResponseData(typ string) error {
 					malformedCode = true
 					break
 				}
-				if cmd := oldestPendingCmdByType[*SelectCommand](c); cmd != nil {
+				// Independent commands may complete out of order, so SELECT
+				// need not be the oldest pending command. CLOSED below clears
+				// provisional data that belonged to the previous mailbox.
+				if cmd := findPendingCmdByType[*SelectCommand](c); cmd != nil {
 					cmd.data.HighestModSeq = modSeq
 				}
 			case "NOMODSEQ":
-				if cmd := oldestPendingCmdByType[*SelectCommand](c); cmd != nil {
+				if cmd := findPendingCmdByType[*SelectCommand](c); cmd != nil {
 					cmd.data.HighestModSeq = 0
 				}
 			case "NOTIFICATIONOVERFLOW":
@@ -1498,7 +1487,7 @@ func (c *Client) readResponseData(typ string) error {
 		// §3.2.11), so discard any provisional SelectData recorded before it.
 		if code == "CLOSED" && c.State() == imap.ConnStateSelected {
 			c.setState(imap.ConnStateAuthenticated)
-			if cmd := oldestPendingCmdByType[*SelectCommand](c); cmd != nil {
+			if cmd := findPendingCmdByType[*SelectCommand](c); cmd != nil {
 				cmd.data = imap.SelectData{}
 			}
 		}
