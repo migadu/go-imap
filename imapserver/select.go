@@ -39,68 +39,74 @@ func (c *Conn) handleSelect(tag string, dec *imapwire.Decoder, readOnly bool) er
 				// (RFC 7162 §3.1): the client is now CONDSTORE-aware.
 				c.markCondStoreEnabled()
 			case "QRESYNC":
-				// Per RFC 7162, QRESYNC requires ENABLE QRESYNC
-				if c.enabledHas(imap.CapQResync) {
-					if !dec.ExpectSP() {
+				// "A server MUST respond with a tagged BAD response if the Quick
+				// Resynchronization parameter to the SELECT/EXAMINE command is
+				// specified and the client hasn't issued "ENABLE QRESYNC" in the
+				// current connection" (RFC 7162 §3.2.5). Refuse it before reading
+				// its arguments: returning without reading them accepted a bare
+				// "(QRESYNC)".
+				if !c.enabledHas(imap.CapQResync) {
+					return newClientBugError("QRESYNC parameter requires ENABLE QRESYNC")
+				}
+				if !dec.ExpectSP() {
+					return dec.Err()
+				}
+				err := dec.ExpectList(func() error {
+					var uidValidity uint32
+					var modSeq uint64
+					if !dec.ExpectNumber(&uidValidity) || !dec.ExpectSP() || !dec.ExpectModSeq(&modSeq) {
 						return dec.Err()
 					}
-					err := dec.ExpectList(func() error {
-						var uidValidity uint32
-						var modSeq uint64
-						if !dec.ExpectNumber(&uidValidity) || !dec.ExpectSP() || !dec.ExpectModSeq(&modSeq) {
-							return dec.Err()
+
+					qresyncData := &imap.QResyncData{
+						UIDValidity: uidValidity,
+						ModSeq:      modSeq,
+					}
+
+					// RFC 7162 §3.2.5: "[SP known-uids] [SP seq-match-data]". Either
+					// may be absent, and known-uids is a sequence set where
+					// seq-match-data is parenthesised, so tell them apart by the
+					// next byte. Attempting the sequence set and continuing on
+					// failure records a decode error, and the decoder stops
+					// reading input once one is recorded -- so a client that sent
+					// seq-match-data alone lost the rest of its command.
+					if dec.SP() {
+						seqMatch := dec.NextByteIs('(')
+						if !seqMatch {
+							var knownUIDs imap.UIDSet
+							if !dec.ExpectUIDSet(&knownUIDs) {
+								return dec.Err()
+							}
+							qresyncData.KnownUIDs = knownUIDs
+							seqMatch = dec.SP()
 						}
 
-						qresyncData := &imap.QResyncData{
-							UIDValidity: uidValidity,
-							ModSeq:      modSeq,
-						}
-
-						// RFC 7162 §3.2.5: "[SP known-uids] [SP seq-match-data]". Either
-						// may be absent, and known-uids is a sequence set where
-						// seq-match-data is parenthesised, so tell them apart by the
-						// next byte. Attempting the sequence set and continuing on
-						// failure records a decode error, and the decoder stops
-						// reading input once one is recorded -- so a client that sent
-						// seq-match-data alone lost the rest of its command.
-						if dec.SP() {
-							seqMatch := dec.NextByteIs('(')
-							if !seqMatch {
-								var knownUIDs imap.UIDSet
-								if !dec.ExpectUIDSet(&knownUIDs) {
+						if seqMatch {
+							err := dec.ExpectList(func() error {
+								// seq-match-data is "known-sequence-set SP known-uid-set":
+								// the first half is sequence numbers, not UIDs.
+								var seqNums imap.SeqSet
+								var uids imap.UIDSet
+								if !dec.ExpectSeqSet(&seqNums) || !dec.ExpectSP() || !dec.ExpectUIDSet(&uids) {
 									return dec.Err()
 								}
-								qresyncData.KnownUIDs = knownUIDs
-								seqMatch = dec.SP()
-							}
-
-							if seqMatch {
-								err := dec.ExpectList(func() error {
-									// seq-match-data is "known-sequence-set SP known-uid-set":
-									// the first half is sequence numbers, not UIDs.
-									var seqNums imap.SeqSet
-									var uids imap.UIDSet
-									if !dec.ExpectSeqSet(&seqNums) || !dec.ExpectSP() || !dec.ExpectUIDSet(&uids) {
-										return dec.Err()
-									}
-									qresyncData.SeqMatch = &imap.QResyncSeqMatch{
-										SeqNums: seqNums,
-										UIDs:    uids,
-									}
-									return nil
-								})
-								if err != nil {
-									return err
+								qresyncData.SeqMatch = &imap.QResyncSeqMatch{
+									SeqNums: seqNums,
+									UIDs:    uids,
 								}
+								return nil
+							})
+							if err != nil {
+								return err
 							}
 						}
-
-						options.QResync = qresyncData
-						return nil
-					})
-					if err != nil {
-						return err
 					}
+
+					options.QResync = qresyncData
+					return nil
+				})
+				if err != nil {
+					return err
 				}
 			default:
 				return newClientBugError(fmt.Sprintf("unknown SELECT parameter: %v", param))
