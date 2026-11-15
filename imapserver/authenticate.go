@@ -1,6 +1,7 @@
 package imapserver
 
 import (
+	"bufio"
 	"encoding/base64"
 	"fmt"
 	"strings"
@@ -103,10 +104,18 @@ func (c *Conn) handleAuthenticate(tag string, dec *imapwire.Decoder) error {
 			// The response does not fit the read buffer. That is the
 			// client's doing: skip the rest of the line so the next command
 			// is read from a command boundary, and refuse the exchange.
-			for isPrefix {
-				if _, isPrefix, err = c.br.ReadLine(); err != nil {
+			for {
+				// Unlike ReadLine, ReadSlice keeps EOF and timeout errors
+				// on an unterminated fragment: only nil proves LF was read.
+				_, err := c.br.ReadSlice('\n')
+				if err == bufio.ErrBufferFull {
+					continue
+				}
+				if err != nil {
+					dec.MarkDesynchronized()
 					return err
 				}
+				break
 			}
 			return newClientBugError("SASL response too long")
 		} else if string(encodedResp) == "*" {
