@@ -58,3 +58,33 @@ func TestDecoderNumberLimits(t *testing.T) {
 		})
 	}
 }
+
+// mod-sequence-value is "Positive unsigned 63-bit integer ...
+// (1 <= n <= 9,223,372,036,854,775,807)" (RFC 7162 Section 7).
+func TestDecoderModSequenceValue(t *testing.T) {
+	for _, tc := range []struct {
+		in   string
+		want uint64 // 0: refused
+	}{
+		{"1)", 1},
+		{"9223372036854775807)", 9223372036854775807},
+		{"0)", 0},
+		{"00)", 0},
+		{"9223372036854775808)", 0},
+	} {
+		dec := newTestDecoder(tc.in)
+		var v uint64
+		ok := dec.ExpectModSequenceValue(&v)
+		if tc.want == 0 {
+			if ok {
+				t.Errorf("%q: accepted as %v", tc.in, v)
+				continue
+			}
+			expectDecoderExpectError(t, dec)
+			continue
+		}
+		if !ok || v != tc.want || dec.Err() != nil || !dec.Special(')') {
+			t.Errorf("%q: got %v, %v (err %v), want %v", tc.in, v, ok, dec.Err(), tc.want)
+		}
+	}
+}

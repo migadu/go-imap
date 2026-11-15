@@ -195,9 +195,11 @@ func (c *Conn) handleFetch(dec *imapwire.Decoder, numKind NumKind) error {
 // name has been consumed. The modifier is CONDSTORE's (RFC 7162 §3.1.4.1),
 // and "any modifiers not defined by extensions that the server supports must
 // be rejected with a BAD response" (RFC 4466 §2.4): ignoring it would return
-// every message the client asked to leave out.
+// every message the client asked to leave out. Its value is a
+// mod-sequence-value (RFC 7162 §7), never 0, so ChangedSince == 0 still means
+// the modifier is absent.
 func handleChangedSince(c *Conn, dec *imapwire.Decoder, options *imap.FetchOptions) error {
-	if !dec.ExpectSP() || !dec.ExpectModSeq(&options.ChangedSince) {
+	if !dec.ExpectSP() || !dec.ExpectModSequenceValue(&options.ChangedSince) {
 		return dec.Err()
 	}
 	if !c.supportsCondStore() {

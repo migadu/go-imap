@@ -54,7 +54,7 @@ func (c *Conn) handleSelect(tag string, dec *imapwire.Decoder, readOnly bool) er
 				err := dec.ExpectList(func() error {
 					var uidValidity uint32
 					var modSeq uint64
-					if !dec.ExpectNumber(&uidValidity) || !dec.ExpectSP() || !dec.ExpectModSeq(&modSeq) {
+					if !dec.ExpectNumber(&uidValidity) || !dec.ExpectSP() || !dec.ExpectModSequenceValue(&modSeq) {
 						return dec.Err()
 					}
 
