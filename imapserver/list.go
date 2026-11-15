@@ -311,6 +311,7 @@ func readListCmd(c *Conn, dec *imapwire.Decoder) (ref string, patterns []string,
 		}
 	}
 
+	var metadataEntryErr error
 	hasReturnOpts := dec.SP()
 	if hasReturnOpts { // list-return-opts
 		var atom string
@@ -319,7 +320,7 @@ func readListCmd(c *Conn, dec *imapwire.Decoder) (ref string, patterns []string,
 		}
 
 		err := dec.ExpectList(func() error {
-			return readReturnOption(c, dec, options)
+			return readReturnOption(c, dec, options, &metadataEntryErr)
 		})
 		if err != nil {
 			return "", nil, nil, syntax, fmt.Errorf("in list-return-opts: %w", err)
@@ -328,6 +329,13 @@ func readListCmd(c *Conn, dec *imapwire.Decoder) (ref string, patterns []string,
 
 	if !dec.ExpectCRLF() {
 		return "", nil, nil, syntax, dec.Err()
+	}
+
+	if metadataEntryErr != nil {
+		return "", nil, nil, syntax, fmt.Errorf("in list-return-opts: %w", &imap.Error{
+			Type: imap.StatusResponseTypeBad,
+			Text: metadataEntryErr.Error(),
+		})
 	}
 
 	if options.SelectRecursiveMatch && !options.SelectSubscribed {
@@ -374,7 +382,7 @@ func isListChar(ch byte) bool {
 	}
 }
 
-func readReturnOption(c *Conn, dec *imapwire.Decoder, options *imap.ListOptions) error {
+func readReturnOption(c *Conn, dec *imapwire.Decoder, options *imap.ListOptions, metadataEntryErr *error) error {
 	var name string
 	if !dec.ExpectAtom(&name) {
 		return dec.Err()
@@ -408,11 +416,11 @@ func readReturnOption(c *Conn, dec *imapwire.Decoder, options *imap.ListOptions)
 			if !dec.ExpectAString(&entry) {
 				return dec.Err()
 			}
-			if err := imap.ValidateMetadataEntry(entry); err != nil {
-				return &imap.Error{
-					Type: imap.StatusResponseTypeBad,
-					Text: err.Error(),
-				}
+			// Remember invalid names even if a later METADATA option replaces
+			// this entry list. Report the error only after consuming CRLF and
+			// any non-synchronizing literal data in the command.
+			if *metadataEntryErr == nil {
+				*metadataEntryErr = imap.ValidateMetadataEntry(entry)
 			}
 			options.ReturnMetadata = append(options.ReturnMetadata, entry)
 			return nil

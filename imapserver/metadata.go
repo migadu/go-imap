@@ -53,17 +53,11 @@ func (c *Conn) handleGetMetadata(tag string, dec *imapwire.Decoder) error {
 		return dec.Err()
 	}
 
-	// Parse entries: single entry or list
-	isList, err := dec.List(func() error {
+	// Parse entries: single entry or non-empty list (RFC 5464 §5).
+	isList, err := dec.NonEmptyList(func() error {
 		var entry string
 		if !dec.ExpectAString(&entry) {
 			return dec.Err()
-		}
-		if err := imap.ValidateMetadataEntry(entry); err != nil {
-			return &imap.Error{
-				Type: imap.StatusResponseTypeBad,
-				Text: err.Error(),
-			}
 		}
 		entries = append(entries, entry)
 		return nil
@@ -78,17 +72,20 @@ func (c *Conn) handleGetMetadata(tag string, dec *imapwire.Decoder) error {
 		if !dec.ExpectAString(&entry) {
 			return dec.Err()
 		}
+		entries = append(entries, entry)
+	}
+
+	if !dec.ExpectCRLF() {
+		return dec.Err()
+	}
+
+	for _, entry := range entries {
 		if err := imap.ValidateMetadataEntry(entry); err != nil {
 			return &imap.Error{
 				Type: imap.StatusResponseTypeBad,
 				Text: err.Error(),
 			}
 		}
-		entries = append(entries, entry)
-	}
-
-	if !dec.ExpectCRLF() {
-		return dec.Err()
 	}
 
 	if err := c.checkState(imap.ConnStateAuthenticated); err != nil {
@@ -158,18 +155,23 @@ func (c *Conn) handleSetMetadata(dec *imapwire.Decoder) error {
 		return c.acceptLiteral(size, nonSync)
 	}
 
-	// Parse entry-value list
+	// Parse non-empty entry-value list (RFC 5464 §5). Defer entry-name
+	// validation until the full command (including any non-synchronizing
+	// literals) has been consumed so the command stream stays in sync.
 	entries := make(map[string]*[]byte)
-	if err := dec.ExpectList(func() error {
+	var entryErr error
+	if err := dec.ExpectNonEmptyList(func() error {
 		var entry string
 		if !dec.ExpectAString(&entry) || !dec.ExpectSP() {
 			return dec.Err()
 		}
 
-		if err := imap.ValidateMetadataEntry(entry); err != nil {
-			return &imap.Error{
-				Type: imap.StatusResponseTypeBad,
-				Text: err.Error(),
+		if entryErr == nil {
+			if err := imap.ValidateMetadataEntry(entry); err != nil {
+				entryErr = &imap.Error{
+					Type: imap.StatusResponseTypeBad,
+					Text: err.Error(),
+				}
 			}
 		}
 
@@ -197,6 +199,10 @@ func (c *Conn) handleSetMetadata(dec *imapwire.Decoder) error {
 
 	if !dec.ExpectCRLF() {
 		return dec.Err()
+	}
+
+	if entryErr != nil {
+		return entryErr
 	}
 
 	if err := c.checkState(imap.ConnStateAuthenticated); err != nil {
