@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"io"
 	"strings"
+	"time"
 
 	gomessage "github.com/emersion/go-message"
 	"github.com/emersion/go-message/mail"
@@ -360,12 +361,45 @@ func (n *countingWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
+// ExtractOptions changes how ExtractEnvelopeWithOptions and
+// ExtractBodyStructureWithOptions read a message header. A nil *ExtractOptions
+// is the default for every field.
+type ExtractOptions struct {
+	// ParseDate parses the value of a Date header field into the envelope
+	// date. A value it returns an error for gives no date (NIL). If nil,
+	// go-message's mail.Header.Date is used, which is net/mail.ParseDate: it
+	// reads an obsolete alphabetic zone such as "PDT" in the host's time zone
+	// rather than as RFC 5322 section 4.3 defines it.
+	ParseDate func(value string) (time.Time, error)
+}
+
+func (options *ExtractOptions) date(mh mail.Header) time.Time {
+	if options == nil || options.ParseDate == nil {
+		date, _ := mh.Date()
+		return date
+	}
+	v := mh.Get("Date")
+	if v == "" {
+		return time.Time{}
+	}
+	date, err := options.ParseDate(v)
+	if err != nil {
+		return time.Time{}
+	}
+	return date
+}
+
 // ExtractEnvelope returns a message envelope from its header.
 //
 // It can be used by server backends to implement Session.Fetch.
 func ExtractEnvelope(h textproto.Header) *imap.Envelope {
+	return ExtractEnvelopeWithOptions(h, nil)
+}
+
+// ExtractEnvelopeWithOptions is ExtractEnvelope with options.
+func ExtractEnvelopeWithOptions(h textproto.Header, options *ExtractOptions) *imap.Envelope {
 	mh := mail.Header{Header: gomessage.Header{Header: h}}
-	date, _ := mh.Date()
+	date := options.date(mh)
 	subject, _ := mh.Subject()
 	inReplyTo, _ := mh.MsgIDList("In-Reply-To")
 	messageID, _ := mh.MessageID()
@@ -405,12 +439,18 @@ func parseAddressList(mh mail.Header, k string) []imap.Address {
 //
 // It can be used by server backends to implement Session.Fetch.
 func ExtractBodyStructure(r io.Reader) imap.BodyStructure {
-	br := bufio.NewReader(r)
-	header, _ := textproto.ReadHeader(br)
-	return extractBodyStructure(header, br)
+	return ExtractBodyStructureWithOptions(r, nil)
 }
 
-func extractBodyStructure(rawHeader textproto.Header, r io.Reader) imap.BodyStructure {
+// ExtractBodyStructureWithOptions is ExtractBodyStructure with options for the
+// envelopes of message/rfc822 and message/global parts.
+func ExtractBodyStructureWithOptions(r io.Reader, options *ExtractOptions) imap.BodyStructure {
+	br := bufio.NewReader(r)
+	header, _ := textproto.ReadHeader(br)
+	return extractBodyStructure(header, br, options)
+}
+
+func extractBodyStructure(rawHeader textproto.Header, r io.Reader, options *ExtractOptions) imap.BodyStructure {
 	header := gomessage.Header{Header: rawHeader}
 
 	mediaType, typeParams, _ := header.ContentType()
@@ -424,7 +464,7 @@ func extractBodyStructure(rawHeader textproto.Header, r io.Reader) imap.BodyStru
 			if part == nil {
 				break
 			}
-			bs.Children = append(bs.Children, extractBodyStructure(part.Header, part))
+			bs.Children = append(bs.Children, extractBodyStructure(part.Header, part, options))
 		}
 		// RFC 2046 §5.1.1 / RFC 3501 body-type-mpart grammar require at least
 		// one child part ("1*body").  If the multipart reader yielded nothing
@@ -469,8 +509,8 @@ func extractBodyStructure(rawHeader textproto.Header, r io.Reader) imap.BodyStru
 			br := bufio.NewReader(bytes.NewReader(body))
 			childHeader, _ := textproto.ReadHeader(br)
 			bs.MessageRFC822 = &imap.BodyStructureMessageRFC822{
-				Envelope:      ExtractEnvelope(childHeader),
-				BodyStructure: extractBodyStructure(childHeader, br),
+				Envelope:      ExtractEnvelopeWithOptions(childHeader, options),
+				BodyStructure: extractBodyStructure(childHeader, br, options),
 				NumLines:      int64(bytes.Count(body, []byte("\n"))),
 			}
 		}
