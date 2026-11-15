@@ -112,6 +112,9 @@ type Conn struct {
 	// §6.3.2). Nonempty PERMANENTFLAGS opt into backend STORE authorization;
 	// EXAMINE never does. Shared mutations still use selectedReadOnly.
 	selectedPrivateStore bool
+	// selectedNoModSeq is true when SELECT/EXAMINE answered NOMODSEQ (RFC
+	// 7162 §3.1.2.2) for the selected mailbox. Command-loop only, like state.
+	selectedNoModSeq bool
 
 	// NOTIFY (RFC 5465) pump state. notifyStop/notifyDone are non-nil while a
 	// SessionNotify.NotifyPoll goroutine is running for this connection.
@@ -626,6 +629,9 @@ func (c *Conn) readCommand(dec *imapwire.Decoder) (err error) {
 	c.setActiveCommand(name)
 	defer c.setActiveCommand("")
 
+	// The CONDSTORE state the command starts from; see finishCondStoreEnabling.
+	wasCondStore, wasSelected := c.CondStoreEnabled(), c.state == imap.ConnStateSelected
+
 	// TODO: handle multiple commands concurrently
 	sendOK := true
 	switch name {
@@ -810,6 +816,11 @@ func (c *Conn) readCommand(dec *imapwire.Decoder) (err error) {
 		resp = &imap.StatusResponse{
 			Type: imap.StatusResponseTypeOK,
 			Text: fmt.Sprintf("%v completed", name),
+		}
+	}
+	if !wasCondStore {
+		if err := c.finishCondStoreEnabling(resp, wasSelected); err != nil {
+			return err
 		}
 	}
 	return c.writeStatusResp(tag, resp)

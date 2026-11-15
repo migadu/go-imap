@@ -204,6 +204,7 @@ func (c *Conn) handleSelect(tag string, dec *imapwire.Decoder, readOnly bool) er
 	}
 
 	c.state = imap.ConnStateSelected
+	c.selectedNoModSeq = data.HighestModSeq == 0
 	c.selectedReadOnly = readOnly || data.ReadOnly
 	c.selectedPrivateStore = !readOnly && data.ReadOnly && len(data.PermanentFlags) > 0
 

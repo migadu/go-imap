@@ -186,6 +186,29 @@ type SessionSearchRes interface {
 	ResetSearchRes()
 }
 
+// SessionHighestModSeq is an IMAP session which can report the HIGHESTMODSEQ
+// of the selected mailbox after SELECT/EXAMINE.
+//
+// RFC 7162 §3.1: "A first CONDSTORE enabling command executed in the session
+// with a mailbox selected MUST cause the server to return HIGHESTMODSEQ ...
+// for the mailbox (if any is selected), unless the server has sent a NOMODSEQ
+// ... response code when the currently selected mailbox was selected." The
+// server only knows the value SELECT returned, so for that response it asks
+// the session. Without this interface the response is not sent.
+type SessionHighestModSeq interface {
+	Session
+
+	// Selected state
+
+	// HighestModSeq returns the mod-sequence of the selected mailbox up to
+	// which every change has been reported to the client. The client adopts
+	// it "even if it has seen higher mod-sequences" (RFC 7162 §6), so it must
+	// not cover a change that is still queued, such as an EXPUNGE held back
+	// by a FETCH, STORE or SEARCH. It is called once the command's own
+	// responses and its post-command Poll have been written. 0 sends nothing.
+	HighestModSeq() uint64
+}
+
 // SessionCapabilities is an IMAP session which can provide its current
 // capabilities for capability filtering.
 type SessionCapabilities interface {
