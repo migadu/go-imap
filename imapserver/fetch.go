@@ -27,6 +27,7 @@ type fetchWriterOptions struct {
 		requested bool // PREVIEW
 		lazy      bool // PREVIEW (LAZY)
 	}
+	committedCondStoreOnly bool
 }
 
 func (c *Conn) handleFetch(dec *imapwire.Decoder, numKind NumKind) error {
@@ -735,8 +736,14 @@ func (w *FetchResponseWriter) WriteEnvelope(envelope *imap.Envelope) {
 // capability filter can suppress the item mid-connection.
 func (w *FetchResponseWriter) WriteModSeq(modSeq uint64) {
 	conn := w.enc.conn
-	if conn != nil && !(conn.supportsCondStore() && conn.CondStoreEnabled()) {
-		return
+	if conn != nil {
+		enabled := conn.CondStoreEnabled()
+		if w.options.committedCondStoreOnly {
+			enabled = conn.committedCondStoreEnabled()
+		}
+		if !(conn.supportsCondStore() && enabled) {
+			return
+		}
 	}
 	w.writeItemSep()
 	w.enc.Atom("MODSEQ").SP().Special('(').ModSeq(modSeq).Special(')')

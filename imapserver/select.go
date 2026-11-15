@@ -148,6 +148,9 @@ func (c *Conn) handleSelect(tag string, dec *imapwire.Decoder, readOnly bool) er
 	defer c.restartNotifyPump(c.fenceNotifyPump())
 
 	if c.state == imap.ConnStateSelected {
+		if err := c.flushClosingCondStore(); err != nil {
+			return err
+		}
 		if err := c.session.Unselect(c.ctx); err != nil {
 			return err
 		}
@@ -219,6 +222,7 @@ func (c *Conn) handleSelect(tag string, dec *imapwire.Decoder, readOnly bool) er
 		}
 	}
 
+	c.commitCondStore()
 	c.state = imap.ConnStateSelected
 	// Only a NOMODSEQ response actually sent for this mailbox exempts the
 	// first enabling command; omitted data while CONDSTORE was filtered out
@@ -274,6 +278,10 @@ func (c *Conn) handleUnselect(dec *imapwire.Decoder, expunge bool) error {
 	// Same fence as SELECT: nothing may be delivered for the mailbox being
 	// closed while it is being closed.
 	defer c.restartNotifyPump(c.fenceNotifyPump())
+
+	if err := c.flushClosingCondStore(); err != nil {
+		return err
+	}
 
 	// RFC 3501 §6.4.2: "No messages are removed, and no error is given, if the
 	// mailbox is selected by an EXAMINE command or is otherwise selected

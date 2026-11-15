@@ -86,11 +86,12 @@ type Conn struct {
 	// Options.NewDebugConn. Immutable after newConn, so it needs no lock.
 	debug DebugConn
 
-	mutex     sync.Mutex
-	conn      net.Conn
-	enabled   imap.CapSet
-	condStore bool         // client issued a CONDSTORE-enabling command (RFC 7162 §3.1)
-	clientID  *imap.IDData // Store client identification info
+	mutex            sync.Mutex
+	conn             net.Conn
+	enabled          imap.CapSet
+	condStore        bool         // client completed a CONDSTORE-enabling command (RFC 7162 §3.1)
+	condStorePending bool         // current command parsed a CONDSTORE-enabling modifier/item
+	clientID         *imap.IDData // Store client identification info
 
 	state   imap.ConnState
 	session Session
@@ -632,6 +633,7 @@ func (c *Conn) readCommand(dec *imapwire.Decoder) (err error) {
 	// UpdateWriter.ExpungeAllowed).
 	c.setActiveCommand(name)
 	defer c.setActiveCommand("")
+	defer c.clearPendingCondStore()
 
 	// The CONDSTORE state the command starts from; see finishCondStore.
 	wasCondStore, wasSelected := c.CondStoreEnabled(), c.state == imap.ConnStateSelected
@@ -840,6 +842,11 @@ func (c *Conn) handleNoop(dec *imapwire.Decoder) error {
 func (c *Conn) handleLogout(dec *imapwire.Decoder) error {
 	if !dec.ExpectCRLF() {
 		return dec.Err()
+	}
+
+	c.stopNotifyPump()
+	if err := c.flushClosingCondStore(); err != nil {
+		return err
 	}
 
 	c.state = imap.ConnStateLogout
@@ -1329,8 +1336,10 @@ type UpdateWriter struct {
 
 	// notify is set for writers handed to SessionNotify: expunge delivery is
 	// additionally gated on the command currently in progress (see
-	// ExpungeAllowed).
-	notify bool
+	// ExpungeAllowed). notifyPump is set for the asynchronous NotifyPoll pump
+	// so mid-parse CONDSTORE marks stay invisible until the command commits.
+	notify     bool
+	notifyPump bool
 }
 
 // ExpungeAllowed reports whether EXPUNGE/VANISHED updates may be written in
@@ -1396,7 +1405,13 @@ func (w *UpdateWriter) DelayedExpungeAllowed() bool {
 // carry HIGHESTMODSEQ (RFC 5465 §5.1, §5.2) and whether unsolicited FETCH
 // responses may carry MODSEQ.
 func (w *UpdateWriter) CondStoreEnabled() bool {
-	return w.conn.supportsCondStore() && w.conn.CondStoreEnabled()
+	if !w.conn.supportsCondStore() {
+		return false
+	}
+	if w.notifyPump {
+		return w.conn.committedCondStoreEnabled()
+	}
+	return w.conn.CondStoreEnabled()
 }
 
 // WriteStatus writes an untagged STATUS response. It is used by NOTIFY
@@ -1479,6 +1494,7 @@ func (w *UpdateWriter) FetchWriter() *FetchWriter {
 		fw.options = *opts
 	}
 	w.conn.notifyMutex.Unlock()
+	fw.options.committedCondStoreOnly = w.notifyPump
 	return fw
 }
 
@@ -1546,6 +1562,7 @@ func (w *UpdateWriter) WriteMessageFlags(seqNum uint32, uid imap.UID, flags []im
 	}
 
 	fetchWriter := &FetchWriter{conn: w.conn}
+	fetchWriter.options.committedCondStoreOnly = w.notifyPump
 	respWriter := fetchWriter.CreateMessage(seqNum)
 	if uid != 0 {
 		respWriter.WriteUID(uid)

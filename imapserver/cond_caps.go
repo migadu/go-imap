@@ -37,16 +37,35 @@ func (c *Conn) supportsCondStore() bool {
 	return c.server.options.caps().Has(imap.CapCondStore)
 }
 
-// markCondStoreEnabled records that the client has issued a CONDSTORE-enabling
+// markCondStoreEnabled records that the client is parsing a CONDSTORE-enabling
 // command (RFC 7162 §3.1) on this connection: SELECT/EXAMINE ... (CONDSTORE),
 // STATUS (HIGHESTMODSEQ) (also as a LIST RETURN (STATUS) item), a FETCH/SEARCH
-// carrying a MODSEQ or CHANGEDSINCE modifier, or a STORE with UNCHANGEDSINCE.
-// ENABLE CONDSTORE/QRESYNC is tracked separately in the enabled capability set
-// (see handleEnable) and picked up by CondStoreEnabled. The mark is undone if
-// the command is answered BAD (see finishCondStore).
+// carrying a MODSEQ or CHANGEDSINCE modifier, NOTIFY MessageNew (... MODSEQ ...),
+// or a STORE with UNCHANGEDSINCE. ENABLE CONDSTORE/QRESYNC is tracked
+// separately in the enabled capability set (see handleEnable) and picked up by
+// CondStoreEnabled.
+//
+// The mark stays pending (invisible to the background NOTIFY pump) until the
+// command succeeds (commitCondStore) and is discarded if the command fails
+// (clearPendingCondStore).
 func (c *Conn) markCondStoreEnabled() {
 	c.mutex.Lock()
-	c.condStore = true
+	c.condStorePending = true
+	c.mutex.Unlock()
+}
+
+func (c *Conn) commitCondStore() {
+	c.mutex.Lock()
+	if c.condStorePending {
+		c.condStore = true
+		c.condStorePending = false
+	}
+	c.mutex.Unlock()
+}
+
+func (c *Conn) clearPendingCondStore() {
+	c.mutex.Lock()
+	c.condStorePending = false
 	c.mutex.Unlock()
 }
 
@@ -61,6 +80,12 @@ func (c *Conn) markCondStoreEnabled() {
 // confirm the session still advertises CONDSTORE (supportsCondStore), so a
 // capability filter can suppress it mid-connection.
 func (c *Conn) CondStoreEnabled() bool {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	return c.condStore || c.condStorePending || c.enabled.Has(imap.CapCondStore) || c.enabled.Has(imap.CapQResync)
+}
+
+func (c *Conn) committedCondStoreEnabled() bool {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 	return c.condStore || c.enabled.Has(imap.CapCondStore) || c.enabled.Has(imap.CapQResync)
@@ -104,13 +129,12 @@ func (c *Conn) CondStoreEnabled() bool {
 // (RFC 7162 does not place it within the command), so the session can report
 // every change those delivered.
 func (c *Conn) finishCondStore(enc *imapwire.Encoder, resp *imap.StatusResponse, wasCondStore, wasSelected bool) error {
-	if !wasCondStore && resp.Type == imap.StatusResponseTypeBad {
-		c.mutex.Lock()
-		c.condStore = false
-		c.mutex.Unlock()
-		return nil
+	if resp.Type == imap.StatusResponseTypeOK {
+		c.commitCondStore()
+	} else {
+		c.clearPendingCondStore()
 	}
-	firstEnabling := !wasCondStore && wasSelected
+	firstEnabling := resp.Type == imap.StatusResponseTypeOK && !wasCondStore && wasSelected
 	fetchModSeq := c.fetchModSeq.Load()
 	if !firstEnabling && fetchModSeq == 0 {
 		return nil
@@ -127,6 +151,34 @@ func (c *Conn) finishCondStore(enc *imapwire.Encoder, resp *imap.StatusResponse,
 		return nil
 	}
 	return writeHighestModSeq(enc, modSeq)
+}
+
+// flushClosingCondStore writes a compensating HIGHESTMODSEQ response code if
+// MODSEQ FETCH data items written since the last tagged response exceed the
+// currently selected mailbox's safe watermark (RFC 7162 §3.2, §3.2.8, §3.2.11,
+// §6), and resets the span before the mailbox is closed.
+//
+// Callers must stop or fence the NOTIFY pump before calling this so no further
+// unsolicited FETCH responses for the closing mailbox can be written afterward.
+func (c *Conn) flushClosingCondStore() error {
+	fetchModSeq := c.fetchModSeq.Swap(0)
+	if fetchModSeq == 0 {
+		return nil
+	}
+	if c.state != imap.ConnStateSelected || c.selectedNoModSeq || !c.supportsCondStore() || !c.CondStoreEnabled() {
+		return nil
+	}
+	session, ok := c.session.(SessionHighestModSeq)
+	if !ok {
+		return nil
+	}
+	modSeq := session.HighestModSeq()
+	if modSeq == 0 || fetchModSeq <= modSeq {
+		return nil
+	}
+	enc := newResponseEncoder(c)
+	defer enc.end()
+	return writeHighestModSeq(enc.Encoder, modSeq)
 }
 
 // noteFetchModSeq records that a MODSEQ FETCH data item was written, for

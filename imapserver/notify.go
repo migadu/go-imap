@@ -61,6 +61,8 @@ func canonicalNotifyEvent(name string) imap.NotifyEvent {
 }
 
 func (c *Conn) handleNotify(tag string, dec *imapwire.Decoder) error {
+	wasCondStore, wasSelected := c.CondStoreEnabled(), c.state == imap.ConnStateSelected
+
 	// pendingFetchWriterOptions carries the MessageNew fetch-att writer options
 	// from the parser to the point where the new watch is installed.
 	var pendingFetchWriterOptions *fetchWriterOptions
@@ -175,10 +177,12 @@ func (c *Conn) handleNotify(tag string, dec *imapwire.Decoder) error {
 		}
 		var badEventErr *UnsupportedNotifyEventError
 		if errors.As(err, &badEventErr) {
-			return c.writeBadEvent(tag, badEventErr.Supported)
+			return c.writeBadEvent(tag, badEventErr.Supported, wasCondStore, wasSelected)
 		}
 		return err
 	}
+
+	c.commitCondStore()
 
 	// Record which message events the client wants for the selected mailbox, so
 	// that the per-command sync points stop reporting the ones it did not ask
@@ -200,10 +204,16 @@ func (c *Conn) handleNotify(tag string, dec *imapwire.Decoder) error {
 	if err := c.poll("NOTIFY"); err != nil {
 		return err
 	}
-	return c.writeStatusResp(tag, &imap.StatusResponse{
+	enc := newResponseEncoder(c)
+	defer enc.end()
+	okResp := &imap.StatusResponse{
 		Type: imap.StatusResponseTypeOK,
 		Text: "NOTIFY completed",
-	})
+	}
+	if err := enc.prepareTaggedResponse(tag, okResp, wasCondStore, wasSelected); err != nil {
+		return err
+	}
+	return writeStatusResp(enc.Encoder, tag, okResp)
 }
 
 // readNotifyEventGroup parses one event-group; the opening parenthesis has
@@ -418,10 +428,10 @@ func validateNotifyOptions(options *imap.NotifyOptions) error {
 
 // writeBadEvent writes a tagged NO response with the BADEVENT response code,
 // listing the events supported by the backend (RFC 5465 section 4).
-func (c *Conn) writeBadEvent(tag string, supported []imap.NotifyEvent) error {
+func (c *Conn) writeBadEvent(tag string, supported []imap.NotifyEvent, wasCondStore, wasSelected bool) error {
 	enc := newResponseEncoder(c)
 	defer enc.end()
-	if err := enc.prepareTaggedResponse(tag, &imap.StatusResponse{Type: imap.StatusResponseTypeNo}, true, false); err != nil {
+	if err := enc.prepareTaggedResponse(tag, &imap.StatusResponse{Type: imap.StatusResponseTypeNo}, wasCondStore, wasSelected); err != nil {
 		return err
 	}
 	if tag == "" {
@@ -484,7 +494,7 @@ func (c *Conn) startNotifyPump(session SessionNotify) {
 	c.notifyDone = done
 	c.notifyMutex.Unlock()
 
-	w := &UpdateWriter{conn: c, allowExpunge: true, notify: true}
+	w := &UpdateWriter{conn: c, allowExpunge: true, notify: true, notifyPump: true}
 	go func() {
 		var err error
 		defer func() {
