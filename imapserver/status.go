@@ -163,6 +163,10 @@ func readStatusItem(c *Conn, dec *imapwire.Decoder, options *imap.StatusOptions)
 			return newClientBugError("HIGHESTMODSEQ requires CONDSTORE")
 		}
 		options.HighestModSeq = true
+		// STATUS (HIGHESTMODSEQ) is a CONDSTORE-enabling command (RFC 7162
+		// §3.1). LIST ... RETURN (STATUS (HIGHESTMODSEQ)) (RFC 5819) shares
+		// this parser and asks for the same data, so it counts as well.
+		c.markCondStoreEnabled()
 	default:
 		return &imap.Error{
 			Type: imap.StatusResponseTypeBad,
