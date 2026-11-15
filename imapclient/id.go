@@ -2,7 +2,6 @@ package imapclient
 
 import (
 	"fmt"
-	"strings"
 
 	"github.com/migadu/go-imap"
 	"github.com/migadu/go-imap/internal/imapwire"
@@ -68,7 +67,7 @@ func (c *Client) ID(idData *imap.IDData) *IDCommand {
 			"arguments": {}, "environment": {},
 		}
 		for k, v := range idData.Raw {
-			if _, ok := stdKeys[strings.ToLower(k)]; !ok {
+			if _, ok := stdKeys[imapwire.ToLowerASCII(k)]; !ok {
 				addIDKeyValue(enc, &isFirstKey, k, v)
 			}
 		}
@@ -153,7 +152,7 @@ func (c *Client) readID(dec *imapwire.Decoder) (*imap.IDData, error) {
 		}
 		keyOrValue := value
 
-		lowerKey := strings.ToLower(currKey)
+		lowerKey := imapwire.ToLowerASCII(currKey)
 		data.Raw[lowerKey] = keyOrValue
 
 		switch lowerKey {
