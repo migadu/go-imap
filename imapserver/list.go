@@ -322,6 +322,15 @@ func readListCmd(c *Conn, dec *imapwire.Decoder) (ref string, patterns []string,
 		return "", nil, nil, syntax, dec.Err()
 	}
 
+	for _, entry := range options.ReturnMetadata {
+		if err := imap.ValidateMetadataEntry(entry); err != nil {
+			return "", nil, nil, syntax, fmt.Errorf("in list-return-opts: %w", &imap.Error{
+				Type: imap.StatusResponseTypeBad,
+				Text: err.Error(),
+			})
+		}
+	}
+
 	if options.SelectRecursiveMatch && !options.SelectSubscribed {
 		return "", nil, nil, syntax, newClientBugError("The LIST RECURSIVEMATCH select option requires SUBSCRIBED")
 	}
@@ -399,12 +408,6 @@ func readReturnOption(c *Conn, dec *imapwire.Decoder, options *imap.ListOptions)
 			var entry string
 			if !dec.ExpectAString(&entry) {
 				return dec.Err()
-			}
-			if err := imap.ValidateMetadataEntry(entry); err != nil {
-				return &imap.Error{
-					Type: imap.StatusResponseTypeBad,
-					Text: err.Error(),
-				}
 			}
 			options.ReturnMetadata = append(options.ReturnMetadata, entry)
 			return nil
