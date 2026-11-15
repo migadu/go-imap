@@ -215,7 +215,10 @@ type SessionHighestModSeq interface {
 	// by a FETCH, STORE or SEARCH. It is called once the command's own
 	// responses and its post-command Poll have been written, so a change those
 	// delivered may be covered. 0 sends nothing. The response encoder is held
-	// while this is queried, so it must not write protocol responses.
+	// while this is queried. It must return promptly without writing protocol
+	// responses or waiting for response writers (including NotifyPoll), or for
+	// locks those writers hold. A cached or atomic snapshot avoids this lock
+	// inversion.
 	HighestModSeq() uint64
 }
 

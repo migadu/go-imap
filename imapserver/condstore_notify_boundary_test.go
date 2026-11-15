@@ -118,6 +118,11 @@ func TestHighestModSeqNotifyTaggedBoundary(t *testing.T) {
 	if !strings.Contains(resp, "MODSEQ (6)") {
 		// The pump was serialized after this tag. Its MODSEQ must be retained
 		// until the next tagged response, rather than erased by a deferred reset.
+		select {
+		case <-s.written:
+		case <-time.After(5 * time.Second):
+			t.Fatal("notification did not complete after the tagged response")
+		}
 		resp = c.do("next", "NOOP")
 	}
 	if !strings.Contains(resp, "MODSEQ (6)") {
