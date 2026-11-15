@@ -347,7 +347,7 @@ func (dec *Decoder) ExpectAtom(ptr *string) bool {
 
 func (dec *Decoder) ExpectNIL() bool {
 	var s string
-	return dec.ExpectAtom(&s) && dec.Expect(strings.EqualFold(s, "NIL"), "NIL")
+	return dec.ExpectAtom(&s) && dec.Expect(EqualFoldASCII(s, "NIL"), "NIL")
 }
 
 func (dec *Decoder) Special(b byte) bool {
@@ -603,7 +603,7 @@ func (dec *Decoder) ExpectBodyFldLines(ptr *int64) bool {
 		return true
 	}
 	var s string
-	if dec.Atom(&s) && strings.EqualFold(s, "NIL") {
+	if dec.Atom(&s) && EqualFoldASCII(s, "NIL") {
 		*ptr = 0
 		return true
 	}
@@ -742,7 +742,7 @@ func (dec *Decoder) quoted(ptr *string, allowStrayQuotes bool) bool {
 func (dec *Decoder) ExpectNStringAllowStrayQuotes(ptr *string) bool {
 	var s string
 	if dec.Atom(&s) {
-		if !dec.Expect(strings.EqualFold(s, "NIL"), "nstring") {
+		if !dec.Expect(EqualFoldASCII(s, "NIL"), "nstring") {
 			return false
 		}
 		*ptr = ""
@@ -794,7 +794,7 @@ func (dec *Decoder) ExpectString(ptr *string) bool {
 func (dec *Decoder) ExpectNString(ptr *string) bool {
 	var s string
 	if dec.Atom(&s) {
-		if !dec.Expect(strings.EqualFold(s, "NIL"), "nstring") {
+		if !dec.Expect(EqualFoldASCII(s, "NIL"), "nstring") {
 			return false
 		}
 		*ptr = ""
@@ -806,7 +806,7 @@ func (dec *Decoder) ExpectNString(ptr *string) bool {
 func (dec *Decoder) ExpectNStringReader() (lit *LiteralReader, nonSync, ok bool) {
 	var s string
 	if dec.Atom(&s) {
-		if !dec.Expect(strings.EqualFold(s, "NIL"), "nstring") {
+		if !dec.Expect(EqualFoldASCII(s, "NIL"), "nstring") {
 			return nil, false, false
 		}
 		return nil, true, true
@@ -911,7 +911,7 @@ func (dec *Decoder) expectList(isList bool, err error) error {
 func (dec *Decoder) ExpectNList(f func() error) error {
 	var s string
 	if dec.Atom(&s) {
-		if !dec.Expect(strings.EqualFold(s, "NIL"), "NIL") {
+		if !dec.Expect(EqualFoldASCII(s, "NIL"), "NIL") {
 			return dec.Err()
 		}
 		return nil
@@ -924,7 +924,7 @@ func (dec *Decoder) ExpectMailbox(ptr *string) bool {
 	if !dec.ExpectAString(&name) {
 		return false
 	}
-	if strings.EqualFold(name, "INBOX") {
+	if EqualFoldASCII(name, "INBOX") {
 		*ptr = "INBOX"
 		return true
 	}

@@ -31,7 +31,7 @@ func (c *Conn) handleSearch(tag string, dec *imapwire.Decoder, numKind NumKind) 
 			})
 		}
 	}()
-	if maybeReadSearchKeyAtom(dec, &atom) && strings.EqualFold(atom, "RETURN") {
+	if maybeReadSearchKeyAtom(dec, &atom) && imapwire.EqualFoldASCII(atom, "RETURN") {
 		if err := readSearchReturnOpts(dec, &options); err != nil {
 			return fmt.Errorf("in search-return-opts: %w", err)
 		}
@@ -43,7 +43,7 @@ func (c *Conn) handleSearch(tag string, dec *imapwire.Decoder, numKind NumKind) 
 		maybeReadSearchKeyAtom(dec, &atom)
 	}
 	var badCharset bool
-	if strings.EqualFold(atom, "CHARSET") {
+	if imapwire.EqualFoldASCII(atom, "CHARSET") {
 		var charset string
 		if !dec.ExpectSP() || !dec.ExpectAString(&charset) || !dec.ExpectSP() {
 			return dec.Err()
@@ -262,7 +262,7 @@ func readSearchReturnOpts(dec *imapwire.Decoder, options *imap.SearchOptions) er
 		if !dec.ExpectAtom(&name) {
 			return dec.Err()
 		}
-		switch strings.ToUpper(name) {
+		switch imapwire.ToUpperASCII(name) {
 		case "MIN":
 			options.ReturnMin = true
 		case "MAX":
@@ -282,7 +282,7 @@ func readSearchReturnOpts(dec *imapwire.Decoder, options *imap.SearchOptions) er
 }
 
 func searchCharsetSupported(charset string) bool {
-	switch strings.ToUpper(charset) {
+	switch imapwire.ToUpperASCII(charset) {
 	case "US-ASCII", "UTF-8":
 		return true
 	default:
@@ -389,7 +389,7 @@ func readSearchKeyWithAtom(c *Conn, criteria *imap.SearchCriteria, dec *imapwire
 }
 
 func readSearchKeyWithAtomDepth(c *Conn, criteria *imap.SearchCriteria, dec *imapwire.Decoder, key string, depth int) error {
-	key = strings.ToUpper(key)
+	key = imapwire.ToUpperASCII(key)
 	switch key {
 	case "ALL":
 		// nothing to do
@@ -550,7 +550,7 @@ func readSearchKeyWithAtomDepth(c *Conn, criteria *imap.SearchCriteria, dec *ima
 			if !dec.ExpectAtom(&typeName) || !dec.ExpectSP() {
 				return dec.Err()
 			}
-			metadataType = imap.SearchCriteriaMetadataType(strings.ToLower(typeName))
+			metadataType = imap.SearchCriteriaMetadataType(imapwire.ToLowerASCII(typeName))
 		}
 
 		var modSeq uint64

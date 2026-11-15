@@ -37,15 +37,13 @@ func TestAuthenticateResponseReadFailureEndsConnection(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var logged syncTLSHookLog
-			var addr string
+			var wrap func(net.Listener) net.Listener
 			if tc.timeout {
-				addr = newAuthenticateServer(t, &logged, func(ln net.Listener) net.Listener {
+				wrap = func(ln net.Listener) net.Listener {
 					return idleTimeoutListener{Listener: ln, idle: 300 * time.Millisecond}
-				})
-			} else {
-				addr = newAuthenticateServer(t, &logged)
+				}
 			}
-			wc := dialWire(t, addr)
+			wc := dialWire(t, newAuthenticateServerWithListener(t, &logged, wrap))
 
 			tag := wc.send(t, "AUTHENTICATE PLAIN")
 			if line, err := wc.readLine(); err != nil || line != "+ " {

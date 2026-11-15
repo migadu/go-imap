@@ -1,8 +1,6 @@
 package imapserver
 
 import (
-	"strings"
-
 	"github.com/migadu/go-imap"
 	"github.com/migadu/go-imap/internal"
 	"github.com/migadu/go-imap/internal/imapwire"
@@ -22,7 +20,7 @@ func (c *Conn) handleCreate(dec *imapwire.Decoder) error {
 		if !dec.ExpectSpecial('(') || !dec.ExpectAtom(&name) || !dec.ExpectSP() {
 			return dec.Err()
 		}
-		switch strings.ToUpper(name) {
+		switch imapwire.ToUpperASCII(name) {
 		case "USE":
 			use = true
 			var err error

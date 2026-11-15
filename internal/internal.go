@@ -198,12 +198,12 @@ func canonInit() {
 
 	canonFlag = make(map[string]imap.Flag)
 	for _, flag := range flags {
-		canonFlag[strings.ToLower(string(flag))] = flag
+		canonFlag[imapwire.ToLowerASCII(string(flag))] = flag
 	}
 
 	canonMailboxAttr = make(map[string]imap.MailboxAttr)
 	for _, attr := range mailboxAttrs {
-		canonMailboxAttr[strings.ToLower(string(attr))] = attr
+		canonMailboxAttr[imapwire.ToLowerASCII(string(attr))] = attr
 	}
 	// RFC 9979 section 9.2 says these three have no implied backslash. A
 	// peer that takes it literally sends the bare name; read it as the
@@ -213,13 +213,13 @@ func canonInit() {
 		imap.MailboxAttrScheduled,
 		imap.MailboxAttrMemos,
 	} {
-		canonMailboxAttr[strings.ToLower(strings.TrimPrefix(string(attr), `\`))] = attr
+		canonMailboxAttr[imapwire.ToLowerASCII(strings.TrimPrefix(string(attr), `\`))] = attr
 	}
 }
 
 func canonicalFlag(s string) imap.Flag {
 	canonOnce.Do(canonInit)
-	if flag, ok := canonFlag[strings.ToLower(s)]; ok {
+	if flag, ok := canonFlag[imapwire.ToLowerASCII(s)]; ok {
 		return flag
 	}
 	return imap.Flag(s)
@@ -227,7 +227,7 @@ func canonicalFlag(s string) imap.Flag {
 
 func canonicalMailboxAttr(s string) imap.MailboxAttr {
 	canonOnce.Do(canonInit)
-	if attr, ok := canonMailboxAttr[strings.ToLower(s)]; ok {
+	if attr, ok := canonMailboxAttr[imapwire.ToLowerASCII(s)]; ok {
 		return attr
 	}
 	return imap.MailboxAttr(s)
@@ -236,15 +236,15 @@ func canonicalMailboxAttr(s string) imap.MailboxAttr {
 func canonicalCap(s string) imap.Cap {
 	// Only two cap names are not fully uppercase
 	for _, cap := range []imap.Cap{imap.CapIMAP4rev1, imap.CapIMAP4rev2} {
-		if strings.EqualFold(s, string(cap)) {
+		if imapwire.EqualFoldASCII(s, string(cap)) {
 			return cap
 		}
 	}
 	// RIGHTS= lists rights, which are lowercase letters and digits and have
 	// no uppercase form (RFC 4314 sections 2 and 6): only its name is ours
 	// to canonicalize.
-	if name, rights, ok := strings.Cut(s, "="); ok && strings.EqualFold(name, "RIGHTS") {
+	if name, rights, ok := strings.Cut(s, "="); ok && imapwire.EqualFoldASCII(name, "RIGHTS") {
 		return imap.Cap("RIGHTS=" + rights)
 	}
-	return imap.Cap(strings.ToUpper(s))
+	return imap.Cap(imapwire.ToUpperASCII(s))
 }
