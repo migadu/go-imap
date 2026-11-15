@@ -113,6 +113,9 @@ func (c *Conn) handleGetMetadata(tag string, dec *imapwire.Decoder) error {
 func (c *Conn) writeGetMetadataOK(tag string, data *imap.GetMetadataData) error {
 	enc := newResponseEncoder(c)
 	defer enc.end()
+	if err := enc.prepareTaggedResponse(tag, &imap.StatusResponse{Type: imap.StatusResponseTypeOK}, true, false); err != nil {
+		return err
+	}
 
 	enc.Atom(tag).SP().Atom("OK").SP()
 	if data.LongEntries > 0 {

@@ -173,6 +173,7 @@ func (c *Conn) handleSelect(tag string, dec *imapwire.Decoder, readOnly bool) er
 
 	enc := newResponseEncoder(c)
 	defer enc.end()
+	enc.tagged = tag != ""
 
 	// Write QRESYNC-specific responses first per RFC 7162 §3.2.5
 	if len(data.Vanished) > 0 {

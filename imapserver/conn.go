@@ -12,6 +12,7 @@ import (
 	"runtime/debug"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -115,6 +116,10 @@ type Conn struct {
 	// selectedNoModSeq is true when SELECT/EXAMINE answered NOMODSEQ (RFC
 	// 7162 §3.1.2.2) for the selected mailbox. Command-loop only, like state.
 	selectedNoModSeq bool
+	// fetchModSeq is the highest MODSEQ FETCH data item written since the
+	// last tagged response (see finishCondStore). Atomic: the NOTIFY pump
+	// writes unsolicited FETCH responses while a command runs.
+	fetchModSeq atomic.Uint64
 
 	// NOTIFY (RFC 5465) pump state. notifyStop/notifyDone are non-nil while a
 	// SessionNotify.NotifyPoll goroutine is running for this connection.
@@ -629,7 +634,7 @@ func (c *Conn) readCommand(dec *imapwire.Decoder) (err error) {
 	c.setActiveCommand(name)
 	defer c.setActiveCommand("")
 
-	// The CONDSTORE state the command starts from; see finishCondStoreEnabling.
+	// The CONDSTORE state the command starts from; see finishCondStore.
 	wasCondStore, wasSelected := c.CondStoreEnabled(), c.state == imap.ConnStateSelected
 
 	// TODO: handle multiple commands concurrently
@@ -818,12 +823,12 @@ func (c *Conn) readCommand(dec *imapwire.Decoder) (err error) {
 			Text: fmt.Sprintf("%v completed", name),
 		}
 	}
-	if !wasCondStore {
-		if err := c.finishCondStoreEnabling(resp, wasSelected); err != nil {
-			return err
-		}
+	enc := newResponseEncoder(c)
+	defer enc.end()
+	if err := enc.prepareTaggedResponse(tag, resp, wasCondStore, wasSelected); err != nil {
+		return err
 	}
-	return c.writeStatusResp(tag, resp)
+	return writeStatusResp(enc.Encoder, tag, resp)
 }
 
 func (c *Conn) handleNoop(dec *imapwire.Decoder) error {
@@ -962,6 +967,9 @@ func (c *Conn) canAuth() bool {
 func (c *Conn) writeStatusResp(tag string, statusResp *imap.StatusResponse) error {
 	enc := newResponseEncoder(c)
 	defer enc.end()
+	if err := enc.prepareTaggedResponse(tag, statusResp, true, false); err != nil {
+		return err
+	}
 	return writeStatusResp(enc.Encoder, tag, statusResp)
 }
 
@@ -974,6 +982,7 @@ func (c *Conn) writeContReq(text string) error {
 func (c *Conn) writeCapabilityStatus(tag string, typ imap.StatusResponseType, text string) error {
 	enc := newResponseEncoder(c)
 	defer enc.end()
+	enc.tagged = tag != ""
 	return writeCapabilityStatus(enc.Encoder, tag, typ, c.availableCaps(), text)
 }
 
@@ -1108,7 +1117,8 @@ func (c *Conn) useQuotedUTF8() bool {
 
 type responseEncoder struct {
 	*imapwire.Encoder
-	conn *Conn
+	conn   *Conn
+	tagged bool // reset the MODSEQ span before releasing the response lock
 }
 
 func newResponseEncoder(conn *Conn) *responseEncoder {
@@ -1128,8 +1138,22 @@ func (enc *responseEncoder) end() {
 		panic("imapserver: responseEncoder.end called twice")
 	}
 	enc.Encoder = nil
+	if enc.tagged {
+		enc.conn.fetchModSeq.Store(0)
+	}
 	enc.conn.setWriteTimeout(0)
 	enc.conn.encMutex.Unlock()
+}
+
+// prepareTaggedResponse keeps the watermark decision, any compensating code,
+// tagged completion and MODSEQ span reset under one encoder lock. An unsolicited
+// FETCH is therefore wholly before this boundary or retained for the next one.
+func (enc *responseEncoder) prepareTaggedResponse(tag string, resp *imap.StatusResponse, wasCondStore, wasSelected bool) error {
+	if tag == "" {
+		return nil
+	}
+	enc.tagged = true
+	return enc.conn.finishCondStore(enc.Encoder, resp, wasCondStore, wasSelected)
 }
 
 func (enc *responseEncoder) Literal(size int64) io.WriteCloser {

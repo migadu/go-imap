@@ -194,7 +194,15 @@ type SessionSearchRes interface {
 // for the mailbox (if any is selected), unless the server has sent a NOMODSEQ
 // ... response code when the currently selected mailbox was selected." The
 // server only knows the value SELECT returned, so for that response it asks
-// the session. Without this interface the response is not sent.
+// the session.
+//
+// It also asks after a command that wrote a MODSEQ FETCH data item, and
+// writes the value if that item is above it. RFC 7162 §3.2: "if the server
+// sends MODSEQ FETCH data items while EXPUNGE (or VANISHED) replies with
+// lower mod-sequences being delayed, the server MUST send the HIGHESTMODSEQ
+// response code with a lower value than the EXPUNGE's mod-sequence."
+//
+// Without this interface neither response is sent.
 type SessionHighestModSeq interface {
 	Session
 
@@ -205,7 +213,12 @@ type SessionHighestModSeq interface {
 	// it "even if it has seen higher mod-sequences" (RFC 7162 §6), so it must
 	// not cover a change that is still queued, such as an EXPUNGE held back
 	// by a FETCH, STORE or SEARCH. It is called once the command's own
-	// responses and its post-command Poll have been written. 0 sends nothing.
+	// responses and its post-command Poll have been written, so a change those
+	// delivered may be covered. 0 sends nothing. The response encoder is held
+	// while this is queried. It must return promptly without writing protocol
+	// responses or waiting for response writers (including NotifyPoll), or for
+	// locks those writers hold. A cached or atomic snapshot avoids this lock
+	// inversion.
 	HighestModSeq() uint64
 }
 

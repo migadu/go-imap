@@ -2,6 +2,7 @@ package imapserver
 
 import (
 	"github.com/migadu/go-imap"
+	"github.com/migadu/go-imap/internal/imapwire"
 )
 
 // supportsCondStore returns true if the connection supports CONDSTORE extension.
@@ -42,7 +43,7 @@ func (c *Conn) supportsCondStore() bool {
 // carrying a MODSEQ or CHANGEDSINCE modifier, or a STORE with UNCHANGEDSINCE.
 // ENABLE CONDSTORE/QRESYNC is tracked separately in the enabled capability set
 // (see handleEnable) and picked up by CondStoreEnabled. The mark is undone if
-// the command is answered BAD (see finishCondStoreEnabling).
+// the command is answered BAD (see finishCondStore).
 func (c *Conn) markCondStoreEnabled() {
 	c.mutex.Lock()
 	c.condStore = true
@@ -65,35 +66,56 @@ func (c *Conn) CondStoreEnabled() bool {
 	return c.condStore || c.enabled.Has(imap.CapCondStore) || c.enabled.Has(imap.CapQResync)
 }
 
-// finishCondStoreEnabling is called before the tagged response resp of a
-// command that began with the client not CONDSTORE-aware.
+// finishCondStore is called before the tagged response resp of a command,
+// after the command's own responses and its post-command poll. wasCondStore
+// and wasSelected describe the connection when the command started.
 //
 // A command answered BAD was refused as a protocol error (RFC 9051 §2.2.2),
 // not executed, so it leaves the client as it was: the enabling commands mark
 // CONDSTORE while they parse, before the rest of the command has been checked.
 //
-// Otherwise, if the command made the client CONDSTORE-aware and began with a
-// mailbox selected, it writes that mailbox's HIGHESTMODSEQ. RFC 7162 §3.1: "A
-// first CONDSTORE enabling command executed in the session with a mailbox
-// selected MUST cause the server to return HIGHESTMODSEQ ... for the mailbox
-// (if any is selected), unless the server has sent a NOMODSEQ ... response
-// code when the currently selected mailbox was selected." Comparing
-// CondStoreEnabled before and after the command covers every enabling
-// command, ENABLE included. A successful SELECT/EXAMINE writes its own
-// HIGHESTMODSEQ or NOMODSEQ and its own tagged response, so it never gets
-// here.
+// Otherwise, with a mailbox selected that did not answer NOMODSEQ, it writes
+// the mailbox's HIGHESTMODSEQ as the session reports it (SessionHighestModSeq)
+// in two cases:
+//
+//   - The command made the client CONDSTORE-aware and began with the mailbox
+//     selected. RFC 7162 §3.1: "A first CONDSTORE enabling command executed
+//     in the session with a mailbox selected MUST cause the server to return
+//     HIGHESTMODSEQ ... for the mailbox (if any is selected), unless the
+//     server has sent a NOMODSEQ ... response code when the currently
+//     selected mailbox was selected." Comparing CondStoreEnabled before and
+//     after the command covers every enabling command, ENABLE included. A
+//     successful SELECT/EXAMINE writes its own HIGHESTMODSEQ or NOMODSEQ and
+//     its own tagged response, so it never gets here.
+//
+//   - A MODSEQ FETCH data item written since the last tagged response is
+//     above it: the session still holds a change below that item, such as an
+//     EXPUNGE that a FETCH, STORE or SEARCH may not send (RFC 9051 §7.5.1)
+//     and whatever is queued behind it. The client takes "the highest value
+//     among all MODSEQ FETCH data items received since the last tagged
+//     response" unless it gets a HIGHESTMODSEQ response code, which it "MUST
+//     use ... even if it has seen higher mod-sequences" (RFC 7162 §6). RFC
+//     7162 §3.2: "if the server sends MODSEQ FETCH data items while EXPUNGE
+//     (or VANISHED) replies with lower mod-sequences being delayed, the
+//     server MUST send the HIGHESTMODSEQ response code with a lower value
+//     than the EXPUNGE's mod-sequence."
 //
 // The response follows the command's own responses and its post-command poll
 // (RFC 7162 does not place it within the command), so the session can report
 // every change those delivered.
-func (c *Conn) finishCondStoreEnabling(resp *imap.StatusResponse, wasSelected bool) error {
-	if resp.Type == imap.StatusResponseTypeBad {
+func (c *Conn) finishCondStore(enc *imapwire.Encoder, resp *imap.StatusResponse, wasCondStore, wasSelected bool) error {
+	if !wasCondStore && resp.Type == imap.StatusResponseTypeBad {
 		c.mutex.Lock()
 		c.condStore = false
 		c.mutex.Unlock()
 		return nil
 	}
-	if !wasSelected || c.state != imap.ConnStateSelected || c.selectedNoModSeq || !c.supportsCondStore() || !c.CondStoreEnabled() {
+	firstEnabling := !wasCondStore && wasSelected
+	fetchModSeq := c.fetchModSeq.Load()
+	if !firstEnabling && fetchModSeq == 0 {
+		return nil
+	}
+	if c.state != imap.ConnStateSelected || c.selectedNoModSeq || !c.supportsCondStore() || !c.CondStoreEnabled() {
 		return nil
 	}
 	session, ok := c.session.(SessionHighestModSeq)
@@ -101,12 +123,21 @@ func (c *Conn) finishCondStoreEnabling(resp *imap.StatusResponse, wasSelected bo
 		return nil
 	}
 	modSeq := session.HighestModSeq()
-	if modSeq == 0 {
+	if modSeq == 0 || (!firstEnabling && fetchModSeq <= modSeq) {
 		return nil
 	}
-	enc := newResponseEncoder(c)
-	defer enc.end()
-	return writeHighestModSeq(enc.Encoder, modSeq)
+	return writeHighestModSeq(enc, modSeq)
+}
+
+// noteFetchModSeq records that a MODSEQ FETCH data item was written, for
+// finishCondStore.
+func (c *Conn) noteFetchModSeq(modSeq uint64) {
+	for {
+		seen := c.fetchModSeq.Load()
+		if modSeq <= seen || c.fetchModSeq.CompareAndSwap(seen, modSeq) {
+			return
+		}
+	}
 }
 
 // supportsESearch reports whether the session supports ESEARCH (RFC 4731),

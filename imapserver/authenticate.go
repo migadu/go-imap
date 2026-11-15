@@ -116,6 +116,7 @@ func (c *Conn) handleAuthenticate(tag string, dec *imapwire.Decoder) error {
 
 	c.state = imap.ConnStateAuthenticated
 	text := fmt.Sprintf("%v authentication successful", mech)
+	enc.tagged = tag != ""
 	return writeCapabilityOK(enc.Encoder, tag, c.availableCaps(), text)
 }
 
