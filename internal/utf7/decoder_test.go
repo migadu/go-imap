@@ -24,6 +24,15 @@ var decode = []struct {
 	{"&-,&-&AP8-&-", "&,&\u00FF&", true},
 	{"&-&-,&AP8-&-", "&&,\u00FF&", true},
 	{"abc &- &AP8A,wD,- &- xyz", "abc & \u00FF\u00FF\u00FF & xyz", true},
+	{"&AOk-", "é", true},
+	{"&AOkA6Q-", "éé", true},
+	{"é", "é", true}, // Raw UTF-8 is also accepted.
+
+	// RFC 2152: discarded bits after the final UTF-16 character must be zero.
+	// The first two have a two-bit tail; the last has a four-bit tail.
+	{"&AOl-", "", false},
+	{"&AOn-", "", false},
+	{"&AOkA6R-", "", false},
 
 	// Illegal code point in ASCII
 	{"\x00", "", false},
