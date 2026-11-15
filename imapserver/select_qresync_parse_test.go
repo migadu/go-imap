@@ -229,3 +229,57 @@ func TestSelectQResyncWithoutArguments(t *testing.T) {
 		t.Errorf("SELECT INBOX (QRESYNC) = %q, want BAD:\n\t%s", tagged, strings.Join(resp, "\n\t"))
 	}
 }
+
+// RFC 7162 Section 7:
+//
+//	uidvalidity         =  nz-number
+//	known-uids          =  sequence-set
+//	                    ;; Sequence of UIDs; "*" is not allowed.
+//	known-sequence-set  =  sequence-set
+//	                    ;; ... * is not allowed.
+//	known-uid-set       =  sequence-set
+//	                    ;; ... * is not allowed.
+//
+// and Section 3.2.5: "If any parameter is not syntactically valid, the server
+// returns the tagged BAD response, and the mailbox remains unselected." A
+// known-uids of "*" reached the backend as UID 0, which it then reported in
+// "VANISHED (EARLIER) *"; "1:*" reached it as a range it could not walk.
+func TestSelectQResyncRefusesZeroUIDValidityAndStar(t *testing.T) {
+	for _, params := range []string{
+		"(QRESYNC (0 1))",
+		"(QRESYNC (0 1 1:10))",
+		"(QRESYNC (1 1 *))",
+		"(QRESYNC (1 1 1:*))",
+		"(QRESYNC (1 1 *:5))",
+		"(QRESYNC (1 1 1,3:*))",
+		"(QRESYNC (1 1 1:3 (1:* 1:3)))",
+		"(QRESYNC (1 1 1:3 (1:3 1:*)))",
+		"(QRESYNC (1 1 (* 3)))",
+		"(QRESYNC (1 1 (3 *)))",
+	} {
+		t.Run(params, func(t *testing.T) {
+			rc := newQResyncTestConn(t)
+
+			rc.send("a2 ENABLE QRESYNC")
+			rc.readUntilTag("a2")
+
+			rc.send("a3 SELECT INBOX " + params)
+			resp := rc.readUntilTag("a3")
+			if tagged := resp[len(resp)-1]; !strings.HasPrefix(tagged, "a3 BAD") || len(resp) != 1 {
+				t.Errorf("SELECT INBOX %v = %q, want BAD and no mailbox data:\n\t%s", params, tagged, strings.Join(resp, "\n\t"))
+			}
+
+			// Still in the authenticated state, and the connection usable.
+			rc.send("a4 CLOSE")
+			resp = rc.readUntilTag("a4")
+			if tagged := resp[len(resp)-1]; strings.HasPrefix(tagged, "a4 OK") {
+				t.Errorf("CLOSE after the refused SELECT = %q, want no mailbox selected", tagged)
+			}
+			rc.send("a5 NOOP")
+			resp = rc.readUntilTag("a5")
+			if tagged := resp[len(resp)-1]; !strings.HasPrefix(tagged, "a5 OK") {
+				t.Errorf("NOOP after the refused SELECT = %q, want OK", tagged)
+			}
+		})
+	}
+}

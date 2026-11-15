@@ -57,6 +57,10 @@ func (c *Conn) handleSelect(tag string, dec *imapwire.Decoder, readOnly bool) er
 					if !dec.ExpectNumber(&uidValidity) || !dec.ExpectSP() || !dec.ExpectModSequenceValue(&modSeq) {
 						return dec.Err()
 					}
+					// uidvalidity = nz-number (RFC 7162 Section 7).
+					if uidValidity == 0 {
+						return &imapwire.DecoderExpectError{Message: "expected uidvalidity, got 0"}
+					}
 
 					qresyncData := &imap.QResyncData{
 						UIDValidity: uidValidity,
@@ -77,6 +81,9 @@ func (c *Conn) handleSelect(tag string, dec *imapwire.Decoder, readOnly bool) er
 							if !dec.ExpectUIDSet(&knownUIDs) {
 								return dec.Err()
 							}
+							if err := refuseQResyncStar(knownUIDs, "known-uids"); err != nil {
+								return err
+							}
 							qresyncData.KnownUIDs = knownUIDs
 							seqMatch = dec.SP()
 						}
@@ -89,6 +96,12 @@ func (c *Conn) handleSelect(tag string, dec *imapwire.Decoder, readOnly bool) er
 								var uids imap.UIDSet
 								if !dec.ExpectSeqSet(&seqNums) || !dec.ExpectSP() || !dec.ExpectUIDSet(&uids) {
 									return dec.Err()
+								}
+								if err := refuseQResyncStar(seqNums, "known-sequence-set"); err != nil {
+									return err
+								}
+								if err := refuseQResyncStar(uids, "known-uid-set"); err != nil {
+									return err
 								}
 								qresyncData.SeqMatch = &imap.QResyncSeqMatch{
 									SeqNums: seqNums,
@@ -235,6 +248,17 @@ func (c *Conn) handleSelect(tag string, dec *imapwire.Decoder, readOnly bool) er
 		Code: code,
 		Text: fmt.Sprintf("%v completed", cmdName),
 	})
+}
+
+// refuseQResyncStar refuses a set naming "*" ("*" or "n:*"): known-uids,
+// known-sequence-set and known-uid-set are sequence-sets in which "*" is not
+// allowed (RFC 7162 Section 7). The backend would get "*" as 0, and a known-uids
+// of "*" then came back as "VANISHED (EARLIER) *". "$" (RFC 5182) is not a "*".
+func refuseQResyncStar(set imap.NumSet, name string) error {
+	if set.Dynamic() && !imap.IsSearchRes(set) {
+		return &imapwire.DecoderExpectError{Message: fmt.Sprintf(`"*" is not allowed in %v`, name)}
+	}
+	return nil
 }
 
 func (c *Conn) handleUnselect(dec *imapwire.Decoder, expunge bool) error {
