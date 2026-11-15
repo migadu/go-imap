@@ -261,12 +261,10 @@ func TestVanished_Response(t *testing.T) {
 	t.Logf("VANISHED response handler test completed")
 }
 
-// TestSelect_QResync_ResponseOrder verifies that QRESYNC SELECT responses
-// are sent in the correct order per RFC 7162 §3.2.5.2:
-// 1. VANISHED (EARLIER) responses
-// 2. FETCH responses for modified messages
-// 3. EXISTS response (always sent, even with QRESYNC)
-// 4. Standard SELECT responses (UIDVALIDITY, FLAGS, etc.)
+// TestSelect_QResync_ResponseOrder checks the client interpretation of QRESYNC
+// SELECT data. RFC 7162 section 3.2.5 puts the standard opening responses before
+// VANISHED (EARLIER) and modified-message FETCH responses; imapserver tests the
+// raw wire order. Historical VANISHED data must not decrement the fresh EXISTS.
 func TestSelect_QResync_ResponseOrder(t *testing.T) {
 	client, server := newClientServerPair(t, imap.ConnStateAuthenticated)
 	defer client.Close()
@@ -302,9 +300,8 @@ func TestSelect_QResync_ResponseOrder(t *testing.T) {
 		t.Fatalf("Unselect() = %v", err)
 	}
 
-	// SELECT with QRESYNC using ModSeq=0 to get both VANISHED and Modified
-	// (Note: in this test the message was expunged, so we won't get Modified,
-	// but EXISTS should still be sent)
+	// Reselect using the original synchronization state. The only message was
+	// expunged, so the response carries VANISHED data and a fresh EXISTS of 0.
 	selectData, err := client.Select("INBOX", &imap.SelectOptions{
 		QResync: &imap.QResyncData{
 			UIDValidity: initialUIDValidity,
@@ -325,7 +322,7 @@ func TestSelect_QResync_ResponseOrder(t *testing.T) {
 		t.Errorf("Expected Vanished UIDs, got none")
 	}
 
-	t.Logf("QRESYNC SELECT response order verified: NumMessages=%d, Vanished=%v",
+	t.Logf("QRESYNC SELECT data verified: NumMessages=%d, Vanished=%v",
 		selectData.NumMessages, selectData.Vanished)
 }
 
