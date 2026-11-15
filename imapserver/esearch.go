@@ -158,6 +158,18 @@ func (c *Conn) handleESearch(tag string, dec *imapwire.Decoder) (err error) {
 	}
 
 	for _, data := range results {
+		if data == nil {
+			return fmt.Errorf("imapserver: backend returned nil SearchData")
+		}
+		if multiSearchDataIsEmpty(data, &options) && !(options.ReturnAll && data.All != nil && data.All.Dynamic()) {
+			continue
+		}
+		if err := checkSearchData(data, &options); err != nil {
+			return err
+		}
+	}
+
+	for _, data := range results {
 		if !hasModSeq {
 			data.ModSeq = 0
 		}

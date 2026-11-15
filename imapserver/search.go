@@ -107,6 +107,9 @@ func (c *Conn) handleSearch(tag string, dec *imapwire.Decoder, numKind NumKind) 
 	if saveOnly {
 		return nil
 	}
+	if data == nil {
+		return fmt.Errorf("imapserver: backend returned nil SearchData")
+	}
 
 	// RFC 7162 §3.1.5 and §3.1.6: the response carries the highest
 	// mod-sequence of the result only when the criteria use MODSEQ, as for
@@ -149,7 +152,24 @@ func (c *Conn) handleSearch(tag string, dec *imapwire.Decoder, numKind NumKind) 
 	}
 }
 
+func checkSearchData(data *imap.SearchData, options *imap.SearchOptions) error {
+	if data == nil {
+		return fmt.Errorf("imapserver: backend returned nil SearchData")
+	}
+	if data.Mailbox != "" && data.UIDValidity == 0 {
+		return fmt.Errorf("imapserver: backend did not populate UIDValidity in SearchData")
+	}
+	if options.ReturnAll && data.All != nil && data.All.Dynamic() {
+		return fmt.Errorf("imapserver: failed to enumerate message numbers in ESEARCH response (dynamic set?)")
+	}
+	return nil
+}
+
 func (c *Conn) writeESearch(tag string, data *imap.SearchData, options *imap.SearchOptions, numKind NumKind) error {
+	if err := checkSearchData(data, options); err != nil {
+		return err
+	}
+
 	enc := newResponseEncoder(c)
 	defer enc.end()
 
@@ -218,6 +238,9 @@ func (c *Conn) writeSearch(numSet imap.NumSet, modSeq uint64) error {
 		uids []imap.UID
 	)
 	if numSet != nil {
+		if numSet.Dynamic() {
+			return fmt.Errorf("imapserver: failed to enumerate message numbers in SEARCH response (dynamic set?)")
+		}
 		var ok bool
 		switch numSet := numSet.(type) {
 		case imap.SeqSet:
