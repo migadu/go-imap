@@ -2,8 +2,8 @@ package imapclient_test
 
 import (
 	"bufio"
-	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -15,8 +15,6 @@ import (
 
 	"github.com/migadu/go-imap"
 	"github.com/migadu/go-imap/imapclient"
-	"github.com/migadu/go-imap/imapserver"
-	"github.com/migadu/go-imap/imapserver/imapmemserver"
 )
 
 func TestClient_Authenticate(t *testing.T) {
@@ -128,27 +126,6 @@ func TestClient_Authenticate_EmptyContinuationResponse(t *testing.T) {
 	}
 }
 
-type saslTestSession struct {
-	imapserver.Session
-	mechs map[string]func() sasl.Server
-}
-
-func (s *saslTestSession) AuthenticateMechanisms() []string {
-	out := make([]string, 0, len(s.mechs))
-	for m := range s.mechs {
-		out = append(out, m)
-	}
-	return out
-}
-
-func (s *saslTestSession) Authenticate(mech string) (sasl.Server, error) {
-	fn, ok := s.mechs[mech]
-	if !ok {
-		return nil, &imap.Error{Type: imap.StatusResponseTypeNo, Text: "unsupported mech"}
-	}
-	return fn(), nil
-}
-
 type serverFirstEmptyChallengeClient struct{}
 
 func (*serverFirstEmptyChallengeClient) Start() (string, []byte, error) {
@@ -243,44 +220,26 @@ func (s *twoStepEmptyChallengeServer) Next(resp []byte) ([]byte, bool, error) {
 func TestClient_Authenticate_EmptyServerChallenge(t *testing.T) {
 	for _, saslIR := range []bool{false, true} {
 		t.Run(fmt.Sprintf("SASL-IR=%v", saslIR), func(t *testing.T) {
-			caps := imap.CapSet{imap.CapIMAP4rev1: {}}
-			if saslIR {
-				caps[imap.CapSASLIR] = struct{}{}
-			}
-
 			newPair := func(t *testing.T) *imapclient.Client {
 				t.Helper()
-				mem := imapmemserver.New()
-				mem.AddUser(imapmemserver.NewUser(testUsername, testPassword))
-				srv := imapserver.New(&imapserver.Options{
-					NewSession: func(*imapserver.Conn) (imapserver.Session, *imapserver.GreetingData, error) {
-						base := mem.NewSession()
-						login := func() error {
-							return base.Login(context.Background(), testUsername, testPassword)
-						}
-						return &saslTestSession{
-							Session: base,
-							mechs: map[string]func() sasl.Server{
-								"X-SERVER-FIRST-EMPTY": func() sasl.Server { return &serverFirstEmptyChallengeServer{onLogin: login} },
-								"X-TWO-STEP-EMPTY":     func() sasl.Server { return &twoStepEmptyChallengeServer{onLogin: login} },
-							},
-						}, nil, nil
-					},
-					InsecureAuth: true,
-					Caps:         caps,
+				clientConn, serverConn := net.Pipe()
+				serverConn.SetDeadline(time.Now().Add(5 * time.Second))
+				serverErr := make(chan error, 1)
+				// imapserver always advertises SASL-IR for IMAP4rev1, even
+				// when omitted from Options.Caps. Script the advertised caps
+				// so the false case really exercises an unsent initial response.
+				go func() { serverErr <- serveEmptyChallengeTest(serverConn, saslIR) }()
+				c := imapclient.New(clientConn, nil)
+				t.Cleanup(func() {
+					c.Close()
+					serverConn.Close()
+					if err := <-serverErr; err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) && !errors.Is(err, io.ErrClosedPipe) {
+						t.Errorf("test server: %v", err)
+					}
 				})
-				ln, err := net.Listen("tcp", "127.0.0.1:0")
-				if err != nil {
-					t.Fatal(err)
+				if got := c.Caps().Has(imap.CapSASLIR); got != saslIR {
+					t.Fatalf("advertised SASL-IR = %v, want %v", got, saslIR)
 				}
-				go srv.Serve(ln)
-				t.Cleanup(func() { srv.Close() })
-
-				c, err := imapclient.DialInsecure(ln.Addr().String(), nil)
-				if err != nil {
-					t.Fatal(err)
-				}
-				t.Cleanup(func() { c.Close() })
 				return c
 			}
 
@@ -288,6 +247,9 @@ func TestClient_Authenticate_EmptyServerChallenge(t *testing.T) {
 				c := newPair(t)
 				if err := c.Authenticate(&serverFirstEmptyChallengeClient{}); err != nil {
 					t.Fatalf("Authenticate(X-SERVER-FIRST-EMPTY) = %v, want nil", err)
+				}
+				if got := c.State(); got != imap.ConnStateAuthenticated {
+					t.Fatalf("State() after Authenticate = %v, want authenticated", got)
 				}
 				if err := c.Noop().Wait(); err != nil {
 					t.Fatalf("Noop() after Authenticate = %v", err)
@@ -299,10 +261,93 @@ func TestClient_Authenticate_EmptyServerChallenge(t *testing.T) {
 				if err := c.Authenticate(&twoStepEmptyChallengeClient{}); err != nil {
 					t.Fatalf("Authenticate(X-TWO-STEP-EMPTY) = %v, want nil", err)
 				}
+				if got := c.State(); got != imap.ConnStateAuthenticated {
+					t.Fatalf("State() after Authenticate = %v, want authenticated", got)
+				}
 				if err := c.Noop().Wait(); err != nil {
 					t.Fatalf("Noop() after Authenticate = %v", err)
 				}
 			})
 		})
+	}
+}
+
+// serveEmptyChallengeTest deliberately uses raw wire capabilities: the real
+// imapserver supports SASL-IR unconditionally and cannot cover its absence.
+func serveEmptyChallengeTest(conn net.Conn, saslIR bool) error {
+	defer conn.Close()
+	caps := "IMAP4rev1"
+	if saslIR {
+		caps += " SASL-IR"
+	}
+	if _, err := fmt.Fprintf(conn, "* OK [CAPABILITY %s] ready\r\n", caps); err != nil {
+		return err
+	}
+	br := bufio.NewReader(conn)
+	line, err := br.ReadString('\n')
+	if err != nil {
+		return err
+	}
+	fields := strings.Fields(line)
+	if len(fields) < 3 || len(fields) > 4 || fields[1] != "AUTHENTICATE" {
+		return fmt.Errorf("unexpected AUTHENTICATE line %q", line)
+	}
+	tag, mech := fields[0], fields[2]
+	login := func() error { return nil }
+	var server sasl.Server
+	switch mech {
+	case "X-SERVER-FIRST-EMPTY":
+		server = &serverFirstEmptyChallengeServer{onLogin: login}
+	case "X-TWO-STEP-EMPTY":
+		server = &twoStepEmptyChallengeServer{onLogin: login}
+	default:
+		return fmt.Errorf("unexpected SASL mechanism %q", mech)
+	}
+	wantInitial := saslIR && mech == "X-TWO-STEP-EMPTY"
+	if got := len(fields) == 4; got != wantInitial {
+		return fmt.Errorf("AUTHENTICATE initial response present = %v, want %v: %q", got, wantInitial, line)
+	}
+	var resp []byte
+	if len(fields) == 4 {
+		resp, err = base64.StdEncoding.DecodeString(fields[3])
+		if err != nil {
+			return err
+		}
+	}
+	for {
+		challenge, done, err := server.Next(resp)
+		if err != nil {
+			return err
+		}
+		if done {
+			break
+		}
+		if _, err := fmt.Fprintf(conn, "+ %s\r\n", base64.StdEncoding.EncodeToString(challenge)); err != nil {
+			return err
+		}
+		line, err := br.ReadString('\n')
+		if err != nil {
+			return err
+		}
+		resp, err = base64.StdEncoding.DecodeString(strings.TrimSuffix(strings.TrimSuffix(line, "\n"), "\r"))
+		if err != nil {
+			return err
+		}
+	}
+	if _, err := fmt.Fprintf(conn, "%s OK [CAPABILITY %s] authenticated\r\n", tag, caps); err != nil {
+		return err
+	}
+	for {
+		line, err := br.ReadString('\n')
+		if err != nil {
+			return err
+		}
+		fields := strings.Fields(line)
+		if len(fields) != 2 || fields[1] != "NOOP" {
+			return fmt.Errorf("unexpected command after AUTHENTICATE: %q", line)
+		}
+		if _, err := fmt.Fprintf(conn, "%s OK NOOP completed\r\n", fields[0]); err != nil {
+			return err
+		}
 	}
 }
