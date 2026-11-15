@@ -34,6 +34,9 @@ func (c *Conn) writeCopyOK(tag string, data *imap.CopyData) error {
 	// into a failure or corrupt the response stream; omit COPYUID instead.
 	enc := newResponseEncoder(c)
 	defer enc.end()
+	if err := enc.prepareTaggedResponse(tag, &imap.StatusResponse{Type: imap.StatusResponseTypeOK}, true, false); err != nil {
+		return err
+	}
 
 	if tag == "" {
 		tag = "*"

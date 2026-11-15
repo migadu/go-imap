@@ -225,6 +225,9 @@ func readAppendEnd(dec *imapwire.Decoder, utf8 bool) error {
 func (c *Conn) writeAppendOK(tag string, data *imap.AppendData) error {
 	enc := newResponseEncoder(c)
 	defer enc.end()
+	if err := enc.prepareTaggedResponse(tag, &imap.StatusResponse{Type: imap.StatusResponseTypeOK}, true, false); err != nil {
+		return err
+	}
 
 	enc.Atom(tag).SP().Atom("OK").SP()
 	if data != nil {

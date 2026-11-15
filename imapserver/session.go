@@ -214,7 +214,8 @@ type SessionHighestModSeq interface {
 	// not cover a change that is still queued, such as an EXPUNGE held back
 	// by a FETCH, STORE or SEARCH. It is called once the command's own
 	// responses and its post-command Poll have been written, so a change those
-	// delivered may be covered. 0 sends nothing.
+	// delivered may be covered. 0 sends nothing. The response encoder is held
+	// while this is queried, so it must not write protocol responses.
 	HighestModSeq() uint64
 }
 

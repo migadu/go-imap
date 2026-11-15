@@ -636,9 +636,6 @@ func (c *Conn) readCommand(dec *imapwire.Decoder) (err error) {
 
 	// The CONDSTORE state the command starts from; see finishCondStore.
 	wasCondStore, wasSelected := c.CondStoreEnabled(), c.state == imap.ConnStateSelected
-	// The command's tagged response ends the span of MODSEQ FETCH data items
-	// the client weighs (RFC 7162 §6).
-	defer c.fetchModSeq.Store(0)
 
 	// TODO: handle multiple commands concurrently
 	sendOK := true
@@ -826,10 +823,12 @@ func (c *Conn) readCommand(dec *imapwire.Decoder) (err error) {
 			Text: fmt.Sprintf("%v completed", name),
 		}
 	}
-	if err := c.finishCondStore(resp, wasCondStore, wasSelected); err != nil {
+	enc := newResponseEncoder(c)
+	defer enc.end()
+	if err := enc.prepareTaggedResponse(tag, resp, wasCondStore, wasSelected); err != nil {
 		return err
 	}
-	return c.writeStatusResp(tag, resp)
+	return writeStatusResp(enc.Encoder, tag, resp)
 }
 
 func (c *Conn) handleNoop(dec *imapwire.Decoder) error {
@@ -968,6 +967,9 @@ func (c *Conn) canAuth() bool {
 func (c *Conn) writeStatusResp(tag string, statusResp *imap.StatusResponse) error {
 	enc := newResponseEncoder(c)
 	defer enc.end()
+	if err := enc.prepareTaggedResponse(tag, statusResp, true, false); err != nil {
+		return err
+	}
 	return writeStatusResp(enc.Encoder, tag, statusResp)
 }
 
@@ -980,6 +982,7 @@ func (c *Conn) writeContReq(text string) error {
 func (c *Conn) writeCapabilityStatus(tag string, typ imap.StatusResponseType, text string) error {
 	enc := newResponseEncoder(c)
 	defer enc.end()
+	enc.tagged = tag != ""
 	return writeCapabilityStatus(enc.Encoder, tag, typ, c.availableCaps(), text)
 }
 
@@ -1114,7 +1117,8 @@ func (c *Conn) useQuotedUTF8() bool {
 
 type responseEncoder struct {
 	*imapwire.Encoder
-	conn *Conn
+	conn   *Conn
+	tagged bool // reset the MODSEQ span before releasing the response lock
 }
 
 func newResponseEncoder(conn *Conn) *responseEncoder {
@@ -1134,8 +1138,22 @@ func (enc *responseEncoder) end() {
 		panic("imapserver: responseEncoder.end called twice")
 	}
 	enc.Encoder = nil
+	if enc.tagged {
+		enc.conn.fetchModSeq.Store(0)
+	}
 	enc.conn.setWriteTimeout(0)
 	enc.conn.encMutex.Unlock()
+}
+
+// prepareTaggedResponse keeps the watermark decision, any compensating code,
+// tagged completion and MODSEQ span reset under one encoder lock. An unsolicited
+// FETCH is therefore wholly before this boundary or retained for the next one.
+func (enc *responseEncoder) prepareTaggedResponse(tag string, resp *imap.StatusResponse, wasCondStore, wasSelected bool) error {
+	if tag == "" {
+		return nil
+	}
+	enc.tagged = true
+	return enc.conn.finishCondStore(enc.Encoder, resp, wasCondStore, wasSelected)
 }
 
 func (enc *responseEncoder) Literal(size int64) io.WriteCloser {
