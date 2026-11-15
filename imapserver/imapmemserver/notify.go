@@ -522,14 +522,14 @@ func (sess *UserSession) writeNotifyNewMessages(ctx context.Context, watch *noti
 		if sess.takeOwnMessage(nm.msg.uid) {
 			continue
 		}
-		binarySections, binarySizes, err := nm.msg.decodeBinary(watch.selected.MessageNewFetch)
+		binarySizes, err := nm.msg.prepareBinary(watch.selected.MessageNewFetch)
 		if errors.Is(err, imapserver.ErrUnknownCTE) {
 			continue
 		} else if err != nil {
 			return err
 		}
 		respWriter := fetchWriter.CreateMessage(nm.seqNum)
-		if err := nm.msg.fetch(ctx, respWriter, watch.selected.MessageNewFetch, binarySections, binarySizes); err != nil {
+		if err := nm.msg.fetch(ctx, respWriter, watch.selected.MessageNewFetch, binarySizes); err != nil {
 			return err
 		}
 	}

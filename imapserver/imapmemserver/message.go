@@ -29,16 +29,15 @@ type message struct {
 	modSeq uint64
 }
 
-func (msg *message) decodeBinary(options *imap.FetchOptions) ([][]byte, []uint32, error) {
-	var sections [][]byte
-	if len(options.BinarySection) > 0 {
-		sections = make([][]byte, len(options.BinarySection))
-		for i, bs := range options.BinarySection {
-			buf, err := imapserver.DecodeBinarySection(bytes.NewReader(msg.buf), bs)
-			if err != nil {
-				return nil, nil, err
-			}
-			sections[i] = buf
+// prepareBinary validates every requested binary part before flags or output
+// change. Counting uses the same decoder without retaining the decoded body.
+// The message bytes are immutable, so fetch can decode and write BINARY
+// sections one at a time instead of retaining a full body for every partial.
+func (msg *message) prepareBinary(options *imap.FetchOptions) ([]uint32, error) {
+	for _, bs := range options.BinarySection {
+		item := &imap.FetchItemBinarySectionSize{Part: bs.Part}
+		if _, err := imapserver.DecodeBinarySectionSize(bytes.NewReader(msg.buf), item); err != nil {
+			return nil, err
 		}
 	}
 
@@ -48,16 +47,16 @@ func (msg *message) decodeBinary(options *imap.FetchOptions) ([][]byte, []uint32
 		for i, bss := range options.BinarySectionSize {
 			n, err := imapserver.DecodeBinarySectionSize(bytes.NewReader(msg.buf), bss)
 			if err != nil {
-				return nil, nil, err
+				return nil, err
 			}
 			sizes[i] = n
 		}
 	}
 
-	return sections, sizes, nil
+	return sizes, nil
 }
 
-func (msg *message) fetch(ctx context.Context, w *imapserver.FetchResponseWriter, options *imap.FetchOptions, binarySections [][]byte, binarySizes []uint32) (err error) {
+func (msg *message) fetch(ctx context.Context, w *imapserver.FetchResponseWriter, options *imap.FetchOptions, binarySizes []uint32) (err error) {
 	// Close the response writer exactly once, even on an early error return.
 	// CreateMessage holds the connection's encMutex until Close, so a fetch
 	// that errored midway without closing would leak the mutex and wedge the
@@ -111,8 +110,12 @@ func (msg *message) fetch(ctx context.Context, w *imapserver.FetchResponseWriter
 		}
 	}
 
-	for i, bs := range options.BinarySection {
-		if err := w.WriteBinarySectionBytes(bs, binarySections[i]); err != nil {
+	for _, bs := range options.BinarySection {
+		buf, err := imapserver.DecodeBinarySection(bytes.NewReader(msg.buf), bs)
+		if err != nil {
+			return err
+		}
+		if err := w.WriteBinarySectionBytes(bs, buf); err != nil {
 			return err
 		}
 	}
