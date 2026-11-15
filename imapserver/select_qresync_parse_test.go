@@ -283,3 +283,91 @@ func TestSelectQResyncRefusesZeroUIDValidityAndStar(t *testing.T) {
 		})
 	}
 }
+
+// The SELECT/EXAMINE parameter list holds at least one parameter (RFC 4466
+// §3), and the QRESYNC parameter and its seq-match-data are fixed groups, not
+// lists (RFC 7162 §7):
+//
+//	select-params       =  SP "(" select-param *(SP select-param) ")"
+//	select-param        =/  "QRESYNC" SP "(" uidvalidity SP
+//	                    mod-sequence-value [SP known-uids]
+//	                    [SP seq-match-data] ")"
+//	seq-match-data      =  "(" known-sequence-set SP known-uid-set ")"
+//
+// All three were read as lists that may be empty or repeat their contents.
+// "SELECT INBOX ()" was answered OK, "(QRESYNC ())" selected the mailbox
+// without resynchronization, an empty seq-match-data was dropped, and a
+// repeated QRESYNC group or seq-match pair silently replaced the first.
+// Section 3.2.5: "If any parameter is not syntactically valid, the server
+// returns the tagged BAD response, and the mailbox remains unselected."
+func TestSelectEmptyOrRepeatedParamListIsBAD(t *testing.T) {
+	for _, tc := range []struct {
+		command string
+		enable  bool
+	}{
+		{command: "SELECT INBOX ()"},
+		{command: "EXAMINE INBOX ()"},
+		{command: "SELECT INBOX ()", enable: true},
+		{command: "SELECT INBOX (QRESYNC ())", enable: true},
+		{command: "EXAMINE INBOX (QRESYNC ())", enable: true},
+		{command: "SELECT INBOX (QRESYNC (1 1 ()))", enable: true},
+		{command: "SELECT INBOX (QRESYNC (1 1 1:3 ()))", enable: true},
+		{command: "SELECT INBOX (QRESYNC (1 1 (1 1 2 2)))", enable: true},
+		{command: "SELECT INBOX (QRESYNC (1 1 1:3 (1 1) 2 2))", enable: true},
+		{command: "SELECT INBOX (QRESYNC (1 1 2 2))", enable: true},
+	} {
+		name := tc.command
+		if tc.enable {
+			name += " after ENABLE QRESYNC"
+		}
+		t.Run(name, func(t *testing.T) {
+			rc := newQResyncTestConn(t)
+
+			if tc.enable {
+				rc.send("a1 ENABLE QRESYNC")
+				rc.readUntilTag("a1")
+			}
+
+			rc.send("a2 " + tc.command)
+			resp := rc.readUntilTag("a2")
+			if tagged := resp[len(resp)-1]; !strings.HasPrefix(tagged, "a2 BAD [CLIENTBUG] ") || len(resp) != 1 {
+				t.Errorf("%v = %q, want BAD [CLIENTBUG] and no mailbox data:\n\t%s", tc.command, tagged, strings.Join(resp, "\n\t"))
+			}
+
+			// Still in the authenticated state, and the connection usable.
+			rc.send("a3 CLOSE")
+			resp = rc.readUntilTag("a3")
+			if tagged := resp[len(resp)-1]; strings.HasPrefix(tagged, "a3 OK") {
+				t.Errorf("CLOSE after the refused %v = %q, want no mailbox selected", tc.command, tagged)
+			}
+			rc.send("a4 NOOP")
+			resp = rc.readUntilTag("a4")
+			if tagged := resp[len(resp)-1]; !strings.HasPrefix(tagged, "a4 OK") {
+				t.Errorf("NOOP after the refused %v = %q, want OK", tc.command, tagged)
+			}
+		})
+	}
+
+	// The same forms with their contents are served.
+	for _, command := range []string{
+		"SELECT INBOX (CONDSTORE)",
+		"EXAMINE INBOX (CONDSTORE)",
+		"SELECT INBOX (QRESYNC (1 1))",
+		"EXAMINE INBOX (QRESYNC (1 1 1:3))",
+		"SELECT INBOX (QRESYNC (1 1 (1 1)))",
+		"SELECT INBOX (QRESYNC (1 1 1:3 (1:2 1:2)))",
+	} {
+		t.Run(command, func(t *testing.T) {
+			rc := newQResyncTestConn(t)
+
+			rc.send("a1 ENABLE QRESYNC")
+			rc.readUntilTag("a1")
+
+			rc.send("a2 " + command)
+			resp := rc.readUntilTag("a2")
+			if tagged := resp[len(resp)-1]; !strings.HasPrefix(tagged, "a2 OK") {
+				t.Errorf("%v = %q, want OK:\n\t%s", command, tagged, strings.Join(resp, "\n\t"))
+			}
+		})
+	}
+}
