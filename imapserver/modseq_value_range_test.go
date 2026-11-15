@@ -71,9 +71,25 @@ func TestModSequenceValueRange(t *testing.T) {
 	}
 
 	// UNCHANGEDSINCE and the MODSEQ search key take a mod-sequence-valzer,
-	// which allows 0 (RFC 7162 §3.1.3.1 gives UNCHANGEDSINCE 0 a meaning).
-	rc.do(`STORE 1 (UNCHANGEDSINCE 0) +FLAGS.SILENT (\Flagged)`)
-	rc.do(`SEARCH MODSEQ 0`)
+	// "0" / mod-sequence-value: 0 is allowed (RFC 7162 §3.1.3 gives
+	// UNCHANGEDSINCE 0 a meaning), but the upper bound is the same 2^63-1.
+	for _, tc := range []struct {
+		cmd string
+		ok  bool
+	}{
+		{`STORE 1 (UNCHANGEDSINCE 0) +FLAGS.SILENT (\Flagged)`, true},
+		{`STORE 1 (UNCHANGEDSINCE ` + maxModSeq + `) +FLAGS.SILENT (\Flagged)`, true},
+		{`STORE 1 (UNCHANGEDSINCE ` + overModSeq + `) +FLAGS.SILENT (\Flagged)`, false},
+		{`UID STORE 1 (UNCHANGEDSINCE 18446744073709551615) +FLAGS.SILENT (\Flagged)`, false},
+		{`SEARCH MODSEQ 0`, true},
+		{`SEARCH MODSEQ ` + maxModSeq, true},
+		{`SEARCH MODSEQ ` + overModSeq, false},
+		{`UID SEARCH MODSEQ "/flags/\\seen" all ` + overModSeq, false},
+	} {
+		_, tagged := rc.try(tc.cmd)
+		checkModSeqValueResponse(t, tc.cmd, tagged, tc.ok)
+		rc.do("NOOP")
+	}
 }
 
 func checkModSeqValueResponse(t *testing.T, cmd, tagged string, ok bool) {

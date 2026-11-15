@@ -1,6 +1,7 @@
 package imapwire_test
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 
@@ -85,6 +86,37 @@ func TestDecoderModSequenceValue(t *testing.T) {
 		}
 		if !ok || v != tc.want || dec.Err() != nil || !dec.Special(')') {
 			t.Errorf("%q: got %v, %v (err %v), want %v", tc.in, v, ok, dec.Err(), tc.want)
+		}
+	}
+}
+
+// mod-sequence-valzer is "0" / mod-sequence-value (RFC 7162 Section 7): 0 is
+// allowed, 2^63-1 is still the largest value.
+func TestDecoderModSequenceValzer(t *testing.T) {
+	for _, tc := range []struct {
+		in string
+		ok bool
+	}{
+		{"0)", true},
+		{"1)", true},
+		{"9223372036854775807)", true},
+		{"9223372036854775808)", false},
+		{"18446744073709551615)", false},
+	} {
+		dec := newTestDecoder(tc.in)
+		var v uint64
+		ok := dec.ExpectModSequenceValzer(&v)
+		if !tc.ok {
+			if ok {
+				t.Errorf("%q: accepted as %v", tc.in, v)
+				continue
+			}
+			expectDecoderExpectError(t, dec)
+			continue
+		}
+		want := strings.TrimSuffix(tc.in, ")")
+		if !ok || strconv.FormatUint(v, 10) != want || dec.Err() != nil || !dec.Special(')') {
+			t.Errorf("%q: got %v, %v (err %v), want %v", tc.in, v, ok, dec.Err(), want)
 		}
 	}
 }
