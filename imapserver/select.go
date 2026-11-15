@@ -175,25 +175,8 @@ func (c *Conn) handleSelect(tag string, dec *imapwire.Decoder, readOnly bool) er
 	defer enc.end()
 	enc.tagged = tag != ""
 
-	// Write QRESYNC-specific responses first per RFC 7162 §3.2.5
-	if len(data.Vanished) > 0 {
-		// QRESYNC SELECT responses use VANISHED (EARLIER)
-		if err := writeVanishedEarlier(enc.Encoder, data.Vanished); err != nil {
-			return err
-		}
-	}
-
-	if len(data.Modified) > 0 {
-		for _, mod := range data.Modified {
-			if err := writeQResyncFetch(enc.Encoder, mod); err != nil {
-				return err
-			}
-		}
-	}
-
-	// Always write EXISTS per RFC 7162 §3.2.5.2
-	// "The server MUST send EXISTS and RECENT responses, as documented
-	// in RFC 3501, even when QRESYNC is active."
+	// RFC 7162 section 3.2.5 opens the mailbox and sends the standard
+	// SELECT/EXAMINE responses before processing the resynchronization data.
 	writeExists(enc.Encoder, data.NumMessages)
 	if !c.isIMAP4rev2() {
 		writeObsoleteRecent(enc.Encoder, data.NumRecent)
@@ -221,6 +204,20 @@ func (c *Conn) handleSelect(tag string, dec *imapwire.Decoder, readOnly bool) er
 			writeHighestModSeq(enc.Encoder, data.HighestModSeq)
 		} else {
 			writeNoModSeq(enc.Encoder)
+		}
+	}
+
+	// After the opening responses, report historical expunges before modified
+	// messages (RFC 7162 sections 3.2.5.1 and 3.2.6).
+	if len(data.Vanished) > 0 {
+		if err := writeVanishedEarlier(enc.Encoder, data.Vanished); err != nil {
+			return err
+		}
+	}
+
+	for _, mod := range data.Modified {
+		if err := writeQResyncFetch(enc.Encoder, mod); err != nil {
+			return err
 		}
 	}
 
