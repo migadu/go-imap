@@ -3,7 +3,6 @@ package imapserver
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	"github.com/migadu/go-imap"
 	"github.com/migadu/go-imap/internal/imapwire"
@@ -24,7 +23,7 @@ func (c *Conn) handleThread(dec *imapwire.Decoder, numKind NumKind) error {
 		return dec.Err()
 	}
 
-	algorithm := imap.ThreadAlgorithm(strings.ToUpper(algStr))
+	algorithm := imap.ThreadAlgorithm(imapwire.ToUpperASCII(algStr))
 	if algorithm != imap.ThreadReferences && algorithm != imap.ThreadOrderedSubject && algorithm != imap.ThreadRefs {
 		return &imap.Error{
 			Type: imap.StatusResponseTypeBad,
@@ -36,7 +35,7 @@ func (c *Conn) handleThread(dec *imapwire.Decoder, numKind NumKind) error {
 	if !dec.ExpectAString(&charset) || !dec.ExpectSP() {
 		return dec.Err()
 	}
-	switch strings.ToUpper(charset) {
+	switch imapwire.ToUpperASCII(charset) {
 	case "US-ASCII", "UTF-8":
 		// IMAP4rev2 mandates US-ASCII and UTF-8 support. The backend
 		// receives this charset string and can enforce its own restrictions.

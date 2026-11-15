@@ -3,7 +3,6 @@ package imapserver
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	"github.com/migadu/go-imap"
 	"github.com/migadu/go-imap/internal/imapwire"
@@ -55,7 +54,7 @@ func (c *Conn) handleESearch(tag string, dec *imapwire.Decoder) (err error) {
 	}()
 
 	// Optional "IN (source-mbox)".
-	if maybeReadSearchKeyAtom(dec, &atom) && strings.EqualFold(atom, "IN") {
+	if maybeReadSearchKeyAtom(dec, &atom) && imapwire.EqualFoldASCII(atom, "IN") {
 		if !dec.ExpectSP() {
 			return dec.Err()
 		}
@@ -70,7 +69,7 @@ func (c *Conn) handleESearch(tag string, dec *imapwire.Decoder) (err error) {
 	}
 
 	// Optional "RETURN (...)".
-	if strings.EqualFold(atom, "RETURN") {
+	if imapwire.EqualFoldASCII(atom, "RETURN") {
 		if err := readSearchReturnOpts(dec, &options); err != nil {
 			return fmt.Errorf("in search-return-opts: %w", err)
 		}
@@ -83,7 +82,7 @@ func (c *Conn) handleESearch(tag string, dec *imapwire.Decoder) (err error) {
 
 	// Optional CHARSET.
 	var badCharset bool
-	if strings.EqualFold(atom, "CHARSET") {
+	if imapwire.EqualFoldASCII(atom, "CHARSET") {
 		var charset string
 		if !dec.ExpectSP() || !dec.ExpectAString(&charset) || !dec.ExpectSP() {
 			return dec.Err()
@@ -243,7 +242,7 @@ func readSearchSource(dec *imapwire.Decoder, source *imap.SearchSource) error {
 			return dec.Err()
 		}
 
-		switch strings.ToLower(verb) {
+		switch imapwire.ToLowerASCII(verb) {
 		case "selected":
 			source.Selected = true
 		case "inboxes":
