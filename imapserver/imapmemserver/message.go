@@ -29,7 +29,35 @@ type message struct {
 	modSeq uint64
 }
 
-func (msg *message) fetch(ctx context.Context, w *imapserver.FetchResponseWriter, options *imap.FetchOptions) (err error) {
+func (msg *message) decodeBinary(options *imap.FetchOptions) ([][]byte, []uint32, error) {
+	var sections [][]byte
+	if len(options.BinarySection) > 0 {
+		sections = make([][]byte, len(options.BinarySection))
+		for i, bs := range options.BinarySection {
+			buf, err := imapserver.DecodeBinarySection(bytes.NewReader(msg.buf), bs)
+			if err != nil {
+				return nil, nil, err
+			}
+			sections[i] = buf
+		}
+	}
+
+	var sizes []uint32
+	if len(options.BinarySectionSize) > 0 {
+		sizes = make([]uint32, len(options.BinarySectionSize))
+		for i, bss := range options.BinarySectionSize {
+			n, err := imapserver.DecodeBinarySectionSize(bytes.NewReader(msg.buf), bss)
+			if err != nil {
+				return nil, nil, err
+			}
+			sizes[i] = n
+		}
+	}
+
+	return sections, sizes, nil
+}
+
+func (msg *message) fetch(ctx context.Context, w *imapserver.FetchResponseWriter, options *imap.FetchOptions, binarySections [][]byte, binarySizes []uint32) (err error) {
 	// Close the response writer exactly once, even on an early error return.
 	// CreateMessage holds the connection's encMutex until Close, so a fetch
 	// that errored midway without closing would leak the mutex and wedge the
@@ -83,22 +111,14 @@ func (msg *message) fetch(ctx context.Context, w *imapserver.FetchResponseWriter
 		}
 	}
 
-	for _, bs := range options.BinarySection {
-		buf, err := imapserver.DecodeBinarySection(bytes.NewReader(msg.buf), bs)
-		if err != nil {
-			return err
-		}
-		if err := w.WriteBinarySectionBytes(bs, buf); err != nil {
+	for i, bs := range options.BinarySection {
+		if err := w.WriteBinarySectionBytes(bs, binarySections[i]); err != nil {
 			return err
 		}
 	}
 
-	for _, bss := range options.BinarySectionSize {
-		n, err := imapserver.DecodeBinarySectionSize(bytes.NewReader(msg.buf), bss)
-		if err != nil {
-			return err
-		}
-		w.WriteBinarySectionSize(bss, n)
+	for i, bss := range options.BinarySectionSize {
+		w.WriteBinarySectionSize(bss, binarySizes[i])
 	}
 
 	// The deferred Close (see top) releases the encoder and returns its error.
