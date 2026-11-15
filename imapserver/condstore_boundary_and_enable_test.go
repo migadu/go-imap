@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 	"net"
-	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -534,8 +533,10 @@ func TestNotifyPumpDoesNotSeeMidParseCondStore(t *testing.T) {
 		memServer := imapmemserver.New()
 		memServer.AddUser(memUser)
 
+		connections := make(chan *imapserver.Conn, 2)
 		srv := imapserver.New(&imapserver.Options{
-			NewSession: func(*imapserver.Conn) (imapserver.Session, *imapserver.GreetingData, error) {
+			NewSession: func(conn *imapserver.Conn) (imapserver.Session, *imapserver.GreetingData, error) {
+				connections <- conn
 				return memServer.NewSession(), nil, nil
 			},
 			Caps: imap.CapSet{
@@ -569,6 +570,7 @@ func TestNotifyPumpDoesNotSeeMidParseCondStore(t *testing.T) {
 			if resp := sc.do("login", "LOGIN user pass"); !strings.Contains(resp, "login OK") {
 				t.Fatalf("LOGIN: %q", resp)
 			}
+			sc.srvConn = <-connections
 			return sc
 		}
 
@@ -587,6 +589,11 @@ func TestNotifyPumpDoesNotSeeMidParseCondStore(t *testing.T) {
 			t.Fatalf("expected continuation '+', got %q (err=%v)", cont, err)
 		}
 
+		// The literal continuation proves MODSEQ has been parsed, but the
+		// rest of the command is still incomplete and must remain provisional.
+		if c1.srvConn.CondStoreEnabled() {
+			t.Fatal("public CondStoreEnabled exposed an incomplete command's parser mark")
+		}
 		c2.do("store", `STORE 1 +FLAGS (\Seen)`)
 
 		unsolicited, err := c1.br.ReadString('\n')
@@ -675,12 +682,8 @@ func TestNotifyPumpDoesNotSeeMidParseCondStore(t *testing.T) {
 		mu.Lock()
 		sc := srvConn
 		mu.Unlock()
-		deadline := time.Now().Add(2 * time.Second)
-		for !sc.CondStoreEnabled() {
-			if time.Now().After(deadline) {
-				t.Fatal("timed out waiting for SELECT (CONDSTORE ...) to be parsed")
-			}
-			runtime.Gosched()
+		if sc.CondStoreEnabled() {
+			t.Fatal("public CondStoreEnabled exposed an incomplete SELECT's parser mark")
 		}
 
 		close(sess.trigger)

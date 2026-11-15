@@ -80,3 +80,41 @@ func TestAcceptedEnablingCommandIncludesConcurrentNotifyModSeq(t *testing.T) {
 		t.Fatalf("valid fully parsed enabling SEARCH already executing, but concurrent flag FETCH omits MODSEQ: %q", line)
 	}
 }
+
+func TestNotifyOverflowCondStoreActivation(t *testing.T) {
+	enabling := "(SELECTED (MessageNew (UID MODSEQ) MessageExpunge))"
+	overLimit := strings.Repeat(" (PERSONAL NONE)", 64)
+	for _, tc := range []struct {
+		name, command, completion string
+		supported, aware          bool
+	}{
+		{"valid_resource_refusal", enabling + overLimit, "NO [NOTIFICATIONOVERFLOW]", true, true},
+		{"enabling_group_beyond_limit", strings.TrimSpace(overLimit) + " " + enabling, "NO [NOTIFICATIONOVERFLOW]", true, true},
+		{"invalid_pair_beyond_limit", enabling + overLimit + " (PERSONAL (FlagChange))", "BAD", true, false},
+		{"duplicate_selected_beyond_limit", enabling + overLimit + " (SELECTED NONE)", "BAD", true, false},
+		{"unsupported_command", enabling + overLimit, "NO", false, false},
+		// Even discarded groups must consume their literals before refusal.
+		{"literal_beyond_limit", enabling + overLimit + " (MAILBOXES ({5+}\r\nOther) NONE)", "NO [NOTIFICATIONOVERFLOW]", true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := newNotifyEnableTestConn(t, tc.supported)
+			c.do("select", "SELECT INBOX")
+			resp := c.do("watch", "NOTIFY SET "+tc.command)
+			if !strings.Contains(resp, "watch "+tc.completion) {
+				t.Fatalf("NOTIFY completion = %q, want %s", resp, tc.completion)
+			}
+			wantHighest := 0
+			if tc.aware {
+				wantHighest = 1
+			}
+			if got := len(highestModSeqLines(resp)); got != wantHighest {
+				t.Errorf("first-enable HIGHESTMODSEQ count = %d, want %d: %q", got, wantHighest, resp)
+			}
+			c.do("noop", "NOOP")
+			resp = c.do("store", `STORE 1 +FLAGS (\Seen)`)
+			if got := strings.Contains(resp, "MODSEQ ("); got != tc.aware {
+				t.Errorf("subsequent STORE MODSEQ = %v, want %v: %q", got, tc.aware, resp)
+			}
+		})
+	}
+}
