@@ -46,8 +46,9 @@ func (c *Conn) supportsCondStore() bool {
 // CondStoreEnabled.
 //
 // The mark stays pending (invisible to the background NOTIFY pump) until the
-// command succeeds (commitCondStore) and is discarded if the command fails
-// (clearPendingCondStore).
+// complete command passes syntax, state and capability checks. The handler then
+// calls commitCondStore before executing it: issuing a valid enabling command
+// announces awareness even when the operation subsequently fails with NO.
 func (c *Conn) markCondStoreEnabled() {
 	c.mutex.Lock()
 	c.condStorePending = true
@@ -82,22 +83,16 @@ func (c *Conn) clearPendingCondStore() {
 func (c *Conn) CondStoreEnabled() bool {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
-	return c.condStore || c.condStorePending || c.enabled.Has(imap.CapCondStore) || c.enabled.Has(imap.CapQResync)
-}
-
-func (c *Conn) committedCondStoreEnabled() bool {
-	c.mutex.Lock()
-	defer c.mutex.Unlock()
 	return c.condStore || c.enabled.Has(imap.CapCondStore) || c.enabled.Has(imap.CapQResync)
 }
 
-// finishCondStore is called before the tagged response resp of a command,
+// finishCondStore is called before the tagged response of a command,
 // after the command's own responses and its post-command poll. wasCondStore
 // and wasSelected describe the connection when the command started.
 //
-// A command answered BAD was refused as a protocol error (RFC 9051 §2.2.2),
-// not executed, so it leaves the client as it was: the enabling commands mark
-// CONDSTORE while they parse, before the rest of the command has been checked.
+// Parser marks remain provisional until the handler has validated the complete
+// command. A syntax, state or capability error discards that pending mark;
+// an operation's failure after validation does not revoke awareness.
 //
 // Otherwise, with a mailbox selected that did not answer NOMODSEQ, it writes
 // the mailbox's HIGHESTMODSEQ as the session reports it (SessionHighestModSeq)
@@ -128,13 +123,11 @@ func (c *Conn) committedCondStoreEnabled() bool {
 // The response follows the command's own responses and its post-command poll
 // (RFC 7162 does not place it within the command), so the session can report
 // every change those delivered.
-func (c *Conn) finishCondStore(enc *imapwire.Encoder, resp *imap.StatusResponse, wasCondStore, wasSelected bool) error {
-	if resp.Type == imap.StatusResponseTypeOK {
-		c.commitCondStore()
-	} else {
-		c.clearPendingCondStore()
-	}
-	firstEnabling := resp.Type == imap.StatusResponseTypeOK && !wasCondStore && wasSelected
+func (c *Conn) finishCondStore(enc *imapwire.Encoder, wasCondStore, wasSelected bool) error {
+	// A mark left pending belongs to a command rejected before validation.
+	// Valid commands already committed awareness, independently of their result.
+	c.clearPendingCondStore()
+	firstEnabling := !wasCondStore && wasSelected
 	fetchModSeq := c.fetchModSeq.Load()
 	if !firstEnabling && fetchModSeq == 0 {
 		return nil
@@ -161,6 +154,12 @@ func (c *Conn) finishCondStore(enc *imapwire.Encoder, resp *imap.StatusResponse,
 // Callers must stop or fence the NOTIFY pump before calling this so no further
 // unsolicited FETCH responses for the closing mailbox can be written afterward.
 func (c *Conn) flushClosingCondStore() error {
+	if c.fetchModSeq.Load() == 0 {
+		return nil
+	}
+	enc := newResponseEncoder(c)
+	defer enc.end()
+
 	fetchModSeq := c.fetchModSeq.Swap(0)
 	if fetchModSeq == 0 {
 		return nil
@@ -176,8 +175,6 @@ func (c *Conn) flushClosingCondStore() error {
 	if modSeq == 0 || fetchModSeq <= modSeq {
 		return nil
 	}
-	enc := newResponseEncoder(c)
-	defer enc.end()
 	return writeHighestModSeq(enc.Encoder, modSeq)
 }
 

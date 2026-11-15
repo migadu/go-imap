@@ -89,7 +89,7 @@ type Conn struct {
 	mutex            sync.Mutex
 	conn             net.Conn
 	enabled          imap.CapSet
-	condStore        bool         // client completed a CONDSTORE-enabling command (RFC 7162 §3.1)
+	condStore        bool         // client issued a valid CONDSTORE-enabling command (RFC 7162 §3.1)
 	condStorePending bool         // current command parsed a CONDSTORE-enabling modifier/item
 	clientID         *imap.IDData // Store client identification info
 
@@ -1159,7 +1159,7 @@ func (enc *responseEncoder) prepareTaggedResponse(tag string, resp *imap.StatusR
 		return nil
 	}
 	enc.tagged = true
-	return enc.conn.finishCondStore(enc.Encoder, resp, wasCondStore, wasSelected)
+	return enc.conn.finishCondStore(enc.Encoder, wasCondStore, wasSelected)
 }
 
 func (enc *responseEncoder) Literal(size int64) io.WriteCloser {
@@ -1336,10 +1336,8 @@ type UpdateWriter struct {
 
 	// notify is set for writers handed to SessionNotify: expunge delivery is
 	// additionally gated on the command currently in progress (see
-	// ExpungeAllowed). notifyPump is set for the asynchronous NotifyPoll pump
-	// so mid-parse CONDSTORE marks stay invisible until the command commits.
-	notify     bool
-	notifyPump bool
+	// ExpungeAllowed).
+	notify bool
 }
 
 // ExpungeAllowed reports whether EXPUNGE/VANISHED updates may be written in
@@ -1407,9 +1405,6 @@ func (w *UpdateWriter) DelayedExpungeAllowed() bool {
 func (w *UpdateWriter) CondStoreEnabled() bool {
 	if !w.conn.supportsCondStore() {
 		return false
-	}
-	if w.notifyPump {
-		return w.conn.committedCondStoreEnabled()
 	}
 	return w.conn.CondStoreEnabled()
 }
@@ -1494,7 +1489,6 @@ func (w *UpdateWriter) FetchWriter() *FetchWriter {
 		fw.options = *opts
 	}
 	w.conn.notifyMutex.Unlock()
-	fw.options.committedCondStoreOnly = w.notifyPump
 	return fw
 }
 
@@ -1562,7 +1556,6 @@ func (w *UpdateWriter) WriteMessageFlags(seqNum uint32, uid imap.UID, flags []im
 	}
 
 	fetchWriter := &FetchWriter{conn: w.conn}
-	fetchWriter.options.committedCondStoreOnly = w.notifyPump
 	respWriter := fetchWriter.CreateMessage(seqNum)
 	if uid != 0 {
 		respWriter.WriteUID(uid)

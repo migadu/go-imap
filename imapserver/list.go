@@ -31,6 +31,7 @@ func (c *Conn) handleList(dec *imapwire.Decoder) error {
 		}
 	}
 
+	c.commitCondStore()
 	w := &ListWriter{
 		conn:    c,
 		options: options,

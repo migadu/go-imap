@@ -73,8 +73,11 @@ func (c *Conn) handleNotify(tag string, dec *imapwire.Decoder) error {
 	}
 
 	var (
-		options  *imap.NotifyOptions
-		overflow bool // a size cap was exceeded; refuse once the command is fully parsed
+		options        *imap.NotifyOptions
+		overflow       bool // a size cap was exceeded; refuse once the command is validated
+		groups         int
+		selectedGroups int
+		invalidOptions error
 	)
 	switch imapwire.ToUpperASCII(verb) {
 	case "NONE":
@@ -94,6 +97,18 @@ func (c *Conn) handleNotify(tag string, dec *imapwire.Decoder) error {
 				if err != nil {
 					return err
 				}
+				groups++
+				// Validate discarded groups too, while continuing to consume the
+				// whole command (including literals) before any structural refusal.
+				if item.MailboxSpec == imap.NotifyMailboxSpecSelected || item.MailboxSpec == imap.NotifyMailboxSpecSelectedDelayed {
+					selectedGroups++
+				}
+				if invalidOptions == nil {
+					invalidOptions = validateNotifyOptions(&imap.NotifyOptions{Items: []imap.NotifyItem{*item}})
+					if invalidOptions == nil && selectedGroups > 1 {
+						invalidOptions = newClientBugError("NOTIFY: only one SELECTED or SELECTED-DELAYED event group is allowed")
+					}
+				}
 				if groupOverflow || len(options.Items) >= maxNotifyEventGroups {
 					overflow = true
 					continue
@@ -107,25 +122,13 @@ func (c *Conn) handleNotify(tag string, dec *imapwire.Decoder) error {
 			if !dec.ExpectAtom(&atom) {
 				return dec.Err()
 			}
-			if imapwire.EqualFoldASCII(atom, "STATUS") && !options.Status && len(options.Items) == 0 {
+			if imapwire.EqualFoldASCII(atom, "STATUS") && !options.Status && groups == 0 {
 				options.Status = true
 				continue
 			}
 			return newClientBugError("Syntax error in NOTIFY command")
 		}
-		if overflow {
-			// RFC 5465 §3.1: the server MAY refuse a watch that would be
-			// prohibitively expensive with NO [NOTIFICATIONOVERFLOW].
-			if !dec.ExpectCRLF() {
-				return dec.Err()
-			}
-			return &imap.Error{
-				Type: imap.StatusResponseTypeNo,
-				Code: imap.ResponseCodeNotificationOverflow,
-				Text: "NOTIFY watch too large",
-			}
-		}
-		if len(options.Items) == 0 {
+		if groups == 0 {
 			return newClientBugError("NOTIFY SET requires at least one event group")
 		}
 	default:
@@ -156,9 +159,17 @@ func (c *Conn) handleNotify(tag string, dec *imapwire.Decoder) error {
 		}
 	}
 
-	if options != nil {
-		if err := validateNotifyOptions(options); err != nil {
-			return err
+	if invalidOptions != nil {
+		return invalidOptions
+	}
+	c.commitCondStore()
+	if overflow {
+		// A resource refusal still executes a valid CONDSTORE-enabling command
+		// (RFC 7162 §3.1), without installing its oversized watch (RFC 5465 §3.1).
+		return &imap.Error{
+			Type: imap.StatusResponseTypeNo,
+			Code: imap.ResponseCodeNotificationOverflow,
+			Text: "NOTIFY watch too large",
 		}
 	}
 
@@ -181,8 +192,6 @@ func (c *Conn) handleNotify(tag string, dec *imapwire.Decoder) error {
 		}
 		return err
 	}
-
-	c.commitCondStore()
 
 	// Record which message events the client wants for the selected mailbox, so
 	// that the per-command sync points stop reporting the ones it did not ask
@@ -494,7 +503,7 @@ func (c *Conn) startNotifyPump(session SessionNotify) {
 	c.notifyDone = done
 	c.notifyMutex.Unlock()
 
-	w := &UpdateWriter{conn: c, allowExpunge: true, notify: true, notifyPump: true}
+	w := &UpdateWriter{conn: c, allowExpunge: true, notify: true}
 	go func() {
 		var err error
 		defer func() {

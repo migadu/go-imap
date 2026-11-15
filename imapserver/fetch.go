@@ -27,7 +27,6 @@ type fetchWriterOptions struct {
 		requested bool // PREVIEW
 		lazy      bool // PREVIEW (LAZY)
 	}
-	committedCondStoreOnly bool
 }
 
 func (c *Conn) handleFetch(dec *imapwire.Decoder, numKind NumKind) error {
@@ -181,6 +180,7 @@ func (c *Conn) handleFetch(dec *imapwire.Decoder, numKind NumKind) error {
 	if err := c.checkState(imap.ConnStateSelected); err != nil {
 		return err
 	}
+	c.commitCondStore()
 
 	if numKind == NumKindUID {
 		options.UID = true
@@ -737,11 +737,7 @@ func (w *FetchResponseWriter) WriteEnvelope(envelope *imap.Envelope) {
 func (w *FetchResponseWriter) WriteModSeq(modSeq uint64) {
 	conn := w.enc.conn
 	if conn != nil {
-		enabled := conn.CondStoreEnabled()
-		if w.options.committedCondStoreOnly {
-			enabled = conn.committedCondStoreEnabled()
-		}
-		if !(conn.supportsCondStore() && enabled) {
+		if !(conn.supportsCondStore() && conn.CondStoreEnabled()) {
 			return
 		}
 	}

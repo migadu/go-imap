@@ -136,6 +136,7 @@ func (c *Conn) handleSelect(tag string, dec *imapwire.Decoder, readOnly bool) er
 	if err := c.checkState(imap.ConnStateAuthenticated); err != nil {
 		return err
 	}
+	c.commitCondStore()
 
 	// The selected mailbox is about to change: no NotifyPoll delivery may be in
 	// flight across the switch, or an update queued for the old mailbox would
@@ -222,7 +223,6 @@ func (c *Conn) handleSelect(tag string, dec *imapwire.Decoder, readOnly bool) er
 		}
 	}
 
-	c.commitCondStore()
 	c.state = imap.ConnStateSelected
 	// Only a NOMODSEQ response actually sent for this mailbox exempts the
 	// first enabling command; omitted data while CONDSTORE was filtered out

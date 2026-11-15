@@ -50,6 +50,7 @@ func (c *Conn) handleStatus(dec *imapwire.Decoder) error {
 		}
 	}
 
+	c.commitCondStore()
 	data, err := c.session.Status(c.ctx, mailbox, &options)
 	if err != nil {
 		return err
