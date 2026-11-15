@@ -15,8 +15,8 @@ import (
 )
 
 // newAuthenticateServer starts a server whose sessions take AUTHENTICATE PLAIN
-// over plaintext, logging to logged.
-func newAuthenticateServer(t *testing.T, logged *syncTLSHookLog) string {
+// over plaintext, logging to logged. wrap, if given, wraps its listener.
+func newAuthenticateServer(t *testing.T, logged *syncTLSHookLog, wrap ...func(net.Listener) net.Listener) string {
 	t.Helper()
 	mem := imapmemserver.New()
 	mem.AddUser(newTestUser(t))
@@ -32,7 +32,11 @@ func newAuthenticateServer(t *testing.T, logged *syncTLSHookLog) string {
 	if err != nil {
 		t.Fatalf("net.Listen() = %v", err)
 	}
-	go server.Serve(ln)
+	var served net.Listener = ln
+	for _, w := range wrap {
+		served = w(served)
+	}
+	go server.Serve(served)
 	t.Cleanup(func() { server.Close() })
 	return ln.Addr().String()
 }
