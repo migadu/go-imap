@@ -597,18 +597,15 @@ func (c *Conn) readCommand(dec *imapwire.Decoder) (err error) {
 			err = fmt.Errorf("command exceeded MaxSize")
 		}
 	}()
-	for {
-		if dec.EOF() {
-			return nil
-		}
+	if dec.EOF() {
+		return nil
+	}
 
-		// Use non-destructive CRLF() instead of ExpectCRLF() to avoid
-		// setting decoder error when we encounter non-empty lines.
-		// If this fails (not a CRLF), we break and parse the command.
-		if dec.CRLF() {
-			continue
-		}
-		break
+	// Use non-destructive CRLF() instead of ExpectCRLF() to avoid
+	// setting decoder error when we encounter non-empty lines.
+	// Return to serve() after an empty line so idle timeouts and Shutdown apply.
+	if dec.CRLF() {
+		return nil
 	}
 
 	var tag, name string
