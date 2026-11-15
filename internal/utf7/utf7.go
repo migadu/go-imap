@@ -10,4 +10,6 @@ const (
 	max = 0x7E // Maximum self-representing UTF-7 value
 )
 
-var b64Enc = base64.NewEncoding("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+,")
+// RFC 2152 requires discarded bits at the end of a shifted sequence to be zero.
+// Strict enforces this during decoding without changing encoded output.
+var b64Enc = base64.NewEncoding("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+,").Strict()
