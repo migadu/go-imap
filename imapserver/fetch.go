@@ -700,11 +700,15 @@ func (w *FetchResponseWriter) WriteEnvelope(envelope *imap.Envelope) {
 // the time the response is written. supportsCondStore is also required so a
 // capability filter can suppress the item mid-connection.
 func (w *FetchResponseWriter) WriteModSeq(modSeq uint64) {
-	if conn := w.enc.conn; conn != nil && !(conn.supportsCondStore() && conn.CondStoreEnabled()) {
+	conn := w.enc.conn
+	if conn != nil && !(conn.supportsCondStore() && conn.CondStoreEnabled()) {
 		return
 	}
 	w.writeItemSep()
 	w.enc.Atom("MODSEQ").SP().Special('(').ModSeq(modSeq).Special(')')
+	if conn != nil {
+		conn.noteFetchModSeq(modSeq)
+	}
 }
 
 // WritePreview writes the message's PREVIEW (RFC 8970).

@@ -12,6 +12,7 @@ import (
 	"runtime/debug"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -115,6 +116,10 @@ type Conn struct {
 	// selectedNoModSeq is true when SELECT/EXAMINE answered NOMODSEQ (RFC
 	// 7162 §3.1.2.2) for the selected mailbox. Command-loop only, like state.
 	selectedNoModSeq bool
+	// fetchModSeq is the highest MODSEQ FETCH data item written since the
+	// last tagged response (see finishCondStore). Atomic: the NOTIFY pump
+	// writes unsolicited FETCH responses while a command runs.
+	fetchModSeq atomic.Uint64
 
 	// NOTIFY (RFC 5465) pump state. notifyStop/notifyDone are non-nil while a
 	// SessionNotify.NotifyPoll goroutine is running for this connection.
@@ -629,8 +634,11 @@ func (c *Conn) readCommand(dec *imapwire.Decoder) (err error) {
 	c.setActiveCommand(name)
 	defer c.setActiveCommand("")
 
-	// The CONDSTORE state the command starts from; see finishCondStoreEnabling.
+	// The CONDSTORE state the command starts from; see finishCondStore.
 	wasCondStore, wasSelected := c.CondStoreEnabled(), c.state == imap.ConnStateSelected
+	// The command's tagged response ends the span of MODSEQ FETCH data items
+	// the client weighs (RFC 7162 §6).
+	defer c.fetchModSeq.Store(0)
 
 	// TODO: handle multiple commands concurrently
 	sendOK := true
@@ -818,10 +826,8 @@ func (c *Conn) readCommand(dec *imapwire.Decoder) (err error) {
 			Text: fmt.Sprintf("%v completed", name),
 		}
 	}
-	if !wasCondStore {
-		if err := c.finishCondStoreEnabling(resp, wasSelected); err != nil {
-			return err
-		}
+	if err := c.finishCondStore(resp, wasCondStore, wasSelected); err != nil {
+		return err
 	}
 	return c.writeStatusResp(tag, resp)
 }
