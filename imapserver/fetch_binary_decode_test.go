@@ -65,7 +65,7 @@ func TestFetchBinaryUnknownCTE(t *testing.T) {
 
 	// The other part of the same message decodes. (The CRLF before a boundary
 	// belongs to the boundary, RFC 2046 §5.1.1.)
-	if resp := rc.do("FETCH 2 (BINARY.PEEK[1] BINARY.SIZE[1])"); !strings.Contains(resp, "BINARY[1] ~{5}\r\nplain BINARY.SIZE[1] 5)") {
+	if resp := rc.do("FETCH 2 (BINARY.PEEK[1] BINARY.SIZE[1])"); !strings.Contains(resp, "BINARY[1] {5}\r\nplain BINARY.SIZE[1] 5)") {
 		t.Errorf("FETCH 2 (BINARY.PEEK[1] BINARY.SIZE[1]) → %q", resp)
 	}
 }
@@ -83,19 +83,19 @@ func TestFetchBinaryTextUsesCRLF(t *testing.T) {
 	}{{
 		name: "base64 text with LF",
 		msg:  singlePart("text/plain", "base64", "bGluZTEKbGluZTIK\r\n"), // "line1\nline2\n"
-		want: "BINARY[1] ~{14}\r\nline1\r\nline2\r\n BINARY.SIZE[1] 14)",
+		want: "BINARY[1] {14}\r\nline1\r\nline2\r\n BINARY.SIZE[1] 14)",
 	}, {
 		name: "base64 text with CRLF and LF",
 		msg:  singlePart("text/html", "base64", "YQ0KYgo=\r\n"), // "a\r\nb\n"
-		want: "BINARY[1] ~{6}\r\na\r\nb\r\n BINARY.SIZE[1] 6)",
+		want: "BINARY[1] {6}\r\na\r\nb\r\n BINARY.SIZE[1] 6)",
 	}, {
 		name: "quoted-printable text with an encoded LF",
 		msg:  singlePart("text/plain", "quoted-printable", "a=0Ab\r\n"),
-		want: "BINARY[1] ~{6}\r\na\r\nb\r\n BINARY.SIZE[1] 6)",
+		want: "BINARY[1] {6}\r\na\r\nb\r\n BINARY.SIZE[1] 6)",
 	}, {
 		name: "base64 non-text keeps its octets",
 		msg:  singlePart("application/octet-stream", "base64", "bGluZTEKbGluZTIK\r\n"),
-		want: "BINARY[1] ~{12}\r\nline1\nline2\n BINARY.SIZE[1] 12)",
+		want: "BINARY[1] {12}\r\nline1\nline2\n BINARY.SIZE[1] 12)",
 	}} {
 		t.Run(tc.name, func(t *testing.T) {
 			rc := newSearchRev2Conn(t, imap.CapSet{imap.CapIMAP4rev1: {}, imap.CapBinary: {}})
@@ -128,12 +128,40 @@ func TestFetchBinaryKeepsCharset(t *testing.T) {
 	rc.appendMessage(singlePart("text/plain; charset=x-unknown", "x-uuencode", "begin 644 a.txt\r\n#86)C\r\n`\r\nend\r\n"))
 	rc.do("SELECT INBOX")
 
-	const want = "BINARY[1] ~{6}\r\ncaf\xe9\r\n BINARY.SIZE[1] 6)"
+	const want = "BINARY[1] {6}\r\ncaf\xe9\r\n BINARY.SIZE[1] 6)"
 	if resp := rc.do("FETCH 1 (BINARY.PEEK[1] BINARY.SIZE[1])"); !strings.Contains(resp, want) {
 		t.Errorf("FETCH 1 (BINARY.PEEK[1] BINARY.SIZE[1]) → %q, want %q in it", resp, want)
 	}
 	// An unknown charset does not hide the unknown transfer encoding.
 	if resp, tagged := rc.try("FETCH 2 (BINARY.PEEK[1])"); !strings.Contains(tagged, " NO [UNKNOWN-CTE] ") {
 		t.Errorf("FETCH 2 (BINARY.PEEK[1]) → %q, want NO [UNKNOWN-CTE]", resp)
+	}
+}
+
+// RFC 9051 §7.5.2, BINARY[<section-binary>]<<number>>: "If the domain of the
+// decoded data is "8bit" and the data does not contain the NUL octet, the
+// server SHOULD return the data in a <string> instead of a <literal8>; this
+// allows the client to determine if the "8bit" data contains the NUL octet
+// without having to explicitly scan the data stream for NULs." (RFC 3516 §4.3
+// likewise.) A literal carries any octet but NUL (RFC 9051 §9, "CHAR8 =
+// %x01-ff"), so the data sent decides: a <literal8> only when it holds a NUL.
+func TestFetchBinaryLiteral8OnlyWithNUL(t *testing.T) {
+	rc := newSearchRev2Conn(t, imap.CapSet{imap.CapIMAP4rev1: {}, imap.CapBinary: {}})
+	rc.appendMessage(singlePart("application/octet-stream", "base64", "AAH/YQ==\r\n")) // "\x00\x01\xffa"
+	text := singlePart("text/plain; charset=utf-8", "8bit", "caf\xc3\xa9\r\n")
+	rc.appendMessage(text)
+	rc.do("SELECT INBOX")
+
+	for _, tc := range []struct{ cmd, want string }{
+		{"FETCH 1 (BINARY.PEEK[1])", "BINARY[1] ~{4}\r\n\x00\x01\xffa)"},
+		{"FETCH 1 (BINARY.PEEK[1]<0.2>)", "BINARY[1]<0> ~{2}\r\n\x00\x01)"},
+		{"FETCH 1 (BINARY.PEEK[1]<1.3>)", "BINARY[1]<1> {3}\r\n\x01\xffa)"},
+		{"FETCH 1 (BINARY.PEEK[1]<4.1>)", "BINARY[1]<4> {0}\r\n)"},
+		{"FETCH 2 (BINARY.PEEK[1])", "BINARY[1] {7}\r\ncaf\xc3\xa9\r\n)"},
+		{"FETCH 2 (BINARY.PEEK[])", "BINARY[] {" + strconv.Itoa(len(text)) + "}\r\n" + text + ")"},
+	} {
+		if resp := rc.do(tc.cmd); !strings.Contains(resp, tc.want) {
+			t.Errorf("%s → %q, want %q in it", tc.cmd, resp, tc.want)
+		}
 	}
 }

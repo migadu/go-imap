@@ -1,6 +1,7 @@
 package imapserver
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"math"
@@ -194,9 +195,11 @@ func (c *Conn) handleFetch(dec *imapwire.Decoder, numKind NumKind) error {
 // name has been consumed. The modifier is CONDSTORE's (RFC 7162 §3.1.4.1),
 // and "any modifiers not defined by extensions that the server supports must
 // be rejected with a BAD response" (RFC 4466 §2.4): ignoring it would return
-// every message the client asked to leave out.
+// every message the client asked to leave out. Its value is a
+// mod-sequence-value (RFC 7162 §7), never 0, so ChangedSince == 0 still means
+// the modifier is absent.
 func handleChangedSince(c *Conn, dec *imapwire.Decoder, options *imap.FetchOptions) error {
-	if !dec.ExpectSP() || !dec.ExpectModSeq(&options.ChangedSince) {
+	if !dec.ExpectSP() || !dec.ExpectModSequenceValue(&options.ChangedSince) {
 		return dec.Err()
 	}
 	if !c.supportsCondStore() {
@@ -649,11 +652,37 @@ func writeItemBodySection(enc *imapwire.Encoder, section *imap.FetchItemBodySect
 	}
 }
 
-// WriteBinarySection writes a binary section.
+// WriteBinarySection writes a binary section as a literal8.
 //
 // The returned io.WriteCloser must be closed before writing any more message
 // data items.
+//
+// A caller that holds the decoded section should use WriteBinarySectionBytes,
+// which sends a literal8 only when the section needs one.
 func (w *FetchResponseWriter) WriteBinarySection(section *imap.FetchItemBinarySection, size int64) io.WriteCloser {
+	return w.writeBinarySection(section, size, true)
+}
+
+// WriteBinarySectionBytes writes a binary section from its decoded octets, as
+// a literal8 if they contain a NUL octet and as a literal otherwise.
+//
+// RFC 9051 §7.5.2: "If the domain of the decoded data is "8bit" and the data
+// does not contain the NUL octet, the server SHOULD return the data in a
+// <string> instead of a <literal8>; this allows the client to determine if
+// the "8bit" data contains the NUL octet without having to explicitly scan
+// the data stream for NULs." A literal carries any octet but NUL (CHAR8 =
+// %x01-ff), so only NUL needs the literal8.
+func (w *FetchResponseWriter) WriteBinarySectionBytes(section *imap.FetchItemBinarySection, b []byte) error {
+	wc := w.writeBinarySection(section, int64(len(b)), bytes.IndexByte(b, 0) >= 0)
+	_, writeErr := wc.Write(b)
+	closeErr := wc.Close()
+	if writeErr != nil {
+		return writeErr
+	}
+	return closeErr
+}
+
+func (w *FetchResponseWriter) writeBinarySection(section *imap.FetchItemBinarySection, size int64, literal8 bool) io.WriteCloser {
 	w.writeItemSep()
 	enc := w.enc.Encoder
 
@@ -666,7 +695,9 @@ func (w *FetchResponseWriter) WriteBinarySection(section *imap.FetchItemBinarySe
 		enc.Special('<').Number64(partial.Offset).Special('>')
 	}
 	enc.SP()
-	enc.Special('~') // indicates literal8
+	if literal8 {
+		enc.Special('~')
+	}
 	return w.enc.Literal(size)
 }
 

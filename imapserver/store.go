@@ -26,7 +26,7 @@ func (c *Conn) handleStore(dec *imapwire.Decoder, numKind NumKind) error {
 		}
 
 		if strings.ToUpper(param) == "UNCHANGEDSINCE" {
-			if !dec.ExpectSP() || !dec.ExpectModSeq(&options.UnchangedSince) {
+			if !dec.ExpectSP() || !dec.ExpectModSequenceValzer(&options.UnchangedSince) {
 				return dec.Err()
 			}
 			// A modifier the server does not support for this client must be

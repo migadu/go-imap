@@ -641,8 +641,37 @@ func (dec *Decoder) ModSeq(ptr *uint64) bool {
 	return true
 }
 
+// ExpectModSeq reads a mod-sequence in a server response, tolerating 0 and any
+// 64-bit value. A command's mod-sequence is read with ExpectModSequenceValue
+// or ExpectModSequenceValzer, which keep to the 63-bit range of RFC 7162
+// Section 7.
 func (dec *Decoder) ExpectModSeq(ptr *uint64) bool {
 	v, ok := dec.expectNumber(64, "mod-sequence-value")
+	if ok {
+		*ptr = v
+	}
+	return ok
+}
+
+// ExpectModSequenceValue reads a mod-sequence-value: "Positive unsigned 63-bit
+// integer ... (1 <= n <= 9,223,372,036,854,775,807)" (RFC 7162 Section 7).
+func (dec *Decoder) ExpectModSequenceValue(ptr *uint64) bool {
+	v, ok := dec.expectNumber(63, "mod-sequence-value")
+	if !ok {
+		return false
+	}
+	if v == 0 {
+		return dec.returnErr(&DecoderExpectError{Message: "expected mod-sequence-value, got 0"})
+	}
+	*ptr = v
+	return true
+}
+
+// ExpectModSequenceValzer reads a mod-sequence-valzer, "0" /
+// mod-sequence-value (RFC 7162 Section 7): 0 is allowed, the upper bound is
+// still 2^63-1.
+func (dec *Decoder) ExpectModSequenceValzer(ptr *uint64) bool {
+	v, ok := dec.expectNumber(63, "mod-sequence-valzer")
 	if ok {
 		*ptr = v
 	}
