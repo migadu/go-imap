@@ -211,34 +211,36 @@ func isNumSetEmpty(numSet imap.NumSet) bool {
 }
 
 func (c *Conn) writeSearch(numSet imap.NumSet, modSeq uint64) error {
-	enc := newResponseEncoder(c)
-	defer enc.end()
-
-	enc.Atom("*").SP().Atom("SEARCH")
-
-	written := 0
+	// Enumerated before anything is written: an error after "* SEARCH" would
+	// leave the line unterminated, with the tagged response glued to it.
+	var (
+		nums []uint32
+		uids []imap.UID
+	)
 	if numSet != nil {
 		var ok bool
 		switch numSet := numSet.(type) {
 		case imap.SeqSet:
-			var nums []uint32
 			nums, ok = numSet.Nums()
-			for _, num := range nums {
-				enc.SP().Number(num)
-			}
-			written = len(nums)
 		case imap.UIDSet:
-			var uids []imap.UID
 			uids, ok = numSet.Nums()
-			for _, uid := range uids {
-				enc.SP().UID(uid)
-			}
-			written = len(uids)
 		}
 		if !ok {
 			return fmt.Errorf("imapserver: failed to enumerate message numbers in SEARCH response (dynamic set?)")
 		}
 	}
+
+	enc := newResponseEncoder(c)
+	defer enc.end()
+
+	enc.Atom("*").SP().Atom("SEARCH")
+	for _, num := range nums {
+		enc.SP().Number(num)
+	}
+	for _, uid := range uids {
+		enc.SP().UID(uid)
+	}
+	written := len(nums) + len(uids)
 
 	// RFC 7162 §3.1.5: append the highest mod-sequence of the matched messages
 	// to the untagged SEARCH response, e.g. "* SEARCH 2 5 6 (MODSEQ 917162500)".

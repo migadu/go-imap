@@ -59,21 +59,16 @@ func (c *Conn) handleStatus(dec *imapwire.Decoder) error {
 }
 
 func (c *Conn) writeStatus(data *imap.StatusData, options *imap.StatusOptions) error {
+	if err := checkStatusData(data, options); err != nil {
+		return err
+	}
+
 	enc := newResponseEncoder(c)
 	defer enc.end()
 
 	enc.Atom("*").SP().Atom("STATUS").SP().Mailbox(data.Mailbox).SP()
-	// RFC 9051 §7.3.2: the server MUST include every requested STATUS item.
-	// If the backend's Status() method returns nil for a pointer field that
-	// was requested, that is a backend implementation bug.  Return an error
-	// rather than panicking (which would crash the connection) or silently
-	// omitting the field (which would produce a malformed STATUS response and
-	// hide the bug).
 	listEnc := enc.BeginList()
 	if options.NumMessages {
-		if data.NumMessages == nil {
-			return fmt.Errorf("imapserver: backend did not populate NumMessages in StatusData")
-		}
 		listEnc.Item().Atom("MESSAGES").SP().Number(*data.NumMessages)
 	}
 	if options.UIDNext {
@@ -83,21 +78,12 @@ func (c *Conn) writeStatus(data *imap.StatusData, options *imap.StatusOptions) e
 		listEnc.Item().Atom("UIDVALIDITY").SP().Number(data.UIDValidity)
 	}
 	if options.NumUnseen {
-		if data.NumUnseen == nil {
-			return fmt.Errorf("imapserver: backend did not populate NumUnseen in StatusData")
-		}
 		listEnc.Item().Atom("UNSEEN").SP().Number(*data.NumUnseen)
 	}
 	if options.NumDeleted {
-		if data.NumDeleted == nil {
-			return fmt.Errorf("imapserver: backend did not populate NumDeleted in StatusData")
-		}
 		listEnc.Item().Atom("DELETED").SP().Number(*data.NumDeleted)
 	}
 	if options.Size {
-		if data.Size == nil {
-			return fmt.Errorf("imapserver: backend did not populate Size in StatusData")
-		}
 		listEnc.Item().Atom("SIZE").SP().Number64(*data.Size)
 	}
 	if options.AppendLimit {
@@ -109,15 +95,9 @@ func (c *Conn) writeStatus(data *imap.StatusData, options *imap.StatusOptions) e
 		}
 	}
 	if options.DeletedStorage {
-		if data.DeletedStorage == nil {
-			return fmt.Errorf("imapserver: backend did not populate DeletedStorage in StatusData")
-		}
 		listEnc.Item().Atom("DELETED-STORAGE").SP().Number64(*data.DeletedStorage)
 	}
 	if options.NumRecent {
-		if data.NumRecent == nil {
-			return fmt.Errorf("imapserver: backend did not populate NumRecent in StatusData")
-		}
 		listEnc.Item().Atom("RECENT").SP().Number(*data.NumRecent)
 	}
 	if options.HighestModSeq {
@@ -126,6 +106,31 @@ func (c *Conn) writeStatus(data *imap.StatusData, options *imap.StatusOptions) e
 	listEnc.End()
 
 	return enc.CRLF()
+}
+
+// checkStatusData reports a requested STATUS data item the backend left unset.
+// The STATUS response returns "the requested mailbox status information" (RFC
+// 9051 §7.3.3), so an unset item is a backend bug: it fails the command rather
+// than panicking or leaving the item out. The check runs before anything is
+// written, as an error after part of the STATUS line is out would leave the
+// line unterminated, with the tagged response glued to it.
+func checkStatusData(data *imap.StatusData, options *imap.StatusOptions) error {
+	for _, item := range []struct {
+		requested, unset bool
+		field            string
+	}{
+		{options.NumMessages, data.NumMessages == nil, "NumMessages"},
+		{options.NumUnseen, data.NumUnseen == nil, "NumUnseen"},
+		{options.NumDeleted, data.NumDeleted == nil, "NumDeleted"},
+		{options.Size, data.Size == nil, "Size"},
+		{options.DeletedStorage, data.DeletedStorage == nil, "DeletedStorage"},
+		{options.NumRecent, data.NumRecent == nil, "NumRecent"},
+	} {
+		if item.requested && item.unset {
+			return fmt.Errorf("imapserver: backend did not populate %v in StatusData", item.field)
+		}
+	}
+	return nil
 }
 
 func readStatusItem(c *Conn, dec *imapwire.Decoder, options *imap.StatusOptions) error {
@@ -158,6 +163,10 @@ func readStatusItem(c *Conn, dec *imapwire.Decoder, options *imap.StatusOptions)
 			return newClientBugError("HIGHESTMODSEQ requires CONDSTORE")
 		}
 		options.HighestModSeq = true
+		// STATUS (HIGHESTMODSEQ) is a CONDSTORE-enabling command (RFC 7162
+		// §3.1). LIST ... RETURN (STATUS (HIGHESTMODSEQ)) (RFC 5819) shares
+		// this parser and asks for the same data, so it counts as well.
+		c.markCondStoreEnabled()
 	default:
 		return &imap.Error{
 			Type: imap.StatusResponseTypeBad,

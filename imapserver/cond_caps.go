@@ -37,10 +37,11 @@ func (c *Conn) supportsCondStore() bool {
 }
 
 // markCondStoreEnabled records that the client has issued a CONDSTORE-enabling
-// command (RFC 7162 §3.1) on this connection: SELECT/EXAMINE ... (CONDSTORE), a
-// FETCH/SEARCH carrying a MODSEQ or CHANGEDSINCE modifier, or a STORE with
-// UNCHANGEDSINCE. ENABLE CONDSTORE/QRESYNC is tracked separately in the enabled
-// capability set (see handleEnable) and picked up by CondStoreEnabled.
+// command (RFC 7162 §3.1) on this connection: SELECT/EXAMINE ... (CONDSTORE),
+// STATUS (HIGHESTMODSEQ) (also as a LIST RETURN (STATUS) item), a FETCH/SEARCH
+// carrying a MODSEQ or CHANGEDSINCE modifier, or a STORE with UNCHANGEDSINCE.
+// ENABLE CONDSTORE/QRESYNC is tracked separately in the enabled capability set
+// (see handleEnable) and picked up by CondStoreEnabled.
 func (c *Conn) markCondStoreEnabled() {
 	c.mutex.Lock()
 	c.condStore = true

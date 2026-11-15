@@ -88,14 +88,8 @@ func (msg *message) fetch(ctx context.Context, w *imapserver.FetchResponseWriter
 		if err != nil {
 			return err
 		}
-		wc := w.WriteBinarySection(bs, int64(len(buf)))
-		_, writeErr := wc.Write(buf)
-		closeErr := wc.Close()
-		if writeErr != nil {
-			return writeErr
-		}
-		if closeErr != nil {
-			return closeErr
+		if err := w.WriteBinarySectionBytes(bs, buf); err != nil {
+			return err
 		}
 	}
 

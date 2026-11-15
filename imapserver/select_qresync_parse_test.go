@@ -163,3 +163,69 @@ func TestSelectQResyncSeqMatchSearchRes(t *testing.T) {
 		t.Errorf("NOOP after the refused SELECT = %q, want OK", tagged)
 	}
 }
+
+// TestSelectQResyncWithoutEnable covers RFC 7162 §3.2.5: "A server MUST
+// respond with a tagged BAD response if the Quick Resynchronization parameter
+// to the SELECT/EXAMINE command is specified and the client hasn't issued
+// "ENABLE QRESYNC" in the current connection". The parser returned from the
+// parameter without reading its arguments instead, so a bare "(QRESYNC)" was
+// accepted and the mailbox selected, and a well-formed parameter was refused
+// only because the parser tripped over the argument list it had left behind.
+func TestSelectQResyncWithoutEnable(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		enable  string
+		command string
+	}{
+		{name: "SELECT", command: "SELECT INBOX (QRESYNC (1 1))"},
+		{name: "SELECT with known-uids and seq-match-data", command: "SELECT INBOX (QRESYNC (1 1 1:10 (1:5 100:105)))"},
+		{name: "EXAMINE", command: "EXAMINE INBOX (QRESYNC (1 1))"},
+		{name: "bare QRESYNC", command: "SELECT INBOX (QRESYNC)"},
+		{name: "bare QRESYNC before CONDSTORE", command: "SELECT INBOX (QRESYNC CONDSTORE)"},
+		{name: "after ENABLE CONDSTORE", enable: "CONDSTORE", command: "SELECT INBOX (QRESYNC (1 1))"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rc := newQResyncTestConn(t)
+
+			if tc.enable != "" {
+				rc.send("a1 ENABLE " + tc.enable)
+				rc.readUntilTag("a1")
+			}
+
+			rc.send("a2 " + tc.command)
+			resp := rc.readUntilTag("a2")
+			tagged := resp[len(resp)-1]
+			if !strings.HasPrefix(tagged, "a2 BAD") || !strings.Contains(tagged, "ENABLE QRESYNC") {
+				t.Errorf("%v without ENABLE QRESYNC = %q, want BAD naming ENABLE QRESYNC:\n\t%s", tc.command, tagged, strings.Join(resp, "\n\t"))
+			}
+
+			// The refused command must not have selected the mailbox, and the
+			// rest of its line must have been discarded.
+			rc.send("a3 CLOSE")
+			resp = rc.readUntilTag("a3")
+			if tagged := resp[len(resp)-1]; strings.HasPrefix(tagged, "a3 OK") {
+				t.Errorf("CLOSE after the refused %v = %q, want it refused: no mailbox is selected", tc.command, tagged)
+			}
+			rc.send("a4 NOOP")
+			resp = rc.readUntilTag("a4")
+			if tagged := resp[len(resp)-1]; !strings.HasPrefix(tagged, "a4 OK") {
+				t.Errorf("NOOP after the refused %v = %q, want OK", tc.command, tagged)
+			}
+		})
+	}
+}
+
+// With QRESYNC enabled, the parameter still needs its argument list
+// (RFC 7162 §7: "QRESYNC" SP "(" uidvalidity SP mod-sequence-value ...).
+func TestSelectQResyncWithoutArguments(t *testing.T) {
+	rc := newQResyncTestConn(t)
+
+	rc.send("a1 ENABLE QRESYNC")
+	rc.readUntilTag("a1")
+
+	rc.send("a2 SELECT INBOX (QRESYNC)")
+	resp := rc.readUntilTag("a2")
+	if tagged := resp[len(resp)-1]; !strings.HasPrefix(tagged, "a2 BAD") {
+		t.Errorf("SELECT INBOX (QRESYNC) = %q, want BAD:\n\t%s", tagged, strings.Join(resp, "\n\t"))
+	}
+}
