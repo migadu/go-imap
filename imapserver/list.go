@@ -25,9 +25,8 @@ func (c *Conn) handleList(dec *imapwire.Decoder) error {
 	// reaches it as LIST (SUBSCRIBED RECURSIVEMATCH), and "()" or a one-pattern
 	// list as a plain LIST.
 	if syntax.extended {
-		caps := c.availableCapsSet()
-		if !caps.Has(imap.CapListExtended) && !syntax.supportedByOptionCaps(options, caps) {
-			return newClientBugError("LIST-EXTENDED is not supported")
+		if err := syntax.checkCaps(options, c.availableCapsSet()); err != nil {
+			return err
 		}
 	}
 
@@ -225,22 +224,31 @@ type listCommandSyntax struct {
 	patternList bool
 }
 
-// supportedByOptionCaps preserves independently advertised LIST options without
-// enabling unrelated LIST-EXTENDED syntax. Each requested option needs its own
-// capability; an allowed option cannot authorize a different one alongside it.
-func (syntax listCommandSyntax) supportedByOptionCaps(options *imap.ListOptions, caps imap.CapSet) bool {
-	if syntax.patternList || options.SelectSubscribed || options.SelectRemote ||
-		options.SelectRecursiveMatch || options.ReturnSubscribed || options.ReturnChildren {
-		return false
-	}
-
+// checkCaps verifies that the connection advertises every capability required
+// by the extended LIST syntax and options used on the command (RFC 5258 §3,
+// RFC 6154 §2, RFC 5819 §2, RFC 9590 §3).
+func (syntax listCommandSyntax) checkCaps(options *imap.ListOptions, caps imap.CapSet) error {
 	specialUse := options.SelectSpecialUse || options.ReturnSpecialUse
 	status := options.ReturnStatus != nil
 	metadata := options.ReturnMetadata != nil
-	return (specialUse || status || metadata) &&
-		(!specialUse || caps.Has(imap.CapSpecialUse)) &&
-		(!status || caps.Has(imap.CapListStatus)) &&
-		(!metadata || caps.Has(imap.CapListMetadata))
+
+	if specialUse && !caps.Has(imap.CapSpecialUse) {
+		return newClientBugError("SPECIAL-USE is not supported")
+	}
+	if status && !caps.Has(imap.CapListStatus) {
+		return newClientBugError("LIST-STATUS is not supported")
+	}
+	if metadata && !caps.Has(imap.CapListMetadata) {
+		return newClientBugError("LIST-METADATA is not supported")
+	}
+
+	genericExtended := syntax.patternList || options.SelectSubscribed || options.SelectRemote ||
+		options.SelectRecursiveMatch || options.ReturnSubscribed || options.ReturnChildren ||
+		(syntax.extended && !specialUse && !status && !metadata)
+	if genericExtended && !caps.Has(imap.CapListExtended) {
+		return newClientBugError("LIST-EXTENDED is not supported")
+	}
+	return nil
 }
 
 // readListCmd reads the arguments of LIST, retaining syntax that cannot be
