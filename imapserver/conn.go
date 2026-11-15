@@ -639,8 +639,10 @@ func (c *Conn) readCommand(dec *imapwire.Decoder) (err error) {
 	// TODO: handle multiple commands concurrently
 	sendOK := true
 	switch name {
-	case "NOOP", "CHECK":
+	case "NOOP":
 		err = c.handleNoop(dec)
+	case "CHECK":
+		err = c.handleCheck(dec)
 	case "LOGOUT":
 		err = c.handleLogout(dec)
 	case "CAPABILITY":
@@ -835,6 +837,17 @@ func (c *Conn) handleNoop(dec *imapwire.Decoder) error {
 		return dec.Err()
 	}
 	return nil
+}
+
+// handleCheck answers CHECK as a NOOP: the server has no checkpoint
+// housekeeping to do (RFC 3501 §6.4.1). Unlike NOOP, a universal command,
+// CHECK is valid only in the selected state (RFC 3501 §6.4 and §9,
+// command-select).
+func (c *Conn) handleCheck(dec *imapwire.Decoder) error {
+	if !dec.ExpectCRLF() {
+		return dec.Err()
+	}
+	return c.checkState(imap.ConnStateSelected)
 }
 
 func (c *Conn) handleLogout(dec *imapwire.Decoder) error {
