@@ -302,7 +302,7 @@ func TestNotifyMessageNewModSeqFirstEnableAndRefusals(t *testing.T) {
 		}
 	})
 
-	t.Run("BADEVENT_NOTIFY_does_not_enable_CONDSTORE", func(t *testing.T) {
+	t.Run("BADEVENT_NOTIFY_still_announces_CONDSTORE", func(t *testing.T) {
 		c := newNotifyEnableTestConn(t, true)
 		c.do("select", "SELECT INBOX")
 
@@ -310,23 +310,25 @@ func TestNotifyMessageNewModSeqFirstEnableAndRefusals(t *testing.T) {
 		if !strings.Contains(resp, "notify NO [BADEVENT") {
 			t.Fatalf("expected NO [BADEVENT], got: %q", resp)
 		}
-		if len(highestModSeqLines(resp)) != 0 {
-			t.Fatalf("failed NOTIFY [BADEVENT] emitted HIGHESTMODSEQ: %q", resp)
+		if len(highestModSeqLines(resp)) != 1 {
+			t.Fatalf("valid NOTIFY answered NO [BADEVENT] missed first-enable HIGHESTMODSEQ: %q", resp)
 		}
 
 		storeResp := c.do("store", `STORE 1 +FLAGS (\Seen)`)
-		if strings.Contains(storeResp, "MODSEQ") {
-			t.Fatalf("failed NOTIFY [BADEVENT] latched CONDSTORE and leaked unrequested MODSEQ on STORE: %q", storeResp)
+		if !strings.Contains(storeResp, "MODSEQ (") {
+			t.Fatalf("STORE after valid NOTIFY answered NO [BADEVENT] omitted mandatory MODSEQ: %q", storeResp)
 		}
 
 		fetchResp := c.do("fetch", "FETCH 1 (MODSEQ)")
-		if lines := highestModSeqLines(fetchResp); len(lines) != 1 {
-			t.Fatalf("subsequent first successful enabling FETCH missed * OK [HIGHESTMODSEQ 4242]: %q", fetchResp)
+		if lines := highestModSeqLines(fetchResp); len(lines) != 0 {
+			t.Fatalf("subsequent enabling FETCH repeated first-enable HIGHESTMODSEQ: %q", fetchResp)
 		}
 	})
 }
 
-func TestFailedEnablingCommandDoesNotLatchCondStore(t *testing.T) {
+// A valid enabling command announces the client's willingness to receive
+// MODSEQ even when the operation fails with NO (RFC 7162 section 3.1).
+func TestUnsuccessfulEnablingCommandAnnouncesCondStore(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
 		setupCmd  string
@@ -358,18 +360,25 @@ func TestFailedEnablingCommandDoesNotLatchCondStore(t *testing.T) {
 			if !strings.Contains(resp, "fail NO") {
 				t.Fatalf("%s = %q, want tagged NO", tc.failedCmd, resp)
 			}
-			if lines := highestModSeqLines(resp); len(lines) != 0 {
-				t.Errorf("failed command %q emitted spurious HIGHESTMODSEQ before NO: %q", tc.failedCmd, resp)
+			if lines := highestModSeqLines(resp); len(lines) != 1 {
+				t.Errorf("valid enabling command %q answered NO missed first-enable HIGHESTMODSEQ: %q", tc.failedCmd, resp)
 			}
 
-			// The actual first successful CONDSTORE-enabling command must still
-			// receive * OK [HIGHESTMODSEQ 4242].
+			if tc.setupCmd == "EXAMINE INBOX" {
+				c.do("reselect", "SELECT INBOX")
+			}
+			storeResp := c.do("store", `STORE 1 +FLAGS (\Flagged)`)
+			if !strings.Contains(storeResp, "store OK") || !strings.Contains(storeResp, "MODSEQ (") {
+				t.Errorf("STORE after valid enabling NO omitted mandatory MODSEQ: %q", storeResp)
+			}
+
+			// Awareness already began with the valid unsuccessful command.
 			resp = c.do("real", "STATUS INBOX (HIGHESTMODSEQ)")
 			if !strings.Contains(resp, "real OK") {
 				t.Fatalf("STATUS INBOX (HIGHESTMODSEQ) = %q, want OK", resp)
 			}
-			if lines := highestModSeqLines(resp); len(lines) != 1 {
-				t.Errorf("first successful enabling command after failed %q lost its mandatory * OK [HIGHESTMODSEQ 4242]: %q", tc.failedCmd, resp)
+			if lines := highestModSeqLines(resp); len(lines) != 0 {
+				t.Errorf("subsequent enabling command after valid NO %q repeated first-enable HIGHESTMODSEQ: %q", tc.failedCmd, resp)
 			}
 		})
 	}
@@ -382,8 +391,12 @@ func TestFailedEnablingCommandDoesNotLatchCondStore(t *testing.T) {
 		if resp := c.do("selbad", "SELECT NonExistent (CONDSTORE)"); !strings.Contains(resp, "selbad NO") {
 			t.Fatalf("SELECT NonExistent (CONDSTORE) = %q, want NO", resp)
 		}
-		if c.srvConn.CondStoreEnabled() {
-			t.Fatalf("CondStoreEnabled() = true after failed SELECT NonExistent (CONDSTORE)")
+		if !c.srvConn.CondStoreEnabled() {
+			t.Fatal("valid SELECT NonExistent (CONDSTORE) answered NO did not announce CONDSTORE")
+		}
+		c.do("select", "SELECT INBOX")
+		if resp := c.do("store", `STORE 1 +FLAGS (\Flagged)`); !strings.Contains(resp, "MODSEQ (") {
+			t.Fatalf("STORE after valid SELECT answered NO omitted mandatory MODSEQ: %q", resp)
 		}
 	})
 }
