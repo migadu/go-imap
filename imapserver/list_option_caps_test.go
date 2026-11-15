@@ -40,6 +40,19 @@ type listOptionCapsSession struct {
 
 func (s *listOptionCapsSession) GetCapabilities() imap.CapSet { return s.caps }
 
+type rev2ListOptionSession struct {
+	*listOptionSession
+	rev2 imapserver.SessionIMAP4rev2
+}
+
+func (s *rev2ListOptionSession) Namespace(ctx context.Context) (*imap.NamespaceData, error) {
+	return s.rev2.Namespace(ctx)
+}
+
+func (s *rev2ListOptionSession) Move(ctx context.Context, w *imapserver.MoveWriter, numSet imap.NumSet, dest string) error {
+	return s.rev2.Move(ctx, w, numSet, dest)
+}
+
 // Configurations that advertise an individual LIST option must continue to
 // accept that option without granting unrelated LIST-EXTENDED functionality.
 // In particular, RFC 6154 section 5.2 shows SPECIAL-USE advertised on its own.
@@ -187,5 +200,126 @@ func TestListAdvertisedOptionsWithoutListExtended(t *testing.T) {
 			rc.do(`LIST "" "*"`)
 			rc.do(`LSUB "" "*"`)
 		})
+	}
+}
+
+// Advertising LIST-EXTENDED or IMAP4rev2 enables generic extended LIST syntax,
+// not separately gated extension options (SPECIAL-USE, LIST-STATUS,
+// LIST-METADATA; RFC 5258 §3, RFC 6154 §2, RFC 5819 §2, RFC 9590 §3).
+func TestListOptionCapsEnforcedWithListExtended(t *testing.T) {
+	t.Run("LIST-EXTENDED without option capabilities", func(t *testing.T) {
+		var probe *listOptionSession
+		rc := newSearchRev2ConnWrapped(t, imap.CapSet{
+			imap.CapIMAP4rev1:    {},
+			imap.CapListExtended: {},
+			imap.CapMetadata:     {},
+		}, func(sess imapserver.Session) imapserver.Session {
+			probe = &listOptionSession{Session: sess}
+			return probe
+		})
+
+		rc.do(`LIST (SUBSCRIBED) "" ("INBOX" "Archive") RETURN (SUBSCRIBED CHILDREN)`)
+
+		for _, cmd := range []string{
+			`LIST (SPECIAL-USE) "" "*"`,
+			`LIST "" "*" RETURN (SPECIAL-USE)`,
+			`LIST "" "*" RETURN (STATUS (MESSAGES))`,
+			`LIST "" "*" RETURN (METADATA)`,
+			`LIST "" "*" RETURN (METADATA (/private/comment))`,
+		} {
+			listBefore, metaBefore := probe.listCalls.Load(), probe.metadataCalls.Load()
+			resp, tagged := rc.try(cmd)
+			if !strings.Contains(tagged, " BAD [CLIENTBUG] ") {
+				t.Errorf("%s: want BAD [CLIENTBUG], got:\n%s", cmd, resp)
+			}
+			if probe.listCalls.Load() != listBefore || probe.metadataCalls.Load() != metaBefore {
+				t.Errorf("refused command reached backend: %s", cmd)
+			}
+			rc.do("NOOP")
+		}
+	})
+
+	t.Run("IMAP4rev2 includes LIST-STATUS but not SPECIAL-USE or LIST-METADATA", func(t *testing.T) {
+		var probe *listOptionSession
+		rc := newSearchRev2ConnWrapped(t, imap.CapSet{
+			imap.CapIMAP4rev2: {},
+			imap.CapMetadata:  {},
+		}, func(sess imapserver.Session) imapserver.Session {
+			probe = &listOptionSession{Session: sess}
+			return &rev2ListOptionSession{
+				listOptionSession: probe,
+				rev2:              sess.(imapserver.SessionIMAP4rev2),
+			}
+		})
+
+		if resp := rc.do(`LIST "" "INBOX" RETURN (STATUS (MESSAGES))`); !strings.Contains(resp, "* STATUS ") {
+			t.Fatalf("IMAP4rev2 should allow LIST RETURN (STATUS): %s", resp)
+		}
+
+		for _, cmd := range []string{
+			`LIST (SPECIAL-USE) "" "*"`,
+			`LIST "" "*" RETURN (SPECIAL-USE)`,
+			`LIST "" "*" RETURN (METADATA)`,
+			`LIST "" "*" RETURN (METADATA (/private/comment))`,
+		} {
+			listBefore, metaBefore := probe.listCalls.Load(), probe.metadataCalls.Load()
+			resp, tagged := rc.try(cmd)
+			if !strings.Contains(tagged, " BAD [CLIENTBUG] ") {
+				t.Errorf("%s: want BAD [CLIENTBUG], got:\n%s", cmd, resp)
+			}
+			if probe.listCalls.Load() != listBefore || probe.metadataCalls.Load() != metaBefore {
+				t.Errorf("refused command reached backend: %s", cmd)
+			}
+			rc.do("NOOP")
+		}
+	})
+
+	t.Run("SessionCapabilities filters LIST-STATUS while keeping LIST-EXTENDED", func(t *testing.T) {
+		var probe *listOptionSession
+		rc := newSearchRev2ConnWrapped(t, imap.CapSet{
+			imap.CapIMAP4rev1:    {},
+			imap.CapListExtended: {},
+			imap.CapSpecialUse:   {},
+			imap.CapListStatus:   {},
+		}, func(sess imapserver.Session) imapserver.Session {
+			probe = &listOptionSession{Session: sess}
+			return &listOptionCapsSession{
+				listOptionSession: probe,
+				caps: imap.CapSet{
+					imap.CapIMAP4rev1:    {},
+					imap.CapListExtended: {},
+					imap.CapSpecialUse:   {},
+				},
+			}
+		})
+
+		rc.do(`LIST (SPECIAL-USE) "" ("INBOX")`)
+		resp, tagged := rc.try(`LIST "" "*" RETURN (STATUS (MESSAGES))`)
+		if !strings.Contains(tagged, " BAD [CLIENTBUG] ") {
+			t.Errorf("LIST RETURN (STATUS) when filtered out: want BAD [CLIENTBUG], got:\n%s", resp)
+		}
+	})
+}
+
+// Configuring CapListMetadata on a server whose session implements
+// SessionMetadata must advertise LIST-METADATA in CAPABILITY and authorize
+// LIST RETURN (METADATA ...) without needing AdditionalCapabilities.
+func TestListMetadataCapabilityAdvertised(t *testing.T) {
+	rc := newSearchRev2ConnWrapped(t, imap.CapSet{
+		imap.CapIMAP4rev1:    {},
+		imap.CapMetadata:     {},
+		imap.CapListMetadata: {},
+	}, func(sess imapserver.Session) imapserver.Session {
+		return &listOptionSession{Session: sess}
+	})
+
+	caps := rc.do("CAPABILITY")
+	if !strings.Contains(caps, " LIST-METADATA ") && !strings.Contains(caps, " LIST-METADATA\r\n") {
+		t.Errorf("CAPABILITY missing LIST-METADATA despite Options.Caps + SessionMetadata:\n%s", caps)
+	}
+
+	resp, tagged := rc.try(`LIST "" "INBOX" RETURN (METADATA (/private/comment))`)
+	if !strings.Contains(tagged, " OK ") {
+		t.Errorf("LIST RETURN (METADATA) failed when CapListMetadata configured:\n%s", resp)
 	}
 }
