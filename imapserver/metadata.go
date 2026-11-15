@@ -13,13 +13,18 @@ func (c *Conn) handleGetMetadata(tag string, dec *imapwire.Decoder) error {
 		return dec.Err()
 	}
 
-	// RFC 5464: "GETMETADATA" [SP getmetadata-options] SP mailbox SP entries
+	// RFC 5464 §5:
+	//
+	//	getmetadata = "GETMETADATA" [SP getmetadata-options] SP mailbox SP entries
+	//	getmetadata-options = "(" getmetadata-option *(SP getmetadata-option) ")"
+	//
+	// An options list holds at least one option and is followed by SP.
 	var options imap.GetMetadataOptions
 	var entries []string
-	hasOptions := false
+	numOptions := 0
 
 	// Check for optional options list
-	_, err := dec.List(func() error {
+	hasOptions, err := dec.List(func() error {
 		// Parse options: MAXSIZE <number> or DEPTH <0|1|infinity>
 		var optName string
 		if !dec.ExpectAtom(&optName) {
@@ -28,19 +33,22 @@ func (c *Conn) handleGetMetadata(tag string, dec *imapwire.Decoder) error {
 		if err := readGetMetadataOption(dec, strings.ToUpper(optName), &options); err != nil {
 			return err
 		}
-		hasOptions = true
+		numOptions++
 		return nil
 	})
 	if err != nil {
 		return err
 	}
-
-	// Read mailbox
 	if hasOptions {
+		if numOptions == 0 {
+			return newClientBugError("GETMETADATA options list must not be empty")
+		}
 		if !dec.ExpectSP() {
 			return dec.Err()
 		}
 	}
+
+	// Read mailbox
 	var mailbox string
 	if !dec.ExpectMailbox(&mailbox) || !dec.ExpectSP() {
 		return dec.Err()

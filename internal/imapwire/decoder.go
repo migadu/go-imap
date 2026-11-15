@@ -822,11 +822,28 @@ func (dec *Decoder) ExpectNStringReader() (lit *LiteralReader, nonSync, ok bool)
 	}
 }
 
+// List reads a parenthesized list, calling f for each element, and reports
+// whether there was one. It accepts an empty list "()": where the grammar
+// requires an element, "(" x *(SP x) ")", use NonEmptyList.
 func (dec *Decoder) List(f func() error) (isList bool, err error) {
+	return dec.list(f, true)
+}
+
+// NonEmptyList is List for a list that must hold an element, "(" x *(SP x)
+// ")": an empty list "()" is a syntax error.
+func (dec *Decoder) NonEmptyList(f func() error) (isList bool, err error) {
+	return dec.list(f, false)
+}
+
+func (dec *Decoder) list(f func() error, allowEmpty bool) (isList bool, err error) {
 	if !dec.Special('(') {
 		return false, nil
 	}
 	dec.skipExtraListSP()
+	if !allowEmpty && dec.PeekSpecial(')') {
+		dec.Expect(false, "list element")
+		return true, dec.Err()
+	}
 	if dec.Special(')') {
 		return true, nil
 	}
@@ -873,7 +890,16 @@ func (dec *Decoder) skipExtraListSP() bool {
 }
 
 func (dec *Decoder) ExpectList(f func() error) error {
-	isList, err := dec.List(f)
+	return dec.expectList(dec.List(f))
+}
+
+// ExpectNonEmptyList is ExpectList for a list that must hold an element, as
+// NonEmptyList.
+func (dec *Decoder) ExpectNonEmptyList(f func() error) error {
+	return dec.expectList(dec.NonEmptyList(f))
+}
+
+func (dec *Decoder) expectList(isList bool, err error) error {
 	if err != nil {
 		return err
 	} else if !dec.Expect(isList, "(") {

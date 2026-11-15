@@ -37,7 +37,8 @@ func (c *Conn) handleFetch(dec *imapwire.Decoder, numKind NumKind) error {
 
 	var options imap.FetchOptions
 	writerOptions := fetchWriterOptions{obsolete: make(map[*imap.FetchItemBodySection]string)}
-	isList, err := dec.List(func() error {
+	// fetch-att / "(" fetch-att *(SP fetch-att) ")" (RFC 9051 §9)
+	isList, err := dec.NonEmptyList(func() error {
 		name, err := readFetchAttName(dec)
 		if err != nil {
 			return err
@@ -475,9 +476,11 @@ func readSectionPart(dec *imapwire.Decoder) (part []int, dot bool, err error) {
 	}
 }
 
+// readHeaderList reads header-list = "(" header-fld-name *(SP
+// header-fld-name) ")" (RFC 9051 §9).
 func readHeaderList(dec *imapwire.Decoder) ([]string, error) {
 	var l []string
-	err := dec.ExpectList(func() error {
+	err := dec.ExpectNonEmptyList(func() error {
 		var s string
 		if !dec.ExpectAString(&s) {
 			return dec.Err()
