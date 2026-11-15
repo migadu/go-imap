@@ -3,14 +3,18 @@ package imapserver_test
 import (
 	"fmt"
 	"io"
+	"net"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	gomessage "github.com/emersion/go-message"
 	"golang.org/x/text/encoding/charmap"
 
 	"github.com/migadu/go-imap"
+	"github.com/migadu/go-imap/imapserver"
+	"github.com/migadu/go-imap/imapserver/imapmemserver"
 )
 
 // appendMessage stores msg in INBOX through a synchronizing literal.
@@ -163,5 +167,122 @@ func TestFetchBinaryLiteral8OnlyWithNUL(t *testing.T) {
 		if resp := rc.do(tc.cmd); !strings.Contains(resp, tc.want) {
 			t.Errorf("%s → %q, want %q in it", tc.cmd, resp, tc.want)
 		}
+	}
+}
+
+func TestFetchBinaryUnknownCTENoPartialResponseOrSeenMutation(t *testing.T) {
+	rc := newSearchRev2Conn(t, imap.CapSet{imap.CapIMAP4rev1: {}, imap.CapBinary: {}})
+	rc.appendMessage(singlePart("text/plain", "base64", "aGVsbG8=\r\n"))
+	rc.appendMessage("Content-Type: multipart/mixed; boundary=b\r\n\r\n" +
+		"--b\r\nContent-Type: text/plain\r\n\r\nplain\r\n" +
+		"--b\r\nContent-Type: application/octet-stream\r\nContent-Transfer-Encoding: x-uuencode\r\n\r\nbegin 644 a.txt\r\nend\r\n" +
+		"--b--\r\n")
+	rc.do("SELECT INBOX")
+
+	for _, cmd := range []string{
+		"FETCH 2 (BINARY.PEEK[2])",
+		"FETCH 2 (FLAGS BINARY.PEEK[2])",
+		"FETCH 2 (BINARY.PEEK[1] BINARY.PEEK[2])",
+		"FETCH 2 (BINARY.PEEK[1] BINARY.SIZE[2])",
+	} {
+		resp, tagged := rc.try(cmd)
+		if !strings.Contains(tagged, " NO [UNKNOWN-CTE] ") {
+			t.Fatalf("%s → tagged %q, want NO [UNKNOWN-CTE]", cmd, tagged)
+		}
+		if strings.Contains(resp, "* 2 FETCH") {
+			t.Errorf("%s emitted partial untagged FETCH for failing message 2 before NO [UNKNOWN-CTE]: %q", cmd, resp)
+		}
+	}
+
+	resp, tagged := rc.try("FETCH 1:2 (BODY[] BINARY[2])")
+	if !strings.Contains(tagged, " NO [UNKNOWN-CTE] ") {
+		t.Fatalf("FETCH 1:2 (BODY[] BINARY[2]) → tagged %q, want NO [UNKNOWN-CTE]", tagged)
+	}
+	if strings.Contains(resp, "* 2 FETCH") {
+		t.Errorf("FETCH 1:2 (BODY[] BINARY[2]) emitted partial untagged FETCH for message 2: %q", resp)
+	}
+	rc.do("NOOP")
+	flags2 := rc.do("FETCH 2 (FLAGS)")
+	if strings.Contains(strings.ToLower(flags2), `\seen`) {
+		t.Errorf("failed FETCH marked message 2 \\Seen: %q", flags2)
+	}
+}
+
+func TestNotifyMessageNewBinaryUnknownCTEDoesNotAbortConn(t *testing.T) {
+	user := imapmemserver.NewUser("user", "pass")
+	memServer := imapmemserver.New()
+	memServer.AddUser(user)
+
+	srv := imapserver.New(&imapserver.Options{
+		NewSession: func(*imapserver.Conn) (imapserver.Session, *imapserver.GreetingData, error) {
+			return memServer.NewSession(), nil, nil
+		},
+		Caps: imap.CapSet{
+			imap.CapIMAP4rev1: {},
+			imap.CapNotify:    {},
+			imap.CapBinary:    {},
+		},
+		InsecureAuth: true,
+	})
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	go srv.Serve(ln)
+	defer srv.Close()
+	addr := ln.Addr().String()
+
+	watcher := dialNotifyTest(t, addr)
+	defer watcher.close()
+	watcher.login(t)
+	watcher.cmd("CREATE INBOX")
+	watcher.cmd("SELECT INBOX")
+	if resp := watcher.cmd("NOTIFY SET (SELECTED (MessageNew (UID BINARY.PEEK[1]) MessageExpunge))"); !strings.Contains(resp, "OK") {
+		t.Fatalf("NOTIFY SET failed: %q", resp)
+	}
+
+	other := dialNotifyTest(t, addr)
+	defer other.close()
+	other.login(t)
+	other.cmd("CREATE Staging")
+
+	uuMsg := singlePart("text/plain", "x-uuencode", "begin 644 a.txt\r\n#86)C\r\n`\r\nend\r\n")
+	b64Msg := singlePart("text/plain", "base64", "aGVsbG8gd29ybGQ=\r\n")
+	for _, msg := range []string{uuMsg, b64Msg} {
+		other.tag++
+		tag := "A" + strconv.Itoa(other.tag)
+		other.write(tag + " APPEND Staging {" + strconv.Itoa(len(msg)) + "}\r\n")
+		cont, err := other.readLine(5 * time.Second)
+		if err != nil || !strings.HasPrefix(cont, "+") {
+			t.Fatalf("APPEND continuation: %v %q", err, cont)
+		}
+		other.write(msg + "\r\n")
+		line, err := other.readLine(5 * time.Second)
+		if err != nil || !strings.Contains(line, " OK ") {
+			t.Fatalf("APPEND completion: %v %q", err, line)
+		}
+	}
+	other.cmd("SELECT Staging")
+	other.cmd("COPY 1:2 INBOX")
+
+	var lines []string
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		line, err := watcher.readLine(300 * time.Millisecond)
+		if err != nil {
+			break
+		}
+		lines = append(lines, line)
+		if strings.Contains(line, "hello world") {
+			break
+		}
+	}
+	noopResp := watcher.cmd("NOOP")
+	all := strings.Join(lines, "") + noopResp
+	if strings.Contains(all, "* 1 FETCH") {
+		t.Errorf("watcher received partial FETCH for undecodable message 1: %q", all)
+	}
+	if !strings.Contains(all, "* 2 FETCH") || !strings.Contains(all, "hello world") {
+		t.Errorf("watcher missed MessageNew FETCH for valid message 2: %q", all)
 	}
 }
