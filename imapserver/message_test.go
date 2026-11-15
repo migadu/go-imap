@@ -220,6 +220,60 @@ func TestExtractBodyStructure_ValidMultipart(t *testing.T) {
 	}
 }
 
+// MIME fields "can include RFC 822 comments, which have no semantic content
+// and should be ignored during MIME processing" (RFC 2045 §1), so body-fld-enc
+// is the mechanism alone: a client cannot decode "base64 (encoded)".
+func TestExtractBodyStructureCTEComments(t *testing.T) {
+	msg := "Content-Type: multipart/mixed; boundary=b\r\n" +
+		"\r\n" +
+		"--b\r\nContent-Type: text/plain\r\nContent-Transfer-Encoding: base64 (encoded)\r\n\r\naGVsbG8gd29ybGQK\r\n" +
+		"--b\r\nContent-Type: message/rfc822\r\nContent-Transfer-Encoding: 7bit (embedded)\r\n\r\n" +
+		"Subject: inner\r\nContent-Type: text/plain\r\nContent-Transfer-Encoding: (a (nested \\) comment)) Quoted-Printable\r\n\r\ncaf=E9\r\n" +
+		"--b\r\nContent-Type: application/octet-stream\r\nContent-Transfer-Encoding: x-weird (unknown)\r\n\r\nencoded\r\n" +
+		"--b\r\nContent-Type: text/plain\r\nContent-Transfer-Encoding: (only a comment)\r\n\r\nplain\r\n" +
+		"--b--\r\n"
+
+	bs := ExtractBodyStructure(strings.NewReader(msg))
+	mp, ok := bs.(*imap.BodyStructureMultiPart)
+	if !ok || len(mp.Children) != 4 {
+		t.Fatalf("ExtractBodyStructure = %#v, want a multipart with 4 children", bs)
+	}
+	part := func(bs imap.BodyStructure) *imap.BodyStructureSinglePart {
+		sp, ok := bs.(*imap.BodyStructureSinglePart)
+		if !ok {
+			t.Fatalf("part is %T, want *imap.BodyStructureSinglePart", bs)
+		}
+		return sp
+	}
+	rfc822 := part(mp.Children[1])
+	if rfc822.MessageRFC822 == nil {
+		t.Fatal("message/rfc822 part has no MessageRFC822")
+	}
+	for _, tc := range []struct {
+		name string
+		part *imap.BodyStructureSinglePart
+		want string
+	}{
+		{"1", part(mp.Children[0]), "base64"},
+		{"2", rfc822, "7bit"},
+		{"2.1", part(rfc822.MessageRFC822.BodyStructure), "Quoted-Printable"},
+		{"3", part(mp.Children[2]), "x-weird"},
+		{"4", part(mp.Children[3]), ""},
+	} {
+		if tc.part.Encoding != tc.want {
+			t.Errorf("part %s: Encoding = %q, want %q", tc.name, tc.part.Encoding, tc.want)
+		}
+	}
+
+	var buf bytes.Buffer
+	bw := bufio.NewWriter(&buf)
+	writeBodyStructure(imapwire.NewEncoder(bw, imapwire.ConnSideServer), bs, true)
+	bw.Flush()
+	if out := buf.String(); !strings.Contains(out, `NIL NIL "base64" `) || strings.Contains(out, "(encoded)") {
+		t.Errorf("BODYSTRUCTURE = %s, want body-fld-enc \"base64\" without the comment", out)
+	}
+}
+
 // crlfWriter sees the decoded section in arbitrary chunks, so a CRLF split
 // across two writes must stay one line ending.
 func TestCRLFWriter(t *testing.T) {

@@ -290,7 +290,8 @@ func writeBinarySection(w io.Writer, r io.Reader, part []int, lenient bool) erro
 // cteMechanism returns the mechanism a Content-Transfer-Encoding field value
 // names, without the comments around it: MIME fields "can include RFC 822
 // comments, which have no semantic content and should be ignored during MIME
-// processing" (RFC 2045 §1). gomessage.New takes the whole value for the
+// processing" (RFC 2045 §1). It is what BODYSTRUCTURE reports as body-fld-enc,
+// and what FETCH BINARY decodes: gomessage.New takes the whole value for the
 // mechanism, so "base64 (comment)" would otherwise be an unknown encoding.
 func cteMechanism(v string) string {
 	if !strings.ContainsRune(v, '(') {
@@ -461,7 +462,7 @@ func extractBodyStructure(rawHeader textproto.Header, r io.Reader) imap.BodyStru
 			Params:      typeParams,
 			ID:          header.Get("Content-Id"),
 			Description: header.Get("Content-Description"),
-			Encoding:    header.Get("Content-Transfer-Encoding"),
+			Encoding:    cteMechanism(header.Get("Content-Transfer-Encoding")),
 			Size:        uint32(len(body)),
 		}
 		if mediaType == "message/rfc822" || mediaType == "message/global" {
