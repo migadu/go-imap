@@ -73,6 +73,7 @@ func (c *Conn) handleSelect(tag string, dec *imapwire.Decoder, readOnly bool) er
 	if err := c.checkState(imap.ConnStateAuthenticated); err != nil {
 		return err
 	}
+	c.commitCondStore()
 
 	// The selected mailbox is about to change: no NotifyPoll delivery may be in
 	// flight across the switch, or an update queued for the old mailbox would
@@ -85,6 +86,9 @@ func (c *Conn) handleSelect(tag string, dec *imapwire.Decoder, readOnly bool) er
 	defer c.restartNotifyPump(c.fenceNotifyPump())
 
 	if c.state == imap.ConnStateSelected {
+		if err := c.flushClosingCondStore(); err != nil {
+			return err
+		}
 		if err := c.session.Unselect(c.ctx); err != nil {
 			return err
 		}
@@ -286,6 +290,10 @@ func (c *Conn) handleUnselect(dec *imapwire.Decoder, expunge bool) error {
 	// Same fence as SELECT: nothing may be delivered for the mailbox being
 	// closed while it is being closed.
 	defer c.restartNotifyPump(c.fenceNotifyPump())
+
+	if err := c.flushClosingCondStore(); err != nil {
+		return err
+	}
 
 	// RFC 3501 §6.4.2: "No messages are removed, and no error is given, if the
 	// mailbox is selected by an EXAMINE command or is otherwise selected

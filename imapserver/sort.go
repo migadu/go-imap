@@ -133,6 +133,7 @@ func (c *Conn) handleSort(tag string, dec *imapwire.Decoder, numKind NumKind) er
 	if extended && !c.supportsESort() {
 		return newClientBugError("SORT RETURN requires ESORT")
 	}
+	c.commitCondStore()
 
 	// If no return option is specified, ALL is assumed
 	if !options.ReturnMin && !options.ReturnMax && !options.ReturnAll && !options.ReturnCount {

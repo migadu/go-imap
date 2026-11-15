@@ -133,6 +133,7 @@ func (c *Conn) handleESearch(tag string, dec *imapwire.Decoder) (err error) {
 	if err != nil {
 		return err
 	}
+	c.commitCondStore()
 	saveOnly := options.ReturnSave && !options.ReturnMin && !options.ReturnMax && !options.ReturnAll && !options.ReturnCount
 
 	// If no return option is specified, ALL is assumed.

@@ -82,6 +82,7 @@ func (c *Conn) handleSearch(tag string, dec *imapwire.Decoder, numKind NumKind) 
 	if err != nil {
 		return err
 	}
+	c.commitCondStore()
 	if badCharset {
 		return badSearchCharsetError()
 	}
