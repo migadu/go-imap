@@ -305,6 +305,9 @@ func cteMechanism(v string) string {
 		switch c := v[i]; {
 		case depth > 0 && c == '\\':
 			i++ // quoted-pair
+			if i >= len(v) {
+				return v
+			}
 		case c == '(':
 			depth++
 			b.WriteByte(' ')
@@ -313,6 +316,9 @@ func cteMechanism(v string) string {
 		case depth == 0:
 			b.WriteByte(c)
 		}
+	}
+	if depth != 0 {
+		return v
 	}
 	return strings.TrimSpace(b.String())
 }

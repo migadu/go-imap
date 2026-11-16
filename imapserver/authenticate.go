@@ -196,6 +196,11 @@ func (c *Conn) handleUnauthenticate(dec *imapwire.Decoder) error {
 	hadPump := c.notifyPumpRunning()
 	c.stopNotifyPump()
 
+	if err := c.flushClosingCondStore(); err != nil {
+		c.restartNotifyPump(hadPump)
+		return err
+	}
+
 	if err := session.Unauthenticate(c.ctx); err != nil {
 		// The command failed, so the session — and with it the client's watch —
 		// is still in effect. Put the pump back.
@@ -214,6 +219,7 @@ func (c *Conn) handleUnauthenticate(dec *imapwire.Decoder) error {
 	// not-authenticated as if freshly connected, so a re-authenticated client
 	// that never re-enables CONDSTORE must not receive MODSEQ data items.
 	c.condStore = false
+	c.condStorePending = false
 	c.mutex.Unlock()
 	return nil
 }

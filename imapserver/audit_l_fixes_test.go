@@ -53,8 +53,12 @@ func TestUnauthenticateResetsCondStore(t *testing.T) {
 		session: unauthProbeSession{},
 	}
 	c.markCondStoreEnabled()
+	if c.CondStoreEnabled() {
+		t.Fatal("parser mark exposed CONDSTORE awareness before command validation")
+	}
+	c.commitCondStore()
 	if !c.CondStoreEnabled() {
-		t.Fatal("precondition: CondStoreEnabled() should be true after markCondStoreEnabled")
+		t.Fatal("validated enabling command did not commit CONDSTORE awareness")
 	}
 
 	dec := imapwire.NewDecoder(bufio.NewReader(strings.NewReader("\r\n")), imapwire.ConnSideServer)

@@ -50,6 +50,7 @@ func (c *Conn) handleStatus(dec *imapwire.Decoder) error {
 		}
 	}
 
+	c.commitCondStore()
 	data, err := c.session.Status(c.ctx, mailbox, &options)
 	if err != nil {
 		return err
@@ -115,11 +116,16 @@ func (c *Conn) writeStatus(data *imap.StatusData, options *imap.StatusOptions) e
 // written, as an error after part of the STATUS line is out would leave the
 // line unterminated, with the tagged response glued to it.
 func checkStatusData(data *imap.StatusData, options *imap.StatusOptions) error {
+	if data == nil {
+		return fmt.Errorf("imapserver: backend returned nil StatusData")
+	}
 	for _, item := range []struct {
 		requested, unset bool
 		field            string
 	}{
 		{options.NumMessages, data.NumMessages == nil, "NumMessages"},
+		{options.UIDNext, data.UIDNext == 0, "UIDNext"},
+		{options.UIDValidity, data.UIDValidity == 0, "UIDValidity"},
 		{options.NumUnseen, data.NumUnseen == nil, "NumUnseen"},
 		{options.NumDeleted, data.NumDeleted == nil, "NumDeleted"},
 		{options.Size, data.Size == nil, "Size"},
@@ -129,6 +135,12 @@ func checkStatusData(data *imap.StatusData, options *imap.StatusOptions) error {
 		if item.requested && item.unset {
 			return fmt.Errorf("imapserver: backend did not populate %v in StatusData", item.field)
 		}
+	}
+	if options.Size && *data.Size < 0 {
+		return fmt.Errorf("imapserver: negative Size in StatusData")
+	}
+	if options.DeletedStorage && *data.DeletedStorage < 0 {
+		return fmt.Errorf("imapserver: negative DeletedStorage in StatusData")
 	}
 	return nil
 }

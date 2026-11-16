@@ -98,11 +98,12 @@ type Conn struct {
 	// Options.NewDebugConn. Immutable after newConn, so it needs no lock.
 	debug DebugConn
 
-	mutex     sync.Mutex
-	conn      net.Conn
-	enabled   imap.CapSet
-	condStore bool         // client issued a CONDSTORE-enabling command (RFC 7162 §3.1)
-	clientID  *imap.IDData // Store client identification info
+	mutex            sync.Mutex
+	conn             net.Conn
+	enabled          imap.CapSet
+	condStore        bool         // client issued a valid CONDSTORE-enabling command (RFC 7162 §3.1)
+	condStorePending bool         // current command parsed a CONDSTORE-enabling modifier/item
+	clientID         *imap.IDData // Store client identification info
 
 	state   imap.ConnState
 	session Session
@@ -609,18 +610,15 @@ func (c *Conn) readCommand(dec *imapwire.Decoder) (err error) {
 			err = fmt.Errorf("command exceeded MaxSize")
 		}
 	}()
-	for {
-		if dec.EOF() {
-			return nil
-		}
+	if dec.EOF() {
+		return nil
+	}
 
-		// Use non-destructive CRLF() instead of ExpectCRLF() to avoid
-		// setting decoder error when we encounter non-empty lines.
-		// If this fails (not a CRLF), we break and parse the command.
-		if dec.CRLF() {
-			continue
-		}
-		break
+	// Use non-destructive CRLF() instead of ExpectCRLF() to avoid
+	// setting decoder error when we encounter non-empty lines.
+	// Return to serve() after an empty line so idle timeouts and Shutdown apply.
+	if dec.CRLF() {
+		return nil
 	}
 
 	var tag, name string
@@ -644,6 +642,7 @@ func (c *Conn) readCommand(dec *imapwire.Decoder) (err error) {
 	// UpdateWriter.ExpungeAllowed).
 	c.setActiveCommand(name)
 	defer c.setActiveCommand("")
+	defer c.clearPendingCondStore()
 
 	// The CONDSTORE state the command starts from; see finishCondStore.
 	wasCondStore, wasSelected := c.CondStoreEnabled(), c.state == imap.ConnStateSelected
@@ -651,8 +650,10 @@ func (c *Conn) readCommand(dec *imapwire.Decoder) (err error) {
 	// TODO: handle multiple commands concurrently
 	sendOK := true
 	switch name {
-	case "NOOP", "CHECK":
+	case "NOOP":
 		err = c.handleNoop(dec)
+	case "CHECK":
+		err = c.handleCheck(dec)
 	case "LOGOUT":
 		err = c.handleLogout(dec)
 	case "CAPABILITY":
@@ -852,9 +853,25 @@ func (c *Conn) handleNoop(dec *imapwire.Decoder) error {
 	return nil
 }
 
+// handleCheck answers CHECK as a NOOP: the server has no checkpoint
+// housekeeping to do (RFC 3501 §6.4.1). Unlike NOOP, a universal command,
+// CHECK is valid only in the selected state (RFC 3501 §6.4 and §9,
+// command-select).
+func (c *Conn) handleCheck(dec *imapwire.Decoder) error {
+	if !dec.ExpectCRLF() {
+		return dec.Err()
+	}
+	return c.checkState(imap.ConnStateSelected)
+}
+
 func (c *Conn) handleLogout(dec *imapwire.Decoder) error {
 	if !dec.ExpectCRLF() {
 		return dec.Err()
+	}
+
+	c.stopNotifyPump()
+	if err := c.flushClosingCondStore(); err != nil {
+		return err
 	}
 
 	c.state = imap.ConnStateLogout
@@ -1167,7 +1184,7 @@ func (enc *responseEncoder) prepareTaggedResponse(tag string, resp *imap.StatusR
 		return nil
 	}
 	enc.tagged = true
-	return enc.conn.finishCondStore(enc.Encoder, resp, wasCondStore, wasSelected)
+	return enc.conn.finishCondStore(enc.Encoder, wasCondStore, wasSelected)
 }
 
 func (enc *responseEncoder) Literal(size int64) io.WriteCloser {
@@ -1411,7 +1428,10 @@ func (w *UpdateWriter) DelayedExpungeAllowed() bool {
 // carry HIGHESTMODSEQ (RFC 5465 §5.1, §5.2) and whether unsolicited FETCH
 // responses may carry MODSEQ.
 func (w *UpdateWriter) CondStoreEnabled() bool {
-	return w.conn.supportsCondStore() && w.conn.CondStoreEnabled()
+	if !w.conn.supportsCondStore() {
+		return false
+	}
+	return w.conn.CondStoreEnabled()
 }
 
 // WriteStatus writes an untagged STATUS response. It is used by NOTIFY

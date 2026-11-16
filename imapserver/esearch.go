@@ -133,6 +133,7 @@ func (c *Conn) handleESearch(tag string, dec *imapwire.Decoder) (err error) {
 	if err != nil {
 		return err
 	}
+	c.commitCondStore()
 	saveOnly := options.ReturnSave && !options.ReturnMin && !options.ReturnMax && !options.ReturnAll && !options.ReturnCount
 
 	// If no return option is specified, ALL is assumed.
@@ -155,6 +156,18 @@ func (c *Conn) handleESearch(tag string, dec *imapwire.Decoder) (err error) {
 	if saveOnly {
 		// SAVE still runs the backend, but emits no search result response.
 		return nil
+	}
+
+	for _, data := range results {
+		if data == nil {
+			return fmt.Errorf("imapserver: backend returned nil SearchData")
+		}
+		if multiSearchDataIsEmpty(data, &options) && !(options.ReturnAll && data.All != nil && data.All.Dynamic()) {
+			continue
+		}
+		if err := checkSearchData(data, &options); err != nil {
+			return err
+		}
 	}
 
 	for _, data := range results {

@@ -180,6 +180,7 @@ func (c *Conn) handleFetch(dec *imapwire.Decoder, numKind NumKind) error {
 	if err := c.checkState(imap.ConnStateSelected); err != nil {
 		return err
 	}
+	c.commitCondStore()
 
 	if numKind == NumKindUID {
 		options.UID = true
@@ -735,8 +736,10 @@ func (w *FetchResponseWriter) WriteEnvelope(envelope *imap.Envelope) {
 // capability filter can suppress the item mid-connection.
 func (w *FetchResponseWriter) WriteModSeq(modSeq uint64) {
 	conn := w.enc.conn
-	if conn != nil && !(conn.supportsCondStore() && conn.CondStoreEnabled()) {
-		return
+	if conn != nil {
+		if !(conn.supportsCondStore() && conn.CondStoreEnabled()) {
+			return
+		}
 	}
 	w.writeItemSep()
 	w.enc.Atom("MODSEQ").SP().Special('(').ModSeq(modSeq).Special(')')

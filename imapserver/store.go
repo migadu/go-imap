@@ -108,6 +108,7 @@ func (c *Conn) handleStore(dec *imapwire.Decoder, numKind NumKind) error {
 	if err := c.checkState(imap.ConnStateSelected); err != nil {
 		return err
 	}
+	c.commitCondStore()
 	if !c.selectedPrivateStore {
 		if err := c.checkWritableMailbox(); err != nil {
 			return err

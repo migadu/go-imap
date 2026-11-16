@@ -385,3 +385,33 @@ func TestDecodeBinarySectionCTEComments(t *testing.T) {
 		}
 	}
 }
+
+// An unclosed "(" is not a valid RFC 5322 §3.2.2 comment: cteMechanism must
+// not swallow the rest of the header value as a comment and fall back to 7bit.
+func TestCTEUnterminatedComment(t *testing.T) {
+	for _, cte := range []string{
+		"(unclosed x-uuencode",
+		"base64 (unclosed",
+		`base64 (escaped\)`,
+		`base64 (trailing\`,
+		"((nested) base64",
+	} {
+		msg := "Content-Type: text/plain\r\nContent-Transfer-Encoding: " + cte + "\r\n\r\nbGluZTEKbGluZTIK\r\n"
+
+		if got, err := DecodeBinarySection(strings.NewReader(msg), &imap.FetchItemBinarySection{Part: []int{1}}); err != ErrUnknownCTE {
+			t.Errorf("CTE %q: DecodeBinarySection = %q, %v; want ErrUnknownCTE", cte, got, err)
+		}
+		if size, err := DecodeBinarySectionSize(strings.NewReader(msg), &imap.FetchItemBinarySectionSize{Part: []int{1}}); err != ErrUnknownCTE {
+			t.Errorf("CTE %q: DecodeBinarySectionSize = %d, %v; want ErrUnknownCTE", cte, size, err)
+		}
+
+		bs := ExtractBodyStructure(strings.NewReader(msg))
+		sp, ok := bs.(*imap.BodyStructureSinglePart)
+		if !ok {
+			t.Fatalf("CTE %q: ExtractBodyStructure = %T, want *imap.BodyStructureSinglePart", cte, bs)
+		}
+		if sp.Encoding != cte {
+			t.Errorf("CTE %q: ExtractBodyStructure Encoding = %q, want %q", cte, sp.Encoding, cte)
+		}
+	}
+}
