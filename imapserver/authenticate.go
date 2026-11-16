@@ -8,7 +8,6 @@ import (
 	"github.com/emersion/go-sasl"
 
 	"github.com/migadu/go-imap"
-	"github.com/migadu/go-imap/internal"
 	"github.com/migadu/go-imap/internal/imapwire"
 )
 
@@ -25,14 +24,17 @@ func (c *Conn) handleAuthenticate(tag string, dec *imapwire.Decoder) error {
 		if !dec.ExpectText(&initialRespStr) {
 			return dec.Err()
 		}
-		// Use decodeSASL (not internal.DecodeSASL) so a malformed initial
-		// response is reported as a client error (BAD "Malformed SASL response")
-		// rather than falling through to NO [SERVERBUG], matching the
-		// continuation path below.
-		var err error
-		initialResp, err = decodeSASL(initialRespStr)
-		if err != nil {
-			return err
+		if initialRespStr == "=" {
+			// A single pad character is a zero-length initial response
+			// (RFC 9051 §6.2.2), and is valid only here. go-sasl takes nil
+			// for no response, so it must be non-nil.
+			initialResp = []byte{}
+		} else {
+			var err error
+			initialResp, err = decodeSASL(initialRespStr)
+			if err != nil {
+				return err
+			}
 		}
 	}
 
@@ -166,8 +168,12 @@ func saslReadError(err error) error {
 	return &clientReadError{err}
 }
 
+// decodeSASL decodes a client response, which is base64 (RFC 9051 §6.2.2).
+// Invalid base64 is the client's error and gets a tagged BAD, not
+// NO [SERVERBUG]. In a reply to a continuation request a zero-length response
+// is an empty line; a lone "=" is not base64 and is refused.
 func decodeSASL(s string) ([]byte, error) {
-	b, err := internal.DecodeSASL(s)
+	b, err := base64.StdEncoding.DecodeString(s)
 	if err != nil {
 		return nil, &imap.Error{
 			Type: imap.StatusResponseTypeBad,
