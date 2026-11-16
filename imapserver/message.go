@@ -46,18 +46,14 @@ func ExtractBodySection(r io.Reader, item *imap.FetchItemBodySection) []byte {
 
 	// Filter header fields
 	if len(item.HeaderFields) > 0 {
-		keep := make(map[string]struct{})
-		for _, k := range item.HeaderFields {
-			keep[imapwire.ToLowerASCII(k)] = struct{}{}
-		}
-		for field := header.Fields(); field.Next(); {
-			if _, ok := keep[imapwire.ToLowerASCII(field.Key())]; !ok {
-				field.Del()
-			}
+		if err := filterHeaderFields(&header, item.HeaderFields, true); err != nil {
+			return nil
 		}
 	}
-	for _, k := range item.HeaderFieldsNot {
-		header.Del(k)
+	if len(item.HeaderFieldsNot) > 0 {
+		if err := filterHeaderFields(&header, item.HeaderFieldsNot, false); err != nil {
+			return nil
+		}
 	}
 
 	// Write the requested data to a buffer
@@ -87,6 +83,42 @@ func ExtractBodySection(r io.Reader, item *imap.FetchItemBodySection) []byte {
 	}
 
 	return extractPartial(buf.Bytes(), item.Partial)
+}
+
+// filterHeaderFields keeps (keep == true) or removes (keep == false) the header
+// fields named in names. The field-matching is ASCII-range case insensitive but
+// otherwise exact (RFC 9051 section 6.4.5). Header.Del is no substitute: it
+// matches by CanonicalMIMEHeaderKey, which leaves a field-name holding a byte
+// such as "(" or "/" (valid in RFC 5322, not in an HTTP token) as written.
+func filterHeaderFields(header *textproto.Header, names []string, keep bool) error {
+	set := make(map[string]struct{}, len(names))
+	for _, k := range names {
+		set[imapwire.ToLowerASCII(k)] = struct{}{}
+	}
+	var retained [][]byte
+	for field := header.Fields(); field.Next(); {
+		if _, ok := set[imapwire.ToLowerASCII(field.Key())]; ok != keep {
+			continue
+		}
+		raw, err := field.Raw()
+		if err != nil {
+			return err
+		}
+		retained = append(retained, raw)
+	}
+	if len(retained) == header.Len() {
+		return nil
+	}
+
+	// Per-field deletion scans a duplicate key's slice each time. Rebuilding
+	// keeps the work linear and preserves the raw bytes. AddRaw prepends, so
+	// add retained fields in reverse to preserve their original order.
+	var filtered textproto.Header
+	for i := len(retained) - 1; i >= 0; i-- {
+		filtered.AddRaw(retained[i])
+	}
+	*header = filtered
+	return nil
 }
 
 func findMessagePart(header textproto.Header, body io.Reader, partPath []int) (string, textproto.Header, io.Reader) {
