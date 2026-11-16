@@ -58,6 +58,18 @@ func isConnectionClosedError(err error) bool {
 	return false
 }
 
+// clientReadError is a failure to read from the client in the middle of a
+// command, after its command line: the connection was closed or reset, or the
+// read failed. The command cannot complete and the input is no longer at a
+// command boundary, so readCommand returns it instead of answering it, and the
+// serve loop ends the connection as for a read error between commands (a
+// closed connection is not logged).
+type clientReadError struct{ err error }
+
+func (e *clientReadError) Error() string { return e.err.Error() }
+
+func (e *clientReadError) Unwrap() error { return e.err }
+
 // isByeError reports whether err is a BYE-typed imap.Error: the backend saying
 // this connection is over (RFC 9051 §7.1.5). It is the one handler error that
 // is not a command completion — finishBye writes it untagged and stops reading,
@@ -751,6 +763,9 @@ func (c *Conn) readCommand(dec *imapwire.Decoder) (err error) {
 		return err
 	}
 	if _, ok := err.(*startTLSHandshakeError); ok {
+		return err
+	}
+	if _, ok := err.(*clientReadError); ok {
 		return err
 	}
 

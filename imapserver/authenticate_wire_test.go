@@ -116,7 +116,9 @@ func TestAuthenticateOverlongResponseIsBad(t *testing.T) {
 // ReadLine hides an EOF or timeout when it returns a nonempty final fragment.
 // Neither that fragment nor a failed read without a fragment establishes a
 // response-line boundary. The connection must end instead of interpreting any
-// later bytes of the SASL response as a fresh command.
+// later bytes of the SASL response as a fresh command: after a timeout with an
+// untagged BYE, after the client closed its side without a response, as for a
+// close between commands (see TestAuthenticateResponseReadFailureEndsConnection).
 func TestAuthenticateOverlongUnterminatedResponseCloses(t *testing.T) {
 	for _, ending := range []string{"timeout", "EOF"} {
 		for _, size := range []int{4096, 5000} {
@@ -139,11 +141,13 @@ func TestAuthenticateOverlongUnterminatedResponseCloses(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
-				if line, err := wc.readLine(); err != nil || !strings.HasPrefix(line, "* BYE ") {
-					t.Fatalf("unterminated response = %q, %v, want BYE and connection close", line, err)
+				if ending == "timeout" {
+					if line, err := wc.readLine(); err != nil || !strings.HasPrefix(line, "* BYE ") {
+						t.Fatalf("unterminated response = %q, %v, want BYE and connection close", line, err)
+					}
 				}
 				if line, err := wc.readLine(); !errors.Is(err, io.EOF) {
-					t.Fatalf("after BYE = %q, %v, want EOF", line, err)
+					t.Fatalf("unterminated response = %q, %v, want EOF", line, err)
 				}
 			})
 		}

@@ -96,27 +96,9 @@ func (c *Conn) handleAuthenticate(tag string, dec *imapwire.Decoder) error {
 			return err
 		}
 
-		encodedResp, isPrefix, err := c.br.ReadLine()
+		encodedResp, err := c.readSASLResponse()
 		if err != nil {
 			return err
-		} else if isPrefix {
-			// The response does not fit the read buffer. That is the
-			// client's doing: skip the rest of the line so the next command
-			// is read from a command boundary, and refuse the exchange.
-			for {
-				// Unlike ReadLine, ReadSlice keeps EOF and timeout errors
-				// on an unterminated fragment: only nil proves LF was read.
-				_, err := c.br.ReadSlice('\n')
-				if err == bufio.ErrBufferFull {
-					continue
-				}
-				if err != nil {
-					dec.MarkDesynchronized()
-					return err
-				}
-				break
-			}
-			return newClientBugError("SASL response too long")
 		} else if string(encodedResp) == "*" {
 			return &imap.Error{
 				Type: imap.StatusResponseTypeBad,
@@ -134,6 +116,54 @@ func (c *Conn) handleAuthenticate(tag string, dec *imapwire.Decoder) error {
 	text := fmt.Sprintf("%v authentication successful", mech)
 	enc.tagged = tag != ""
 	return writeCapabilityOK(enc.Encoder, tag, c.availableCaps(), text)
+}
+
+// readSASLResponse reads the client's response to a continuation request,
+// "a single line" (RFC 9051 §6.2.2), and returns it without its line ending.
+//
+// Only a complete line is a response. bufio.Reader.ReadLine is not used: when
+// the read under it fails it returns the octets that did arrive as a line, with
+// a nil error, so a response cut off by a timeout or a close would be taken for
+// a whole one.
+func (c *Conn) readSASLResponse() ([]byte, error) {
+	line, err := c.br.ReadSlice('\n')
+	if err == bufio.ErrBufferFull {
+		// The response does not fit the read buffer. That is the client's
+		// doing: skip the rest of the line so the next command is read from a
+		// command boundary, and refuse the exchange.
+		for err == bufio.ErrBufferFull {
+			_, err = c.br.ReadSlice('\n')
+		}
+		if err != nil {
+			return nil, saslReadError(err)
+		}
+		return nil, newClientBugError("SASL response too long")
+	} else if err != nil {
+		return nil, saslReadError(err)
+	}
+	line = line[:len(line)-1]
+	if n := len(line); n > 0 && line[n-1] == '\r' {
+		line = line[:n-1]
+	}
+	return line, nil
+}
+
+// saslReadError ends the connection after a failure to read the client's SASL
+// response. The client stopped mid-exchange, which is not a server failure, and
+// the exchange cannot be answered: the input is no longer at a line boundary.
+//
+// A timeout is an inactivity autologout, announced with an untagged BYE (RFC
+// 9051 §7.1.5) as handleIdle does. Any other read error -- the client closed or
+// reset the connection -- goes back to the serve loop as one between commands
+// would.
+func saslReadError(err error) error {
+	if isTimeoutError(err) {
+		return &imap.Error{
+			Type: imap.StatusResponseTypeBye,
+			Text: "Timed out waiting for AUTHENTICATE response",
+		}
+	}
+	return &clientReadError{err}
 }
 
 func decodeSASL(s string) ([]byte, error) {
