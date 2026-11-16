@@ -258,6 +258,9 @@ type Client struct {
 	closed      bool
 	closeCalled bool  // explicit Close calls, separate from terminal cancellation
 	cancelErr   error // first fatal error, published before closeCh closes; guarded by mutex
+	// A reset leaves pendingCmds before its tagged response has been parsed.
+	// Keep its encoder barrier until the resulting state has been published.
+	completingSessionReset *commandBase // guarded by mutex
 
 	// autoIdle is the IDLE command the client runs on its own account
 	// (Options.AutoIdle), if any; autoIdleTimer starts it, and
@@ -488,6 +491,27 @@ func (c *Client) useQuotedUTF8Locked() bool {
 	return c.enabled.Has(imap.CapIMAP4rev2) ||
 		c.enabled.Has(imap.CapUTF8Accept) ||
 		(c.caps != nil && !c.caps.Has(imap.CapIMAP4rev1))
+}
+
+func (c *Client) hasPendingSessionResetLocked() bool {
+	if c.completingSessionReset != nil {
+		return true
+	}
+	for _, pending := range c.pendingCmds {
+		switch pending.(type) {
+		case *unauthenticateCommand, *logoutCommand:
+			return true
+		}
+	}
+	return false
+}
+
+func (c *Client) useEncoderQuotedUTF8Locked() bool {
+	if !c.hasPendingSessionResetLocked() &&
+		(c.enabled.Has(imap.CapIMAP4rev2) || c.enabled.Has(imap.CapUTF8Accept)) {
+		return true
+	}
+	return c.caps != nil && !c.caps.Has(imap.CapIMAP4rev1)
 }
 
 // State returns the current connection state of the client.
@@ -752,7 +776,7 @@ func (c *Client) beginCommand(name string, cmd command) *commandEncoder {
 	if c.awaitingResp {
 		c.setReadTimeout(c.readTimeoutLocked())
 	}
-	quotedUTF8 := c.useQuotedUTF8Locked()
+	quotedUTF8 := c.useEncoderQuotedUTF8Locked()
 	literalMinus := c.caps.Has(imap.CapLiteralMinus)
 	literalPlus := c.caps.Has(imap.CapLiteralPlus)
 
@@ -797,6 +821,10 @@ func (c *Client) deletePendingCmdByTag(tag string) command {
 
 	for i, cmd := range c.pendingCmds {
 		if cmd.base().tag == tag {
+			switch cmd.(type) {
+			case *unauthenticateCommand, *logoutCommand:
+				c.completingSessionReset = cmd.base()
+			}
 			c.pendingCmds = append(c.pendingCmds[:i], c.pendingCmds[i+1:]...)
 			return cmd
 		}
@@ -1101,6 +1129,9 @@ func (c *Client) completeCommand(cmd command, err error) {
 
 	// Start the inactivity interval after state transitions have completed.
 	c.mutex.Lock()
+	if c.completingSessionReset == cmd.base() {
+		c.completingSessionReset = nil
+	}
 	c.armAutoIdleLocked()
 	c.mutex.Unlock()
 
