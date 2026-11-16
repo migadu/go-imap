@@ -57,6 +57,9 @@ func (c *Client) handleQuota() error {
 	}
 
 	cmd := c.findPendingCmdFunc(func(cmd command) bool {
+		if isAuthBarrier(cmd) {
+			return true
+		}
 		switch cmd := cmd.(type) {
 		case *GetQuotaCommand:
 			return cmd.root == data.Root
@@ -87,14 +90,16 @@ func (c *Client) handleQuotaRoot() error {
 	}
 
 	cmd := c.findPendingCmdFunc(func(anyCmd command) bool {
+		if isAuthBarrier(anyCmd) {
+			return true
+		}
 		cmd, ok := anyCmd.(*GetQuotaRootCommand)
 		if !ok {
 			return false
 		}
 		return cmd.mailbox == mailbox
 	})
-	if cmd != nil {
-		cmd := cmd.(*GetQuotaRootCommand)
+	if cmd, ok := cmd.(*GetQuotaRootCommand); ok {
 		cmd.roots = roots
 	}
 	return nil
