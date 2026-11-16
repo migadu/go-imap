@@ -162,8 +162,8 @@ func (c *Conn) handleIdle(dec *imapwire.Decoder) error {
 	line, isPrefix, err := c.br.ReadLine()
 	active := c.setActive()
 	close(stop)
+	backendErr := awaitBackend()
 	if !active {
-		awaitBackend()
 		return errShutdown
 	}
 	if backendEnded.Load() {
@@ -173,7 +173,7 @@ func (c *Conn) handleIdle(dec *imapwire.Decoder) error {
 		// instant is not a reason to keep serving a mailbox the backend just
 		// said it cannot serve — the BYE answers that DONE correctly too, since
 		// it ends the connection either way.
-		return awaitBackend()
+		return backendErr
 	}
 	if err != nil {
 		switch {
@@ -205,5 +205,5 @@ func (c *Conn) handleIdle(dec *imapwire.Decoder) error {
 		return newClientBugError("Syntax error: expected DONE to end IDLE command")
 	}
 
-	return awaitBackend()
+	return backendErr
 }
