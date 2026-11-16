@@ -66,3 +66,31 @@ func TestASCIIMIMETypeRetainsUnicodeParametersAndCTEComments(t *testing.T) {
 		t.Errorf("valid ASCII multipart BINARY[] = %q, %v", got, err)
 	}
 }
+
+func TestNonASCIIMIMEDispositionRetainsUnknownToken(t *testing.T) {
+	const raw = "Content-Type: text/plain\r\nContent-Disposition: İnlİne; filename=\"private.txt\"\r\n\r\nsecret body\r\n"
+	bs := imapserver.ExtractBodyStructure(strings.NewReader(raw)).(*imap.BodyStructureSinglePart)
+	disp := bs.Extended.Disposition
+	if disp == nil || disp.Value != "İnlİne" || disp.Params["filename"] != "private.txt" {
+		t.Errorf("non-ASCII disposition token/parameters changed: %+v", disp)
+	}
+}
+
+func TestNonASCIIDigestSubtypeDoesNotChangeChildDefault(t *testing.T) {
+	const raw = "Content-Type: multipart/dİgest; boundary=x\r\n\r\n" +
+		"--x\r\n\r\nline one\nline two\r\n--x--\r\n"
+	bs, ok := imapserver.ExtractBodyStructure(strings.NewReader(raw)).(*imap.BodyStructureMultiPart)
+	if !ok {
+		t.Fatal("ASCII multipart primary type lost its generic multipart classification")
+	}
+	if bs.Subtype != "dİgest" || bs.MediaType() != "multipart/dİgest" {
+		t.Errorf("unknown multipart subtype folded into digest: %+v", bs)
+	}
+	// An unknown subtype retains the generic multipart default of text/plain.
+	// Only the actual ASCII multipart/digest type changes an absent child type
+	// to message/rfc822. BINARY must therefore normalize this child's bare LF.
+	got, err := imapserver.DecodeBinarySection(strings.NewReader(raw), &imap.FetchItemBinarySection{Part: []int{1}})
+	if err != nil || string(got) != "line one\r\nline two" {
+		t.Errorf("unknown multipart subtype inherited digest's child default: BINARY[1] = %q, %v", got, err)
+	}
+}
