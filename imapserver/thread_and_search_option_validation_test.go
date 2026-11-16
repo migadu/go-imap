@@ -167,3 +167,130 @@ func TestSearchAndESearchUnknownOptionWithNonSyncLiteralStaysInSync(t *testing.T
 		})
 	}
 }
+
+type threadCapAndExtraCapSession struct {
+	imapserver.Session
+}
+
+func (s *threadCapAndExtraCapSession) Thread(ctx context.Context, numKind imapserver.NumKind, algorithm imap.ThreadAlgorithm, charset string, criteria *imap.SearchCriteria) ([]imap.ThreadData, error) {
+	return s.Session.(imapserver.SessionThread).Thread(ctx, numKind, algorithm, charset, criteria)
+}
+
+func (s *threadCapAndExtraCapSession) GetCapabilities() imap.CapSet {
+	return imap.CapSet{imap.CapIMAP4rev1: {}}
+}
+
+func (s *threadCapAndExtraCapSession) AdditionalCapabilities() []imap.Cap {
+	return []imap.Cap{imap.Cap("THREAD=REFERENCES")}
+}
+
+func TestThreadAlgorithmValidationGaps(t *testing.T) {
+	t.Run("unadvertised THREAD REFS before oversized literal answers BAD not TOOBIG", func(t *testing.T) {
+		rc := newSearchRev2Conn(t, imap.CapSet{
+			imap.CapIMAP4rev1:             {},
+			imap.Cap("THREAD=REFERENCES"): {},
+		})
+		rc.appendOne("msg1")
+		rc.do("SELECT INBOX")
+
+		for _, cmd := range []string{
+			`THREAD REFS {4097}`,
+			`THREAD REFS UTF-8 TEXT {4097}`,
+		} {
+			tagged, contReqs := rc.exchange(cmd)
+			if !strings.Contains(tagged, " BAD ") || contReqs != 0 {
+				t.Errorf("%s = %q (cont=%d), want BAD without continuation", cmd, strings.TrimRight(tagged, "\r\n"), contReqs)
+			}
+			rc.requireInSync(cmd)
+		}
+	})
+
+	t.Run("supportsThreadAlgorithm honors SessionAdditionalCaps alongside SessionCapabilities", func(t *testing.T) {
+		memUser := imapmemserver.NewUser("user", "pass")
+		_ = memUser.Create(context.Background(), "INBOX", nil)
+		memServer := imapmemserver.New()
+		memServer.AddUser(memUser)
+
+		srv := imapserver.New(&imapserver.Options{
+			NewSession: func(*imapserver.Conn) (imapserver.Session, *imapserver.GreetingData, error) {
+				return &threadCapAndExtraCapSession{Session: memServer.NewSession()}, nil, nil
+			},
+			Caps:         imap.CapSet{imap.CapIMAP4rev1: {}},
+			InsecureAuth: true,
+		})
+		defer srv.Close()
+
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		go srv.Serve(ln)
+
+		c, err := imapclient.DialInsecure(ln.Addr().String(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer c.Close()
+
+		if err := c.Login("user", "pass").Wait(); err != nil {
+			t.Fatal(err)
+		}
+		caps, err := c.Capability().Wait()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !caps.Has(imap.Cap("THREAD=REFERENCES")) {
+			t.Fatalf("expected CAPABILITY to advertise THREAD=REFERENCES, got %v", caps)
+		}
+		if _, err := c.Select("INBOX", nil).Wait(); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := c.Thread(&imapclient.ThreadOptions{
+			Algorithm:      imap.ThreadReferences,
+			SearchCriteria: &imap.SearchCriteria{},
+		}).Wait(); err != nil {
+			t.Fatalf("THREAD REFERENCES failed despite CAPABILITY advertising THREAD=REFERENCES: %v", err)
+		}
+	})
+}
+
+func TestAuthenticatedESearchSaveWithOversizedLiteralAnswersBad(t *testing.T) {
+	noSearchRes := multiSaveCaps()
+	delete(noSearchRes, imap.CapSearchRes)
+
+	for _, tc := range []struct {
+		name string
+		caps imap.CapSet
+		cmd  string
+		want string
+	}{
+		{
+			name: "ESEARCH IN personal SAVE in Authenticated state",
+			caps: multiSaveCaps(),
+			cmd:  `ESEARCH IN (personal) RETURN (SAVE) TEXT {4097}`,
+			want: " BAD [CLIENTBUG] ESEARCH SAVE requires the selected source",
+		},
+		{
+			name: "ESEARCH IN selected personal SAVE with oversized literal in Authenticated state",
+			caps: multiSaveCaps(),
+			cmd:  `ESEARCH IN (selected personal) RETURN (SAVE) TEXT {4097}`,
+			want: " BAD [CLIENTBUG] ESEARCH SAVE requires the selected source",
+		},
+		{
+			name: "ESEARCH IN personal SAVE without SEARCHRES in Authenticated state",
+			caps: noSearchRes,
+			cmd:  `ESEARCH IN (personal) RETURN (SAVE) TEXT {4097}`,
+			want: " BAD [CLIENTBUG] SEARCH SAVE requires SEARCHRES",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rc := newSearchRev2Conn(t, tc.caps)
+			rc.appendOne("one")
+			tagged, contReqs := rc.exchange(tc.cmd)
+			if !strings.Contains(tagged, tc.want) || contReqs != 0 {
+				t.Fatalf("%s = %q (cont=%d), want %q without continuation", tc.cmd, strings.TrimRight(tagged, "\r\n"), contReqs, tc.want)
+			}
+			rc.requireInSync(tc.cmd)
+		})
+	}
+}

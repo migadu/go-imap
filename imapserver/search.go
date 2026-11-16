@@ -356,15 +356,17 @@ func (c *Conn) checkSearchReturnOpts(options *imap.SearchOptions) (supportsESEAR
 // that BAD instead of the NO.
 func (c *Conn) failSearchBeforeBackend(err error, options *imap.SearchOptions, checkBAD func() error) error {
 	var imapErr *imap.Error
-	if !options.ReturnSave || c.state != imap.ConnStateSelected ||
+	if !options.ReturnSave || (c.state != imap.ConnStateAuthenticated && c.state != imap.ConnStateSelected) ||
 		!errors.As(err, &imapErr) || imapErr.Type != imap.StatusResponseTypeNo {
 		return err
 	}
 	if badErr := checkBAD(); badErr != nil {
 		return badErr
 	}
-	if sess, ok := c.session.(SessionSearchRes); ok {
-		sess.ResetSearchRes()
+	if c.state == imap.ConnStateSelected {
+		if sess, ok := c.session.(SessionSearchRes); ok {
+			sess.ResetSearchRes()
+		}
 	}
 	return err
 }

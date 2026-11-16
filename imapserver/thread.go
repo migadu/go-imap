@@ -3,6 +3,7 @@ package imapserver
 import (
 	"context"
 	"fmt"
+	"slices"
 
 	"github.com/migadu/go-imap"
 	"github.com/migadu/go-imap/internal/imapwire"
@@ -31,17 +32,38 @@ func (c *Conn) handleThread(dec *imapwire.Decoder, numKind NumKind) error {
 			Text: fmt.Sprintf("Unsupported THREAD algorithm: %s", algorithm),
 		}
 	}
+	checkThreadBad := func() error {
+		if algErr != nil {
+			return algErr
+		}
+		if c.checkState(imap.ConnStateSelected) != nil {
+			return nil
+		}
+		if _, ok := c.session.(SessionThread); !ok {
+			return &imap.Error{
+				Type: imap.StatusResponseTypeBad,
+				Text: "THREAD not supported by server",
+			}
+		}
+		if !c.supportsThreadAlgorithm(algorithm) {
+			return &imap.Error{
+				Type: imap.StatusResponseTypeBad,
+				Text: fmt.Sprintf("Unsupported THREAD algorithm: %s", algorithm),
+			}
+		}
+		return nil
+	}
 
 	var charset string
 	if !dec.ExpectAString(&charset) || !dec.ExpectSP() {
-		return preferBadError(algErr, dec.Err())
+		return preferBadError(checkThreadBad(), dec.Err())
 	}
 	badCharset := !searchCharsetSupported(charset)
 
 	var criteria imap.SearchCriteria
 	for {
 		if err := readSearchKey(c, &criteria, dec); err != nil {
-			return preferBadError(algErr, fmt.Errorf("in search-key: %w", err))
+			return preferBadError(checkThreadBad(), fmt.Errorf("in search-key: %w", err))
 		}
 
 		if !dec.SP() {
@@ -93,7 +115,13 @@ func (c *Conn) handleThread(dec *imapwire.Decoder, numKind NumKind) error {
 func (c *Conn) supportsThreadAlgorithm(alg imap.ThreadAlgorithm) bool {
 	cap := imap.Cap("THREAD=" + string(alg))
 	if capSession, ok := c.session.(SessionCapabilities); ok {
-		return capSession.GetCapabilities().Has(cap)
+		if capSession.GetCapabilities().Has(cap) {
+			return true
+		}
+		if extraSession, ok := c.session.(SessionAdditionalCaps); ok {
+			return slices.Contains(extraSession.AdditionalCapabilities(), cap)
+		}
+		return false
 	}
 	return c.availableCapsSet().Has(cap)
 }
