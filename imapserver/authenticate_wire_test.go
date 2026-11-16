@@ -337,3 +337,132 @@ func TestAuthenticateContinuationRefusesBareCR(t *testing.T) {
 		})
 	}
 }
+
+// handleAuthenticate must not read the optional initial-resp with ExpectText,
+// which swallows an unparsed non-synchronizing literal announcement ("{N+}")
+// before DiscardLine can detect it and lets the literal's payload execute as
+// the next command on the unauthenticated connection.
+func TestAuthenticateInitialResponseNonSyncLiteralClosesWithoutSmuggling(t *testing.T) {
+	const payload = "a99 LOGIN user pass\r\n"
+	for _, arg := range []string{
+		fmt.Sprintf("{%d+}", len(payload)),
+		fmt.Sprintf("bad {%d+}", len(payload)),
+		fmt.Sprintf("AG1l {%d+}", len(payload)),
+		fmt.Sprintf("= {%d+}", len(payload)),
+		fmt.Sprintf("x{%d+}", len(payload)),
+	} {
+		t.Run(arg, func(t *testing.T) {
+			got := make(chan []byte, 1)
+			mem := imapmemserver.New()
+			mem.AddUser(newTestUser(t))
+			server := imapserver.New(&imapserver.Options{
+				NewSession: func(*imapserver.Conn) (imapserver.Session, *imapserver.GreetingData, error) {
+					return &recordingSASLSession{Session: mem.NewSession(), got: got}, nil, nil
+				},
+				InsecureAuth: true,
+				Caps:         imap.CapSet{imap.CapIMAP4rev1: {}},
+				Logger:       log.New(io.Discard, "", 0),
+			})
+			ln, err := net.Listen("tcp", "localhost:0")
+			if err != nil {
+				t.Fatalf("net.Listen() = %v", err)
+			}
+			go server.Serve(ln)
+			t.Cleanup(func() { server.Close() })
+			wc := dialWire(t, ln.Addr().String())
+			_ = wc.conn.SetDeadline(time.Now().Add(2 * time.Second))
+
+			if _, err := fmt.Fprintf(wc.conn, "a1 AUTHENTICATE PLAIN %s\r\n%sreal NOOP\r\n", arg, payload); err != nil {
+				t.Fatal(err)
+			}
+			_ = wc.conn.(*net.TCPConn).CloseWrite()
+			raw, err := io.ReadAll(wc.br)
+			if err != nil {
+				t.Fatalf("reading connection close: %v (output %q)", err, raw)
+			}
+			out := string(raw)
+			if strings.Contains(out, "a99 ") {
+				t.Fatalf("literal payload was executed as a command:\n%s", out)
+			}
+			if !strings.Contains(out, "* BYE ") {
+				t.Fatalf("unparsed non-sync literal did not close connection with BYE:\n%s", out)
+			}
+			if strings.Contains(out, "real ") {
+				t.Fatalf("connection remained in service after desynchronization:\n%s", out)
+			}
+			select {
+			case resp := <-got:
+				t.Fatalf("mechanism was given %q, want command rejected before SASL", resp)
+			default:
+			}
+		})
+	}
+}
+
+// Validating the command line's CRLF before decoding the initial SASL response
+// ensures malformed lines containing a single bare CR are rejected with tagged
+// BAD at a clean command boundary regardless of whether the prefix before CR
+// happens to have valid base64 length, and never execute text after the bare CR
+// as a smuggled command.
+func TestAuthenticateInitialResponseRefusesBareCR(t *testing.T) {
+	validB64 := base64.StdEncoding.EncodeToString([]byte("\x00user\x00pass"))
+	for _, tc := range []struct {
+		name        string
+		initialResp string
+	}{
+		{name: "bare CR only", initialResp: "\r"},
+		{name: "embedded bare CR at non-quantum offset", initialResp: validB64[:2] + "\r" + validB64[2:]},
+		{name: "embedded bare CR at quantum offset", initialResp: validB64[:4] + "\r" + validB64[4:]},
+		{name: "trailing bare CR at non-quantum offset", initialResp: "AH\r"},
+		{name: "trailing bare CR", initialResp: validB64 + "\r"},
+		{name: "bare CR command smuggling attempt", initialResp: "AH\ra99 LOGIN user pass"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := make(chan []byte, 1)
+			mem := imapmemserver.New()
+			mem.AddUser(newTestUser(t))
+			server := imapserver.New(&imapserver.Options{
+				NewSession: func(*imapserver.Conn) (imapserver.Session, *imapserver.GreetingData, error) {
+					return &recordingSASLSession{Session: mem.NewSession(), got: got}, nil, nil
+				},
+				InsecureAuth: true,
+				Caps:         imap.CapSet{imap.CapIMAP4rev1: {}},
+				Logger:       log.New(io.Discard, "", 0),
+			})
+			ln, err := net.Listen("tcp", "localhost:0")
+			if err != nil {
+				t.Fatalf("net.Listen() = %v", err)
+			}
+			go server.Serve(ln)
+			t.Cleanup(func() { server.Close() })
+			wc := dialWire(t, ln.Addr().String())
+
+			const tag = "a1"
+			if _, err := io.WriteString(wc.conn, tag+" AUTHENTICATE PLAIN "+tc.initialResp+"\r\n"); err != nil {
+				t.Fatal(err)
+			}
+			lines, err := wc.waitTagged(tag)
+			if err != nil {
+				t.Fatalf("waitTagged(%s) = %v", tag, err)
+			}
+			last := lines[len(lines)-1]
+			if !strings.HasPrefix(last, tag+" BAD") {
+				t.Fatalf("%s = %q, want %s BAD", tc.name, last, tag)
+			}
+			select {
+			case resp := <-got:
+				t.Fatalf("mechanism was given %q, want initial response rejected before it", resp)
+			default:
+			}
+			wc.mustOK(t, "NOOP")
+			selTag := wc.send(t, "SELECT INBOX")
+			selLines, err := wc.waitTagged(selTag)
+			if err != nil {
+				t.Fatalf("waitTagged(SELECT) = %v", err)
+			}
+			if selLast := selLines[len(selLines)-1]; !strings.HasPrefix(selLast, selTag+" NO") && !strings.HasPrefix(selLast, selTag+" BAD") {
+				t.Fatalf("SELECT after rejected AUTHENTICATE = %q, want NO/BAD (not authenticated)", selLast)
+			}
+		})
+	}
+}
