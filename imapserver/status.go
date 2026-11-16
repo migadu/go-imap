@@ -14,13 +14,12 @@ func (c *Conn) handleStatus(dec *imapwire.Decoder) error {
 	}
 
 	// "(" status-att *(SP status-att) ")" (RFC 9051 §9)
-	var options imap.StatusOptions
+	var (
+		options imap.StatusOptions
+		itemErr error
+	)
 	err := dec.ExpectNonEmptyList(func() error {
-		err := readStatusItem(c, dec, &options)
-		if err != nil {
-			return err
-		}
-		return nil
+		return readStatusItem(dec, &options, &itemErr)
 	})
 	if err != nil {
 		return err
@@ -32,6 +31,9 @@ func (c *Conn) handleStatus(dec *imapwire.Decoder) error {
 
 	if err := c.checkState(imap.ConnStateAuthenticated); err != nil {
 		return err
+	}
+	if itemErr != nil {
+		return itemErr
 	}
 
 	// RECENT was removed in IMAP4rev2 (RFC 9051). Reject STATUS (RECENT) when the
@@ -48,6 +50,12 @@ func (c *Conn) handleStatus(dec *imapwire.Decoder) error {
 			Type: imap.StatusResponseTypeBad,
 			Text: "Unknown STATUS data item",
 		}
+	}
+	if options.HighestModSeq {
+		if !c.supportsCondStore() {
+			return newClientBugError("HIGHESTMODSEQ requires CONDSTORE")
+		}
+		c.markCondStoreEnabled()
 	}
 
 	c.commitCondStore()
@@ -145,7 +153,7 @@ func checkStatusData(data *imap.StatusData, options *imap.StatusOptions) error {
 	return nil
 }
 
-func readStatusItem(c *Conn, dec *imapwire.Decoder, options *imap.StatusOptions) error {
+func readStatusItem(dec *imapwire.Decoder, options *imap.StatusOptions, itemErr *error) error {
 	var name string
 	if !dec.ExpectAtom(&name) {
 		return dec.Err()
@@ -170,19 +178,13 @@ func readStatusItem(c *Conn, dec *imapwire.Decoder, options *imap.StatusOptions)
 	case "RECENT":
 		options.NumRecent = true
 	case "HIGHESTMODSEQ":
-		// The status data item is CONDSTORE's (RFC 7162 §3.1.7).
-		if !c.supportsCondStore() {
-			return newClientBugError("HIGHESTMODSEQ requires CONDSTORE")
-		}
 		options.HighestModSeq = true
-		// STATUS (HIGHESTMODSEQ) is a CONDSTORE-enabling command (RFC 7162
-		// §3.1). LIST ... RETURN (STATUS (HIGHESTMODSEQ)) (RFC 5819) shares
-		// this parser and asks for the same data, so it counts as well.
-		c.markCondStoreEnabled()
 	default:
-		return &imap.Error{
-			Type: imap.StatusResponseTypeBad,
-			Text: "Unknown STATUS data item",
+		if *itemErr == nil {
+			*itemErr = &imap.Error{
+				Type: imap.StatusResponseTypeBad,
+				Text: "Unknown STATUS data item",
+			}
 		}
 	}
 	return nil

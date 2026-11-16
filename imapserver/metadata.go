@@ -1,13 +1,14 @@
 package imapserver
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/migadu/go-imap"
 	"github.com/migadu/go-imap/internal/imapwire"
 )
 
-func (c *Conn) handleGetMetadata(tag string, dec *imapwire.Decoder) error {
+func (c *Conn) handleGetMetadata(tag string, dec *imapwire.Decoder) (err error) {
 	if !dec.ExpectSP() {
 		return dec.Err()
 	}
@@ -20,6 +21,10 @@ func (c *Conn) handleGetMetadata(tag string, dec *imapwire.Decoder) error {
 	// An options list holds at least one option and is followed by SP.
 	var options imap.GetMetadataOptions
 	var entries []string
+	var optErr error
+	defer func() {
+		err = preferBadError(optErr, err)
+	}()
 	numOptions := 0
 
 	// Check for optional options list
@@ -30,7 +35,14 @@ func (c *Conn) handleGetMetadata(tag string, dec *imapwire.Decoder) error {
 			return dec.Err()
 		}
 		if err := readGetMetadataOption(dec, imapwire.ToUpperASCII(optName), &options); err != nil {
-			return err
+			var imapErr *imap.Error
+			if errors.As(err, &imapErr) && imapErr.Type == imap.StatusResponseTypeBad {
+				if optErr == nil {
+					optErr = err
+				}
+			} else {
+				return err
+			}
 		}
 		numOptions++
 		return nil
@@ -77,6 +89,10 @@ func (c *Conn) handleGetMetadata(tag string, dec *imapwire.Decoder) error {
 
 	if !dec.ExpectCRLF() {
 		return dec.Err()
+	}
+
+	if optErr != nil {
+		return optErr
 	}
 
 	for _, entry := range entries {
@@ -211,6 +227,10 @@ func (c *Conn) handleSetMetadata(dec *imapwire.Decoder) error {
 		entries[entry] = value
 		return nil
 	}); err != nil {
+		var imapErr *imap.Error
+		if entryErr != nil && errors.As(err, &imapErr) && imapErr.Type == imap.StatusResponseTypeNo {
+			return entryErr
+		}
 		return err
 	}
 

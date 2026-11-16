@@ -29,6 +29,20 @@ func (c *Conn) handleList(dec *imapwire.Decoder) error {
 			return err
 		}
 	}
+	if options.ReturnStatus != nil {
+		if options.ReturnStatus.NumRecent && c.isIMAP4rev2() {
+			return &imap.Error{
+				Type: imap.StatusResponseTypeBad,
+				Text: "Unknown STATUS data item",
+			}
+		}
+		if options.ReturnStatus.HighestModSeq {
+			if !c.supportsCondStore() {
+				return newClientBugError("HIGHESTMODSEQ requires CONDSTORE")
+			}
+			c.markCondStoreEnabled()
+		}
+	}
 
 	c.commitCondStore()
 	w := &ListWriter{
@@ -256,6 +270,10 @@ func (syntax listCommandSyntax) checkCaps(options *imap.ListOptions, caps imap.C
 // inferred from the resulting options or non-empty mailbox patterns alone.
 func readListCmd(c *Conn, dec *imapwire.Decoder) (ref string, patterns []string, options *imap.ListOptions, syntax listCommandSyntax, err error) {
 	options = &imap.ListOptions{}
+	var optErr error
+	defer func() {
+		err = preferBadError(optErr, err)
+	}()
 
 	if !dec.ExpectSP() {
 		return "", nil, nil, syntax, dec.Err()
@@ -276,7 +294,9 @@ func readListCmd(c *Conn, dec *imapwire.Decoder) (ref string, patterns []string,
 		case "SPECIAL-USE":
 			options.SelectSpecialUse = true
 		default:
-			return newClientBugError("Unknown LIST select option")
+			if optErr == nil {
+				optErr = fmt.Errorf("in list-select-opts: %w", newClientBugError("Unknown LIST select option"))
+			}
 		}
 		return nil
 	})
@@ -301,7 +321,9 @@ func readListCmd(c *Conn, dec *imapwire.Decoder) (ref string, patterns []string,
 	if err != nil {
 		return "", nil, nil, syntax, err
 	} else if hasPatterns && len(patterns) == 0 {
-		return "", nil, nil, syntax, newClientBugError("LIST-EXTENDED requires a non-empty parenthesized pattern list")
+		if optErr == nil {
+			optErr = newClientBugError("LIST-EXTENDED requires a non-empty parenthesized pattern list")
+		}
 	} else if !hasPatterns {
 		pattern, err := readListMailbox(dec)
 		if err != nil {
@@ -312,7 +334,6 @@ func readListCmd(c *Conn, dec *imapwire.Decoder) (ref string, patterns []string,
 		}
 	}
 
-	var metadataEntryErr error
 	hasReturnOpts := dec.SP()
 	if hasReturnOpts { // list-return-opts
 		var atom string
@@ -321,7 +342,7 @@ func readListCmd(c *Conn, dec *imapwire.Decoder) (ref string, patterns []string,
 		}
 
 		err := dec.ExpectList(func() error {
-			return readReturnOption(c, dec, options, &metadataEntryErr)
+			return readReturnOption(dec, options, &optErr)
 		})
 		if err != nil {
 			return "", nil, nil, syntax, fmt.Errorf("in list-return-opts: %w", err)
@@ -332,11 +353,8 @@ func readListCmd(c *Conn, dec *imapwire.Decoder) (ref string, patterns []string,
 		return "", nil, nil, syntax, dec.Err()
 	}
 
-	if metadataEntryErr != nil {
-		return "", nil, nil, syntax, fmt.Errorf("in list-return-opts: %w", &imap.Error{
-			Type: imap.StatusResponseTypeBad,
-			Text: metadataEntryErr.Error(),
-		})
+	if optErr != nil {
+		return "", nil, nil, syntax, optErr
 	}
 
 	if options.SelectRecursiveMatch && !options.SelectSubscribed {
@@ -383,7 +401,7 @@ func isListChar(ch byte) bool {
 	}
 }
 
-func readReturnOption(c *Conn, dec *imapwire.Decoder, options *imap.ListOptions, metadataEntryErr *error) error {
+func readReturnOption(dec *imapwire.Decoder, options *imap.ListOptions, optErr *error) error {
 	var name string
 	if !dec.ExpectAtom(&name) {
 		return dec.Err()
@@ -404,12 +422,15 @@ func readReturnOption(c *Conn, dec *imapwire.Decoder, options *imap.ListOptions,
 		// status-option = "STATUS" SP "(" status-att *(SP status-att) ")"
 		// (RFC 5819 §4)
 		return dec.ExpectNonEmptyList(func() error {
-			return readStatusItem(c, dec, options.ReturnStatus)
+			return readStatusItem(dec, options.ReturnStatus, optErr)
 		})
 	case "METADATA":
 		options.ReturnMetadata = []string{}
-		if !dec.SP() {
-			return nil
+		if !dec.NextBytesFold(" (") {
+			return dec.Err()
+		}
+		if !dec.ExpectSP() {
+			return dec.Err()
 		}
 		// "METADATA" SP "(" entry *(SP entry) ")" (RFC 9590 §5)
 		return dec.ExpectNonEmptyList(func() error {
@@ -420,14 +441,21 @@ func readReturnOption(c *Conn, dec *imapwire.Decoder, options *imap.ListOptions,
 			// Remember invalid names even if a later METADATA option replaces
 			// this entry list. Report the error only after consuming CRLF and
 			// any non-synchronizing literal data in the command.
-			if *metadataEntryErr == nil {
-				*metadataEntryErr = imap.ValidateMetadataEntry(entry)
+			if *optErr == nil {
+				if err := imap.ValidateMetadataEntry(entry); err != nil {
+					*optErr = fmt.Errorf("in list-return-opts: %w", &imap.Error{
+						Type: imap.StatusResponseTypeBad,
+						Text: err.Error(),
+					})
+				}
 			}
 			options.ReturnMetadata = append(options.ReturnMetadata, entry)
 			return nil
 		})
 	default:
-		return newClientBugError("Unknown LIST RETURN options")
+		if *optErr == nil {
+			*optErr = fmt.Errorf("in list-return-opts: %w", newClientBugError("Unknown LIST RETURN options"))
+		}
 	}
 	return nil
 }
