@@ -162,3 +162,98 @@ func TestMetadataOptionSyncAndSetMetadataBadPrecedence(t *testing.T) {
 		}
 	})
 }
+
+func TestListAndGetMetadataBadBeforeOversizedLiteral(t *testing.T) {
+	// A synchronizing literal can be refused without reading its body. That
+	// refusal must not replace a BAD already found earlier in the command.
+	for _, tc := range []struct {
+		name       string
+		invalidCmd string
+		validCmd   string
+	}{
+		{
+			name:       "LIST selection option",
+			invalidCmd: `LIST (FOO {4097}`,
+			validCmd:   `LIST (SUBSCRIBED {4097}`,
+		},
+		{
+			name:       "LIST reference mailbox",
+			invalidCmd: `LIST (FOO) {4097}`,
+			validCmd:   `LIST (SUBSCRIBED) {4097}`,
+		},
+		{
+			name:       "LIST single pattern",
+			invalidCmd: `LIST (FOO) "" {4097}`,
+			validCmd:   `LIST (SUBSCRIBED) "" {4097}`,
+		},
+		{
+			name:       "LIST pattern list",
+			invalidCmd: `LIST (FOO) "" ({4097}`,
+			validCmd:   `LIST (SUBSCRIBED) "" ({4097}`,
+		},
+		{
+			name:       "LIST return option",
+			invalidCmd: `LIST "" INBOX RETURN (FOO METADATA ({4097}`,
+			validCmd:   `LIST "" INBOX RETURN (CHILDREN METADATA ({4097}`,
+		},
+		{
+			name:       "LIST metadata entry",
+			invalidCmd: `LIST "" INBOX RETURN (METADATA (/private/ {4097}`,
+			validCmd:   `LIST "" INBOX RETURN (METADATA (/private/comment {4097}`,
+		},
+		{
+			name:       "LIST status item",
+			invalidCmd: `LIST "" INBOX RETURN (STATUS (FOO) METADATA ({4097}`,
+			validCmd:   `LIST "" INBOX RETURN (STATUS (MESSAGES) METADATA ({4097}`,
+		},
+		{
+			name:       "GETMETADATA mailbox",
+			invalidCmd: `GETMETADATA (DEPTH 2) {4097}`,
+			validCmd:   `GETMETADATA (DEPTH 0) {4097}`,
+		},
+		{
+			name:       "GETMETADATA single entry",
+			invalidCmd: `GETMETADATA (DEPTH 2) INBOX {4097}`,
+			validCmd:   `GETMETADATA (DEPTH 0) INBOX {4097}`,
+		},
+		{
+			name:       "GETMETADATA entry list",
+			invalidCmd: `GETMETADATA (DEPTH 2) INBOX ({4097}`,
+			validCmd:   `GETMETADATA (DEPTH 0) INBOX ({4097}`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, command := range []struct {
+				name string
+				cmd  string
+				want string
+			}{
+				{name: "invalid option", cmd: tc.invalidCmd, want: " BAD "},
+				{name: "valid options", cmd: tc.validCmd, want: " NO [TOOBIG] "},
+			} {
+				t.Run(command.name, func(t *testing.T) {
+					var session *listOptionSession
+					rc := newSearchRev2ConnWrapped(t, imap.CapSet{
+						imap.CapIMAP4rev1:    {},
+						imap.CapListExtended: {},
+						imap.CapListStatus:   {},
+						imap.CapMetadata:     {},
+						imap.CapListMetadata: {},
+					}, func(sess imapserver.Session) imapserver.Session {
+						session = &listOptionSession{Session: sess}
+						return session
+					})
+
+					tagged, contReqs := rc.exchange(command.cmd)
+					if !strings.Contains(tagged, command.want) || contReqs != 0 {
+						t.Errorf("%s = %q after %d continuation requests, want %q without a continuation", command.cmd, tagged, contReqs, command.want)
+					}
+					if session.listCalls.Load() != 0 || session.metadataCalls.Load() != 0 {
+						t.Error("rejected command reached the backend")
+					}
+					rc.requireInSync(command.cmd)
+				})
+			}
+		})
+	}
+}
