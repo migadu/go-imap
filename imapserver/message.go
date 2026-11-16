@@ -121,10 +121,29 @@ func filterHeaderFields(header *textproto.Header, names []string, keep bool) err
 	return nil
 }
 
+// mimeHeaderTokenASCII preserves the raw type token instead of allowing
+// mime.ParseMediaType's Unicode lowercasing to turn a lookalike into a known
+// type. Keep the parser's defaults and raw malformed-header fallback unchanged;
+// a usable normalized token can also accompany a parameter error.
+func mimeHeaderTokenASCII(raw, parsed string, parseErr error) string {
+	if raw == "" || (parseErr != nil && parsed == raw) {
+		return parsed
+	}
+	token, _, _ := strings.Cut(raw, ";")
+	return imapwire.ToLowerASCII(strings.Trim(token, " \t\r\n"))
+}
+
+// contentTypeASCII retains go-message's parameter decoding without applying
+// Unicode case mapping to the media type itself.
+func contentTypeASCII(header gomessage.Header) (string, map[string]string) {
+	mediaType, params, err := header.ContentType()
+	return mimeHeaderTokenASCII(header.Get("Content-Type"), mediaType, err), params
+}
+
 func findMessagePart(header textproto.Header, body io.Reader, partPath []int) (string, textproto.Header, io.Reader) {
 	// First part of non-multipart message refers to the message itself
 	msgHeader := gomessage.Header{Header: header}
-	mediaType, _, _ := msgHeader.ContentType()
+	mediaType, _ := contentTypeASCII(msgHeader)
 	if !strings.HasPrefix(mediaType, "multipart/") && len(partPath) > 0 && partPath[0] == 1 {
 		partPath = partPath[1:]
 	}
@@ -136,7 +155,7 @@ func findMessagePart(header textproto.Header, body io.Reader, partPath []int) (s
 		header, body = openMessagePart(header, body, parentMediaType)
 
 		msgHeader := gomessage.Header{Header: header}
-		mediaType, typeParams, _ := msgHeader.ContentType()
+		mediaType, typeParams := contentTypeASCII(msgHeader)
 		if !strings.HasPrefix(mediaType, "multipart/") {
 			if partNum != 1 {
 				return "", textproto.Header{}, nil
@@ -170,7 +189,7 @@ func findMessagePart(header textproto.Header, body io.Reader, partPath []int) (s
 
 func openMessagePart(header textproto.Header, body io.Reader, parentMediaType string) (textproto.Header, io.Reader) {
 	msgHeader := gomessage.Header{Header: header}
-	mediaType, _, _ := msgHeader.ContentType()
+	mediaType, _ := contentTypeASCII(msgHeader)
 	if !msgHeader.Has("Content-Type") && parentMediaType == "multipart/digest" {
 		mediaType = "message/rfc822"
 	}
@@ -283,7 +302,7 @@ func writeBinarySection(w io.Writer, r io.Reader, part []int, lenient bool) erro
 	}
 
 	h := gomessage.Header{Header: header}
-	mediaType, _, _ := h.ContentType()
+	mediaType, _ := contentTypeASCII(h)
 	if !h.Has("Content-Type") && parentMediaType == "multipart/digest" {
 		mediaType = "message/rfc822" // RFC 2046 §5.1.5
 	}
@@ -294,18 +313,28 @@ func writeBinarySection(w io.Writer, r io.Reader, part []int, lenient bool) erro
 	// the encoding alone. Like New, ignore the encoding of a multipart, which
 	// RFC 2045 §6.4 restricts to the identity encodings.
 	if !strings.HasPrefix(mediaType, "multipart/") {
-		var cte gomessage.Header
-		cte.Set("Content-Transfer-Encoding", cteMechanism(header.Get("Content-Transfer-Encoding")))
-		// New returns a usable *Entity even alongside an UnknownEncoding error,
-		// with the body left as stored.
-		entity, err := gomessage.New(cte, body)
-		if gomessage.IsUnknownEncoding(err) {
+		mech := cteMechanism(header.Get("Content-Transfer-Encoding"))
+		// Balanced comments have already been removed. Residual parentheses
+		// are not mechanism tokens, even if a decoder can recover from them.
+		if !isASCIIToken(mech) || strings.ContainsAny(mech, "()") {
 			if !lenient {
 				return ErrUnknownCTE
 			}
 			textual = false
+		} else {
+			var cte gomessage.Header
+			cte.Set("Content-Transfer-Encoding", mech)
+			// New returns a usable *Entity even alongside an UnknownEncoding error,
+			// with the body left as stored.
+			entity, err := gomessage.New(cte, body)
+			if gomessage.IsUnknownEncoding(err) {
+				if !lenient {
+					return ErrUnknownCTE
+				}
+				textual = false
+			}
+			body = entity.Body
 		}
-		body = entity.Body
 	}
 
 	if len(part) == 0 {
@@ -319,6 +348,15 @@ func writeBinarySection(w io.Writer, r io.Reader, part []int, lenient bool) erro
 	// Keep the bytes read; a truncated or malformed part yields io.ErrUnexpectedEOF.
 	_, _ = io.Copy(w, body)
 	return nil
+}
+
+func isASCIIToken(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 0x80 {
+			return false
+		}
+	}
+	return true
 }
 
 // cteMechanism returns the mechanism a Content-Transfer-Encoding field value
@@ -509,7 +547,7 @@ func ExtractBodyStructureWithOptions(r io.Reader, options *ExtractOptions) imap.
 func extractBodyStructure(rawHeader textproto.Header, r io.Reader, options *ExtractOptions) imap.BodyStructure {
 	header := gomessage.Header{Header: rawHeader}
 
-	mediaType, typeParams, _ := header.ContentType()
+	mediaType, typeParams := contentTypeASCII(header)
 	primaryType, subType, _ := strings.Cut(mediaType, "/")
 
 	if primaryType == "multipart" {
@@ -585,7 +623,8 @@ func extractBodyStructure(rawHeader textproto.Header, r io.Reader, options *Extr
 }
 
 func getContentDisposition(header gomessage.Header) *imap.BodyStructureDisposition {
-	disp, dispParams, _ := header.ContentDisposition()
+	disp, dispParams, err := header.ContentDisposition()
+	disp = mimeHeaderTokenASCII(header.Get("Content-Disposition"), disp, err)
 	if disp == "" {
 		return nil
 	}

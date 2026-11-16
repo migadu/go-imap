@@ -950,7 +950,7 @@ func writeBodyType1part(enc *imapwire.Encoder, bs *imap.BodyStructureSinglePart,
 		enc.String("7bit")
 	} else {
 		// Outlook for iOS chokes on upper-case encodings
-		enc.String(strings.ToLower(bs.Encoding))
+		enc.String(imapwire.ToLowerASCII(bs.Encoding))
 	}
 	enc.SP().Number(bs.Size)
 
@@ -962,7 +962,7 @@ func writeBodyType1part(enc *imapwire.Encoder, bs *imap.BodyStructureSinglePart,
 		enc.SP().Number64(msg.NumLines)
 	} else if text := bs.Text; text != nil {
 		enc.SP().Number64(text.NumLines)
-	} else if strings.EqualFold(bs.Type, "text") {
+	} else if imapwire.EqualFoldASCII(bs.Type, "text") {
 		// body-fld-lines is mandatory for a text part (RFC 9051 body-type-text).
 		// A backend that hands us a "text" part with no line count -- typically a
 		// synthetic structure built for a message it could not parse -- would

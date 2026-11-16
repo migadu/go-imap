@@ -2,7 +2,6 @@ package imap
 
 import (
 	"fmt"
-	"strings"
 	"time"
 )
 
@@ -178,7 +177,7 @@ type BodyStructureSinglePart struct {
 }
 
 func (bs *BodyStructureSinglePart) MediaType() string {
-	return strings.ToLower(bs.Type) + "/" + strings.ToLower(bs.Subtype)
+	return toLowerASCIIString(bs.Type) + "/" + toLowerASCIIString(bs.Subtype)
 }
 
 func (bs *BodyStructureSinglePart) Walk(f BodyStructureWalkFunc) {
@@ -238,7 +237,20 @@ type BodyStructureMultiPart struct {
 }
 
 func (bs *BodyStructureMultiPart) MediaType() string {
-	return "multipart/" + strings.ToLower(bs.Subtype)
+	return "multipart/" + toLowerASCIIString(bs.Subtype)
+}
+
+func toLowerASCIIString(s string) string {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 'A' && s[i] <= 'Z' {
+			b := []byte(s)
+			for j := i; j < len(b); j++ {
+				b[j] = toLowerASCII(b[j])
+			}
+			return string(b)
+		}
+	}
+	return s
 }
 
 func (bs *BodyStructureMultiPart) Walk(f BodyStructureWalkFunc) {

@@ -320,7 +320,7 @@ func (cmd *ListCommand) matches(data *imap.ListData) bool {
 // would compare against a string the server never saw — and drop the response.
 func canonicalMailbox(name string) string {
 	const inbox = "INBOX"
-	if strings.EqualFold(name, inbox) {
+	if imapwire.EqualFoldASCII(name, inbox) {
 		return inbox
 	}
 	return name
@@ -389,7 +389,7 @@ func readList(dec *imapwire.Decoder) (*imap.ListData, error) {
 				return dec.Err()
 			}
 			var err error
-			switch strings.ToUpper(tag) {
+			switch imapwire.ToUpperASCII(tag) {
 			case "CHILDINFO":
 				data.ChildInfo, err = readChildInfoExtendedItem(dec)
 				if err != nil {
@@ -422,7 +422,7 @@ func readChildInfoExtendedItem(dec *imapwire.Decoder) (*imap.ListDataChildInfo, 
 		if !dec.ExpectAString(&opt) {
 			return dec.Err()
 		}
-		if strings.ToUpper(opt) == "SUBSCRIBED" {
+		if imapwire.EqualFoldASCII(opt, "SUBSCRIBED") {
 			childInfo.Subscribed = true
 		}
 		return nil

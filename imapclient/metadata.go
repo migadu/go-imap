@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"strings"
 
 	"github.com/migadu/go-imap"
 	"github.com/migadu/go-imap/internal/imapwire"
@@ -232,7 +231,7 @@ func readMetadataResp(dec *imapwire.Decoder, opts *Options) (*metadataResp, erro
 			// shadows the ExpectNIL below, and without the check an absent value
 			// (RFC 5464 §4.2.1) arrived as the three-byte string "NIL", which a
 			// caller cannot tell from an entry whose value really is "NIL".
-			if !strings.EqualFold(s, "NIL") {
+			if !imapwire.EqualFoldASCII(s, "NIL") {
 				b := []byte(s)
 				value = &b
 			}

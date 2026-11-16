@@ -9,6 +9,7 @@ import (
 
 	"github.com/migadu/go-imap"
 	"github.com/migadu/go-imap/imapserver"
+	"github.com/migadu/go-imap/internal/imapwire"
 )
 
 // memNotifyEventKind enumerates the internal change events broadcast to
@@ -574,7 +575,7 @@ func (sess *UserSession) notifyEventsForMailbox(watch *notifyWatch, name string)
 		case imap.NotifyMailboxSpecInboxes:
 			// RFC 5465 section 6.3: mailboxes an MDA may deliver to; INBOX
 			// for the in-memory server.
-			match = strings.EqualFold(name, "INBOX")
+			match = imapwire.EqualFoldASCII(name, "INBOX")
 		case imap.NotifyMailboxSpecSubscribed:
 			if mbox, err := sess.user.mailbox(name); err == nil {
 				mbox.mutex.Lock()
