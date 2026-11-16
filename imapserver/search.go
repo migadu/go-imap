@@ -474,8 +474,9 @@ func readSearchKeyWithAtomDepth(c *Conn, criteria *imap.SearchCriteria, dec *ima
 			return dec.Err()
 		}
 		criteria.Header = append(criteria.Header, imap.SearchCriteriaHeaderField{
-			Key:   key,
-			Value: value,
+			Key:      key,
+			Value:    value,
+			IsHeader: true,
 		})
 	case "SINCE", "BEFORE", "ON", "SENTSINCE", "SENTBEFORE", "SENTON":
 		if !dec.ExpectSP() {
