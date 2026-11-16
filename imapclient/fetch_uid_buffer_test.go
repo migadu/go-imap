@@ -462,6 +462,9 @@ func TestUIDFetchBufferSelectMetadataLimit(t *testing.T) {
 					}
 					return err
 				})
+				// This tests literal accounting for an opening SELECT, without
+				// the separate journal needed to disambiguate a re-selection.
+				client.SetStateForTest(imap.ConnStateAuthenticated)
 				if _, err := client.Enable(imap.CapQResync).Wait(); err != nil {
 					t.Fatal(err)
 				}

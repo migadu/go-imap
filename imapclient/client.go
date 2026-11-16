@@ -92,7 +92,7 @@ type Options struct {
 	// buffer in memory (e.g., for FetchMessageBuffer.Collect). Larger
 	// literals must be consumed via the streaming API. Default 64 MiB.
 	MaxLiteralSize int64
-	// MaxFetchBufferSize caps the combined literal payload buffered to route
+	// MaxFetchBufferSize caps the combined data buffered to route
 	// FETCH responses: BODY, BINARY and metadata read before its UID, plus
 	// metadata held until SELECT updates are complete. The cap covers every
 	// message not yet consumed: a response that would go over it waits until
@@ -101,7 +101,10 @@ type Options struct {
 	// buffered per response, including empty body sections.
 	// A single response exceeding the limit fails the connection and its
 	// pending commands. Responses with UID before their bodies keep streaming
-	// without this cap.
+	// without this cap. While re-selecting a mailbox, provisional responses
+	// (including their syntax and storage overhead) share this budget until
+	// CLOSED or tagged completion resolves their owner. They fail the
+	// connection on exhaustion instead of waiting on their own journal.
 	MaxFetchBufferSize int64
 	// ResponseTimeout bounds how long to wait for a response while a command
 	// is in flight, including the wait for its first byte. This is the window
@@ -241,6 +244,8 @@ type Client struct {
 	decCh   chan struct{}
 	decErr  error
 	closeCh chan struct{} // closed by cancellation to interrupt delivery and lock waits
+	// Reader-owned: prevents replayed handlers from re-entering a SELECT journal.
+	resolvingSelectUpdates bool
 
 	mutex       sync.Mutex
 	state       imap.ConnState
@@ -855,39 +860,56 @@ func (c *Client) cmdUsesSelectedMailboxLocked(cmd command) bool {
 		return true
 	}
 	selectedName := ""
-	if c.mailbox != nil {
+	hasSelected := c.mailbox != nil
+	if hasSelected {
 		selectedName = canonicalMailbox(c.mailbox.Name)
+	}
+	targetsSelected := func(mailbox string) bool {
+		return hasSelected && canonicalMailbox(mailbox) == selectedName
 	}
 	switch cmd := cmd.(type) {
 	case *MultiSearchCommand:
-		return cmd.usesSelected || searchSourceMayMatch(cmd.source, selectedName)
-	case *AppendCommand:
-		return selectedName != "" && cmd.mailbox == selectedName
-	case *AppendCatenateCommand:
-		return cmd.mayUseMailbox(selectedName)
-	case *StatusCommand:
-		return cmd.highestModSeq || (selectedName != "" && canonicalMailbox(cmd.mailbox) == selectedName)
-	case *ListCommand:
-		return cmd.highestModSeq || (cmd.returnStatus && selectedName != "")
-	case *mailboxTargetCommand:
-		if selectedName == "" {
-			return false
+		if cmd.usesSelected {
+			return true
 		}
-		return cmd.mailbox == selectedName || (cmd.prefixMatch && cmd.mailbox != "" && strings.HasPrefix(selectedName, cmd.mailbox))
-	case *SetACLCommand:
-		return selectedName != "" && cmd.mailbox == selectedName
-	case *DeleteACLCommand:
-		return selectedName != "" && cmd.mailbox == selectedName
-	case *GetACLCommand:
-		return selectedName != "" && cmd.mailbox == selectedName
+		for _, mailbox := range cmd.mailboxes {
+			if targetsSelected(mailbox) {
+				return true
+			}
+		}
+		return false
+	case *AppendCommand:
+		return targetsSelected(cmd.mailbox)
+	case *AppendCatenateCommand:
+		return cmd.usesSelected || targetsSelected(cmd.mailbox)
+	case *StatusCommand:
+		return cmd.highestModSeq || targetsSelected(cmd.mailbox)
+	case *ListCommand:
+		// The server resolves the reference, pattern and hierarchy delimiter;
+		// without that information, any STATUS result may describe the selection.
+		return cmd.highestModSeq || cmd.returnStatus
+	case *mailboxTargetCommand:
+		if targetsSelected(cmd.mailbox) {
+			return true
+		}
+		// RENAME also affects descendants. The client does not retain the
+		// server's hierarchy delimiter, so a source prefix is conservatively a
+		// possible ancestor, even when its next byte is not the real delimiter.
+		return hasSelected && cmd.name == "RENAME" && strings.HasPrefix(selectedName, cmd.mailbox)
 	case *MyRightsCommand:
-		return selectedName != "" && cmd.mailbox == selectedName
+		return targetsSelected(cmd.mailbox)
+	case *GetACLCommand:
+		return targetsSelected(cmd.mailbox)
+	case *SetACLCommand:
+		return targetsSelected(cmd.mailbox)
+	case *DeleteACLCommand:
+		return targetsSelected(cmd.mailbox)
 	case *ListRightsCommand:
-		return selectedName != "" && cmd.mailbox == selectedName
+		return targetsSelected(cmd.mailbox)
 	case *GetMetadataCommand:
-		return selectedName != "" && canonicalMailbox(cmd.mailbox) == selectedName
+		return targetsSelected(cmd.mailbox)
 	case *GetQuotaRootCommand:
-		return selectedName != "" && canonicalMailbox(cmd.mailbox) == selectedName
+		return targetsSelected(cmd.mailbox)
 	default:
 		return false
 	}
@@ -917,16 +939,13 @@ func (c *Client) activeSelectCmd() *SelectCommand {
 	return nil
 }
 
-func (c *Client) resetPendingSelectDataLocked() []func() error {
+func (c *Client) resetPendingSelectDataLocked() {
 	for _, pending := range c.pendingCmds {
 		if sel, ok := pending.(*SelectCommand); ok {
-			replay := sel.preClosed
-			sel.preClosed = nil
 			sel.data = imap.SelectData{}
-			return replay
+			break
 		}
 	}
-	return nil
 }
 
 func (c *Client) completeCommand(cmd command, err error) {
@@ -966,6 +985,7 @@ func (c *Client) completeCommand(cmd command, err error) {
 			c.mutex.Unlock()
 		}
 	case *SelectCommand:
+		c.discardSelectUpdates(cmd)
 		var imapErr *imap.Error
 		if err == nil {
 			c.mutex.Lock()
@@ -1368,7 +1388,12 @@ func (c *Client) readResponseTagged(tag, typ string) (startTLS *startTLSCommand,
 			if cmd, ok := cmd.(*SelectCommand); ok {
 				cmd.data.ReadOnly = readOnly
 			} else {
-				c.setMailboxReadOnly(readOnly)
+				if err := c.deferSelectUpdate(c.activeSelectCmd(), false, func() error {
+					c.setMailboxReadOnly(readOnly)
+					return nil
+				}, nil); err != nil {
+					return nil, err
+				}
 			}
 		case "MODIFIED": // RFC 7162 §3.1.3: conditional STORE UNCHANGEDSINCE failures
 			if !c.dec.ExpectSP() {
@@ -1446,26 +1471,17 @@ func (c *Client) readResponseTagged(tag, typ string) (startTLS *startTLSCommand,
 			c.setCaps(nil)
 		}
 	}
-	var failedSelectReplay []func() error
-	if sel, ok := cmd.(*SelectCommand); ok && cmdErr != nil {
-		c.mutex.Lock()
-		if c.state == imap.ConnStateSelected {
-			failedSelectReplay = sel.preClosed
-			sel.preClosed = nil
-		}
-		c.mutex.Unlock()
-	}
-
 	// Waiters may immediately ask for capabilities in the new state. Publish
 	// their invalidation (and the refresh to await) before completing LOGIN or
 	// AUTHENTICATE, just as completeCommand publishes the connection state.
-	c.completeCommand(cmd, cmdErr)
-
-	for _, fn := range failedSelectReplay {
-		if err := fn(); err != nil {
+	if sel, ok := cmd.(*SelectCommand); ok {
+		var imapErr *imap.Error
+		replay := errors.As(cmdErr, &imapErr) && imapErr.Type == imap.StatusResponseTypeBad && c.State() == imap.ConnStateSelected
+		if err := c.resolveSelectUpdates(sel, replay); err != nil {
 			return nil, err
 		}
 	}
+	c.completeCommand(cmd, cmdErr)
 
 	return startTLS, nil
 }
@@ -1525,40 +1541,35 @@ func (c *Client) readResponseData(typ string) error {
 				if c.ignoresMailboxData() {
 					break
 				}
-
-				c.mutex.Lock()
-				if c.state == imap.ConnStateSelected {
-					c.mailbox = c.mailbox.copy()
-					c.mailbox.PermanentFlags = flags
+				if flags == nil {
+					flags = []imap.Flag{}
 				}
-				c.mutex.Unlock()
 
 				if cmd := c.activeSelectCmd(); cmd != nil {
 					cmd.data.PermanentFlags = flags
-					c.mutex.Lock()
-					if c.state == imap.ConnStateSelected {
-						if handler := c.options.unilateralDataHandler().Mailbox; handler != nil {
-							f := flags
-							cmd.preClosed = append(cmd.preClosed, func() error {
-								return c.runUnilateralHandler(func() { handler(&UnilateralDataMailbox{PermanentFlags: f}) })
-							})
-						}
-					}
-					c.mutex.Unlock()
-				} else if handler := c.options.unilateralDataHandler().Mailbox; handler != nil {
-					if err := c.runUnilateralHandler(func() { handler(&UnilateralDataMailbox{PermanentFlags: flags}) }); err != nil {
+					if err := c.deferSelectUpdate(cmd, true, func() error {
+						return c.updateMailbox(&UnilateralDataMailbox{PermanentFlags: flags})
+					}, nil); err != nil {
 						return err
 					}
+				} else if err := c.updateMailbox(&UnilateralDataMailbox{PermanentFlags: flags}); err != nil {
+					return err
 				}
 			case "READ-ONLY", "READ-WRITE":
 				// RFC 9051 §7.1: besides answering SELECT, these report that the
 				// access to the selected mailbox has changed.
 				readOnly := code == "READ-ONLY"
 
-				c.setMailboxReadOnly(readOnly)
-
 				if cmd := c.activeSelectCmd(); cmd != nil {
 					cmd.data.ReadOnly = readOnly
+					if err := c.deferSelectUpdate(cmd, true, func() error {
+						c.setMailboxReadOnly(readOnly)
+						return nil
+					}, nil); err != nil {
+						return err
+					}
+				} else {
+					c.setMailboxReadOnly(readOnly)
 				}
 			case "UIDNEXT":
 				var num uint32
@@ -1635,19 +1646,18 @@ func (c *Client) readResponseData(typ string) error {
 		// responses before CLOSED belong to the closing mailbox (RFC 7162
 		// §3.2.11), so discard any provisional SelectData recorded before it.
 		if code == "CLOSED" && c.State() == imap.ConnStateSelected {
-			var replay []func() error
+			if cmd := c.activeSelectCmd(); cmd != nil {
+				if err := c.resolveSelectUpdates(cmd, true); err != nil {
+					return err
+				}
+			}
 			c.mutex.Lock()
 			if !c.closed {
 				c.state = imap.ConnStateAuthenticated
 				c.mailbox = nil
-				replay = c.resetPendingSelectDataLocked()
+				c.resetPendingSelectDataLocked()
 			}
 			c.mutex.Unlock()
-			for _, fn := range replay {
-				if err := fn(); err != nil {
-					return err
-				}
-			}
 		}
 
 		if !c.greetingRecv {
@@ -1792,50 +1802,33 @@ func (c *Client) handleVanished() error {
 
 	cmd := c.activeSelectCmd()
 
-	// RFC 7162 §3.2.10.2: unlike VANISHED (EARLIER), a VANISHED response
-	// removes its messages from the selected mailbox, one per UID, as EXPUNGE
-	// does, and the server need not send EXISTS for the new count. A set with
-	// "*" names no countable number of messages, so it leaves the count alone.
+	// Live removals affect both the pending selection's count and, if this
+	// response belongs to the old selection, its snapshot at replay time.
+	var removed uint64
 	if !data.Earlier && !data.UIDs.Dynamic() {
-		n := data.UIDs.Cardinality()
+		removed = data.UIDs.Cardinality()
 		if cmd != nil {
-			// EXISTS records the pending selection's count before its tagged
-			// completion publishes c.mailbox. Live removals must adjust that
-			// count too. Any provisional old-mailbox count before CLOSED is
-			// replaced by the new selection's required EXISTS response.
-			cmd.data.NumMessages -= uint32(min(n, uint64(cmd.data.NumMessages)))
+			cmd.data.NumMessages -= uint32(min(removed, uint64(cmd.data.NumMessages)))
 		}
-
-		c.mutex.Lock()
-		if c.state == imap.ConnStateSelected {
-			c.mailbox = c.mailbox.copy()
-			c.mailbox.NumMessages -= uint32(min(n, uint64(c.mailbox.NumMessages)))
-		}
-		c.mutex.Unlock()
 	}
-
-	if cmd != nil && cmd.qresync && data.Earlier {
-		// VANISHED (EARLIER) during SELECT should populate SelectData.
-		// Accumulate: a resynchronization can arrive in more than one
-		// response, and each carries its own part of the expunged set.
+	provisional := cmd != nil && cmd.qresync && data.Earlier
+	if provisional {
 		cmd.data.Vanished = append(cmd.data.Vanished, data.UIDs...)
-		c.mutex.Lock()
-		if c.state == imap.ConnStateSelected {
-			if handler := c.options.unilateralDataHandler().Vanished; handler != nil {
-				d := data
-				cmd.preClosed = append(cmd.preClosed, func() error {
-					return c.runUnilateralHandler(func() { handler(&d) })
-				})
-			}
-		}
-		c.mutex.Unlock()
-	} else if handler := c.options.unilateralDataHandler().Vanished; handler != nil {
-		if err := c.runUnilateralHandler(func() { handler(&data) }); err != nil {
-			return err
-		}
 	}
-
-	return nil
+	return c.deferSelectUpdate(cmd, provisional, func() error {
+		if removed != 0 {
+			c.mutex.Lock()
+			if c.state == imap.ConnStateSelected {
+				c.mailbox = c.mailbox.copy()
+				c.mailbox.NumMessages -= uint32(min(removed, uint64(c.mailbox.NumMessages)))
+			}
+			c.mutex.Unlock()
+		}
+		if handler := c.options.unilateralDataHandler().Vanished; handler != nil {
+			return c.runUnilateralHandler(func() { handler(&data) })
+		}
+		return nil
+	}, nil)
 }
 
 // WaitGreeting waits for the server's initial greeting.
@@ -1878,8 +1871,7 @@ func (c *Client) Login(username, password string) *Command {
 
 type mailboxTargetCommand struct {
 	Command
-	mailbox     string
-	prefixMatch bool
+	mailbox string
 }
 
 // Delete sends a DELETE command.
@@ -1895,7 +1887,7 @@ func (c *Client) Delete(mailbox string) *Command {
 //
 // A nil options pointer is equivalent to a zero options value.
 func (c *Client) Rename(mailbox, newName string, options *imap.RenameOptions) *Command {
-	cmd := &mailboxTargetCommand{mailbox: canonicalMailbox(mailbox), prefixMatch: true}
+	cmd := &mailboxTargetCommand{mailbox: canonicalMailbox(mailbox)}
 	enc := c.beginCommand("RENAME", cmd)
 	enc.SP().Mailbox(mailbox).SP().Mailbox(newName)
 	enc.end()

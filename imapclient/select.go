@@ -99,32 +99,18 @@ func (c *Client) handleFlags() error {
 	if c.ignoresMailboxData() {
 		return nil
 	}
-
-	c.mutex.Lock()
-	if c.state == imap.ConnStateSelected {
-		c.mailbox = c.mailbox.copy()
-		c.mailbox.Flags = flags
+	if flags == nil {
+		flags = []imap.Flag{}
 	}
-	c.mutex.Unlock()
 
 	cmd := c.activeSelectCmd()
 	if cmd != nil {
 		cmd.data.Flags = flags
-		c.mutex.Lock()
-		if c.state == imap.ConnStateSelected {
-			if handler := c.options.unilateralDataHandler().Mailbox; handler != nil {
-				f := flags
-				cmd.preClosed = append(cmd.preClosed, func() error {
-					return c.runUnilateralHandler(func() { handler(&UnilateralDataMailbox{Flags: f}) })
-				})
-			}
-		}
-		c.mutex.Unlock()
-	} else if handler := c.options.unilateralDataHandler().Mailbox; handler != nil {
-		return c.runUnilateralHandler(func() { handler(&UnilateralDataMailbox{Flags: flags}) })
+		return c.deferSelectUpdate(cmd, true, func() error {
+			return c.updateMailbox(&UnilateralDataMailbox{Flags: flags})
+		}, nil)
 	}
-
-	return nil
+	return c.updateMailbox(&UnilateralDataMailbox{Flags: flags})
 }
 
 func (c *Client) handleExists(num uint32) error {
@@ -134,42 +120,107 @@ func (c *Client) handleExists(num uint32) error {
 	cmd := c.activeSelectCmd()
 	if cmd != nil {
 		cmd.data.NumMessages = num
-		c.mutex.Lock()
-		if c.state == imap.ConnStateSelected {
-			if c.mailbox != nil && canonicalMailbox(c.mailbox.Name) == canonicalMailbox(cmd.mailbox) {
-				c.mailbox = c.mailbox.copy()
-				c.mailbox.NumMessages = num
-			}
-			if handler := c.options.unilateralDataHandler().Mailbox; handler != nil {
-				n := num
-				cmd.preClosed = append(cmd.preClosed, func() error {
-					return c.runUnilateralHandler(func() { handler(&UnilateralDataMailbox{NumMessages: &n}) })
-				})
-			}
-		}
-		c.mutex.Unlock()
-	} else {
-		c.mutex.Lock()
-		if c.state == imap.ConnStateSelected {
-			c.mailbox = c.mailbox.copy()
-			c.mailbox.NumMessages = num
-		}
-		c.mutex.Unlock()
+		return c.deferSelectUpdate(cmd, true, func() error {
+			return c.updateMailbox(&UnilateralDataMailbox{NumMessages: &num})
+		}, nil)
+	}
+	return c.updateMailbox(&UnilateralDataMailbox{NumMessages: &num})
+}
 
-		if handler := c.options.unilateralDataHandler().Mailbox; handler != nil {
-			return c.runUnilateralHandler(func() { handler(&UnilateralDataMailbox{NumMessages: &num}) })
+// updateMailbox publishes one response before invoking its callback, so the
+// callback observes the corresponding snapshot, including during replay.
+func (c *Client) updateMailbox(data *UnilateralDataMailbox) error {
+	c.mutex.Lock()
+	if c.state == imap.ConnStateSelected {
+		c.mailbox = c.mailbox.copy()
+		if data.NumMessages != nil {
+			c.mailbox.NumMessages = *data.NumMessages
+		}
+		if data.Flags != nil {
+			c.mailbox.Flags = data.Flags
+		}
+		if data.PermanentFlags != nil {
+			c.mailbox.PermanentFlags = data.PermanentFlags
 		}
 	}
+	c.mutex.Unlock()
+	if handler := c.options.unilateralDataHandler().Mailbox; handler != nil {
+		return c.runUnilateralHandler(func() { handler(data) })
+	}
 	return nil
+}
+
+// Until CLOSED or tagged completion, responses to a re-selection can still
+// belong to the previous selection. Keep their callbacks in wire order. The
+// reader alone owns this journal; callbacks run without Client.mutex held.
+type selectUpdate struct {
+	apply       func() error
+	discard     func()
+	provisional bool
+	size        int64
+}
+
+func (c *Client) deferSelectUpdate(cmd *SelectCommand, provisional bool, apply func() error, discard func()) error {
+	syntax, literals := c.dec.ReadCount()
+	return c.deferSelectUpdateSize(cmd, provisional, apply, discard, syntax+literals+64)
+}
+
+func (c *Client) deferSelectUpdateSize(cmd *SelectCommand, provisional bool, apply func() error, discard func(), size int64) error {
+	if cmd == nil || c.State() != imap.ConnStateSelected {
+		// An opening selection owns provisional data outright. Definite
+		// unilateral responses are still delivered normally.
+		if provisional {
+			if discard != nil {
+				discard()
+			}
+			return nil
+		}
+		return apply()
+	}
+	// A fixed overhead bounds even empty responses and their journal entries.
+	if err := c.tryAcquireFetchBuffer(size); err != nil {
+		if discard != nil {
+			discard()
+		}
+		return err
+	}
+	cmd.updates = append(cmd.updates, selectUpdate{apply, discard, provisional, size})
+	return nil
+}
+
+func (c *Client) resolveSelectUpdates(cmd *SelectCommand, replayProvisional bool) (err error) {
+	updates := cmd.updates
+	cmd.updates = nil
+	c.resolvingSelectUpdates = true
+	defer func() { c.resolvingSelectUpdates = false }()
+	for _, update := range updates {
+		if err == nil && (replayProvisional || !update.provisional) {
+			err = update.apply()
+		} else if update.discard != nil {
+			update.discard()
+		}
+		c.releaseFetchBuffer(update.size)
+	}
+	return err
+}
+
+func (c *Client) discardSelectUpdates(cmd *SelectCommand) {
+	for _, update := range cmd.updates {
+		if update.discard != nil {
+			update.discard()
+		}
+		c.releaseFetchBuffer(update.size)
+	}
+	cmd.updates = nil
 }
 
 // SelectCommand is a SELECT command.
 type SelectCommand struct {
 	commandBase
-	mailbox   string
-	qresync   bool
-	data      imap.SelectData
-	preClosed []func() error
+	mailbox string
+	qresync bool
+	data    imap.SelectData
+	updates []selectUpdate
 }
 
 func (cmd *SelectCommand) Wait() (*imap.SelectData, error) {

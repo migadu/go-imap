@@ -3,11 +3,20 @@ package imapclient
 import (
 	"fmt"
 	"runtime/debug"
+
+	"github.com/migadu/go-imap"
 )
 
 // runUnilateralHandler preserves response ordering while allowing cancellation
 // to release the decoder when a handler is waiting for a command to complete.
 func (c *Client) runUnilateralHandler(handler func()) error {
+	if !c.resolvingSelectUpdates {
+		if cmd := c.activeSelectCmd(); cmd != nil && c.State() == imap.ConnStateSelected {
+			return c.deferSelectUpdate(cmd, false, func() error {
+				return c.runUnilateralHandler(handler)
+			}, nil)
+		}
+	}
 	select {
 	case <-c.closeCh:
 		return c.cancellationErr()

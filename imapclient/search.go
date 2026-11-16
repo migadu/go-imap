@@ -98,17 +98,21 @@ func (c *Client) MultiSearch(source *imap.SearchSource, criteria *imap.SearchCri
 		charset = "UTF-8"
 	}
 
-	var srcCopy *imap.SearchSource
-	if source != nil {
-		cp := *source
-		cp.Mailboxes = append([]string(nil), source.Mailboxes...)
-		cp.Subtree = append([]string(nil), source.Subtree...)
-		cp.SubtreeOne = append([]string(nil), source.SubtreeOne...)
-		srcCopy = &cp
-	}
 	cmd := &MultiSearchCommand{
-		usesSelected: source == nil || source.IsZero() || source.Selected || (condStore && searchCriteriaHasModSeq(criteria)),
-		source:       srcCopy,
+		// Namespace membership, subscriptions and hierarchy delimiters are
+		// server-defined and not cached here. These scopes may include the
+		// selected mailbox, so keep their updates ahead of a queued SELECT.
+		usesSelected: source == nil || source.IsZero() || source.Selected ||
+			source.Inboxes || source.Personal || source.Subscribed ||
+			len(source.Subtree) > 0 || len(source.SubtreeOne) > 0 ||
+			(condStore && searchCriteriaHasModSeq(criteria)),
+	}
+	if source != nil {
+		// The caller may reuse source after this method returns. Attribution
+		// must follow the command already sent, rather than that mutable input.
+		for _, mailbox := range source.Mailboxes {
+			cmd.mailboxes = append(cmd.mailboxes, canonicalMailbox(mailbox))
+		}
 	}
 	// Since we aggregate one ESEARCH response per mailbox, we don't prepopulate
 	// cmd.data here.
@@ -284,35 +288,8 @@ func (cmd *SearchCommand) Wait() (*imap.SearchData, error) {
 type MultiSearchCommand struct {
 	commandBase
 	usesSelected bool
-	source       *imap.SearchSource
+	mailboxes    []string
 	data         []*imap.SearchData
-}
-
-func searchSourceMayMatch(source *imap.SearchSource, selectedName string) bool {
-	if source == nil || selectedName == "" {
-		return false
-	}
-	if source.Inboxes || source.Personal || source.Subscribed {
-		return true
-	}
-	for _, m := range source.Mailboxes {
-		if canonicalMailbox(m) == selectedName {
-			return true
-		}
-	}
-	for _, m := range source.Subtree {
-		cm := canonicalMailbox(m)
-		if cm == "" || cm == selectedName || strings.HasPrefix(selectedName, cm) {
-			return true
-		}
-	}
-	for _, m := range source.SubtreeOne {
-		cm := canonicalMailbox(m)
-		if cm == "" || cm == selectedName || strings.HasPrefix(selectedName, cm) {
-			return true
-		}
-	}
-	return false
 }
 
 func searchCriteriaHasModSeq(criteria *imap.SearchCriteria) bool {
