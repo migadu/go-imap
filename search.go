@@ -130,6 +130,9 @@ func intersectBefore(t1, t2 time.Time) time.Time {
 
 type SearchCriteriaHeaderField struct {
 	Key, Value string
+	// IsHeader preserves an explicit HEADER key, including recognized names.
+	// False retains the existing client shorthand for FROM/TO/CC/BCC/SUBJECT.
+	IsHeader bool
 }
 
 type SearchCriteriaModSeq struct {
