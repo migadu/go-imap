@@ -314,6 +314,15 @@ func (dec *Decoder) EOF() bool {
 // whether there was one, without consuming a leading space or a bare CR
 // followed by anything else.
 func (dec *Decoder) EmptyLine() bool {
+	if dec.err != nil && !dec.discarding {
+		return false
+	}
+	if dec.MaxSize > 0 && dec.readBytes > dec.MaxSize {
+		return dec.returnErr(ErrMaxSize)
+	}
+	if dec.literal {
+		return dec.returnErr(fmt.Errorf("imapwire: cannot decode while a literal is open"))
+	}
 	b, err := dec.r.Peek(1)
 	if err != nil {
 		if err != io.EOF {

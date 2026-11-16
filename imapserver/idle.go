@@ -178,13 +178,7 @@ func (c *Conn) handleIdle(dec *imapwire.Decoder) error {
 		return backendErr
 	}
 	if err != nil {
-		switch {
-		case isConnectionClosedError(err):
-			// The client hung up mid-IDLE (EOF, RST, a proxy tearing the
-			// connection down). End the read without a tagged completion:
-			// an unfinished line, even "DONE", did not complete the IDLE.
-			return &clientReadError{err}
-		case isTimeoutError(err):
+		if isTimeoutError(err) {
 			// The read deadline expired: the client stopped re-issuing IDLE, or
 			// something outside the library (a connection guard's inactivity
 			// deadline) armed a shorter one. Either way it is an INACTIVITY
@@ -200,9 +194,11 @@ func (c *Conn) handleIdle(dec *imapwire.Decoder) error {
 				Type: imap.StatusResponseTypeBye,
 				Text: "Idle timeout",
 			}
-		default:
-			return err
 		}
+		// Any other read failure mid-IDLE (EOF, RST, truncated TLS record, or
+		// transport error) left the input away from a command boundary; end the
+		// connection without a tagged completion, as saslReadError does.
+		return &clientReadError{err}
 	}
 	if overlong || line != "DONE" {
 		if nonSyncTail {
