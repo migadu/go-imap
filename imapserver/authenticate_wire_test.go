@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/emersion/go-sasl"
+
 	"github.com/migadu/go-imap"
 	"github.com/migadu/go-imap/imapserver"
 	"github.com/migadu/go-imap/imapserver/imapmemserver"
@@ -174,4 +176,106 @@ func (ln authenticateDeadlineListener) Accept() (net.Conn, error) {
 		return nil, err
 	}
 	return authenticateDeadlineConn{conn}, nil
+}
+
+// recordingSASLSession offers one mechanism that asks for a single response
+// with an empty challenge and passes on whatever the server decoded for it.
+type recordingSASLSession struct {
+	imapserver.Session
+	got chan []byte
+}
+
+func (s *recordingSASLSession) AuthenticateMechanisms() []string { return []string{"PLAIN"} }
+
+func (s *recordingSASLSession) Authenticate(mech string) (sasl.Server, error) {
+	return recordingSASLServer{s.got}, nil
+}
+
+type recordingSASLServer struct{ got chan<- []byte }
+
+func (s recordingSASLServer) Next(resp []byte) ([]byte, bool, error) {
+	if resp == nil {
+		return []byte{}, false, nil
+	}
+	s.got <- resp
+	return nil, true, nil
+}
+
+// "=" is a zero-length response only as the initial response
+// (RFC 9051 §9: initial-resp = (base64 / "=")). A reply to a continuation
+// request is base64 (authenticate = ... *(CRLF base64)), where a zero-length
+// response is an empty line and a lone pad character is invalid base64, which
+// the server MUST reject with a tagged BAD (RFC 9051 §6.2.2).
+func TestAuthenticateLonePadOnlyInInitialResponse(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		cmd     string
+		replies []string // lines sent after each continuation request
+		wantBad bool
+	}{
+		{name: "initial response", cmd: "AUTHENTICATE PLAIN ="},
+		{name: "empty continuation reply", cmd: "AUTHENTICATE PLAIN", replies: []string{""}},
+		{name: "pad as continuation reply", cmd: "AUTHENTICATE PLAIN", replies: []string{"="}, wantBad: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := make(chan []byte, 1)
+			mem := imapmemserver.New()
+			server := imapserver.New(&imapserver.Options{
+				NewSession: func(*imapserver.Conn) (imapserver.Session, *imapserver.GreetingData, error) {
+					return &recordingSASLSession{Session: mem.NewSession(), got: got}, nil, nil
+				},
+				InsecureAuth: true,
+				Caps:         imap.CapSet{imap.CapIMAP4rev1: {}},
+				Logger:       log.New(io.Discard, "", 0),
+			})
+			ln, err := net.Listen("tcp", "localhost:0")
+			if err != nil {
+				t.Fatalf("net.Listen() = %v", err)
+			}
+			go server.Serve(ln)
+			t.Cleanup(func() { server.Close() })
+			wc := dialWire(t, ln.Addr().String())
+
+			tag := wc.send(t, tc.cmd)
+			for _, reply := range tc.replies {
+				if line, err := wc.readLine(); err != nil || line != "+ " {
+					t.Fatalf("continuation request = %q, %v, want %q", line, err, "+ ")
+				}
+				if _, err := io.WriteString(wc.conn, reply+"\r\n"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			lines, err := wc.waitTagged(tag)
+			if err != nil {
+				t.Fatal(err)
+			}
+			last := lines[len(lines)-1]
+
+			if tc.wantBad {
+				if !strings.HasPrefix(last, tag+" BAD") {
+					t.Fatalf("%s = %q, want %s BAD", tc.name, last, tag)
+				}
+				select {
+				case resp := <-got:
+					t.Fatalf("mechanism was given %q, want the reply rejected before it", resp)
+				default:
+				}
+				// The command was rejected, not the connection.
+				wc.mustOK(t, "NOOP")
+				return
+			}
+
+			if !strings.HasPrefix(last, tag+" OK") {
+				t.Fatalf("%s = %q, want %s OK", tc.name, last, tag)
+			}
+			select {
+			case resp := <-got:
+				if resp == nil || len(resp) != 0 {
+					t.Fatalf("mechanism was given %#v, want a non-nil zero-length response", resp)
+				}
+			default:
+				t.Fatal("mechanism was not given a response")
+			}
+		})
+	}
 }
