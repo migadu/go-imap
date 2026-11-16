@@ -5,6 +5,7 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/migadu/go-imap/internal/imapwire"
 )
@@ -80,24 +81,55 @@ func TestAppendCatenateDrainCommandPayload(t *testing.T) {
 }
 
 func TestAppendCatenateDrainMalformedLiteralStopsRecovery(t *testing.T) {
-	rc := newCatenateConn(t, 10)
 	payload := "injected CREATE injected-mailbox\r\n"
-	command := fmt.Sprintf("malformed APPEND Missing CATENATE (TEXT {%d+}x\r\n%s)\r\nprobe NOOP\r\n", len(payload), payload)
-	go rc.c.Write([]byte(command))
-	for {
-		line, err := rc.br.ReadString('\n')
-		if err != nil {
-			if err == io.EOF {
-				return
+	for _, tc := range []struct {
+		name string
+		part string
+	}{
+		{name: "trailing nonsync after malformed prefix", part: fmt.Sprintf("TEXT {x} {%d+}\r\n%s", len(payload), payload)},
+		{name: "overflowed nonsync literal", part: "TEXT {9223372036854775808+}\r\n" + payload},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rc := newCatenateConn(t, 10)
+			command := fmt.Sprintf("malformed APPEND Missing CATENATE (%s)\r\nprobe NOOP\r\n", tc.part)
+			go rc.c.Write([]byte(command))
+			for {
+				line, err := rc.br.ReadString('\n')
+				if err != nil {
+					if err == io.EOF {
+						return
+					}
+					t.Fatalf("read: %v", err)
+				}
+				if strings.HasPrefix(line, "* BYE ") {
+					return
+				}
+				if strings.HasPrefix(line, "injected ") || strings.HasPrefix(line, "probe ") {
+					t.Fatalf("malformed literal left a command executable: %q", line)
+				}
 			}
-			t.Fatalf("read: %v", err)
-		}
-		if strings.HasPrefix(line, "* BYE ") {
-			return
-		}
-		if strings.HasPrefix(line, "injected ") || strings.HasPrefix(line, "probe ") {
-			t.Fatalf("malformed literal left a command executable: %q", line)
-		}
+		})
+	}
+}
+
+func TestAppendCatenateDrainNonLiteralLineStaysInSync(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		line string
+	}{
+		{name: "nonsync trailing space", line: "APPEND Missing CATENATE (TEXT {5+} "},
+		{name: "sync trailing space", line: "APPEND Missing CATENATE (TEXT {5} "},
+		{name: "nonsync trailing token", line: "APPEND Missing CATENATE (TEXT {5+}x"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rc := newCatenateConn(t, 10)
+			_ = rc.c.SetDeadline(time.Now().Add(500 * time.Millisecond))
+			_, tagged := rc.try(tc.line)
+			if !strings.Contains(tagged, " NO [TRYCREATE] ") {
+				t.Fatalf("got %q, want NO [TRYCREATE]", tagged)
+			}
+			rc.requireInSync(tc.name)
+		})
 	}
 }
 
