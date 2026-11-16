@@ -606,6 +606,8 @@ func (c *Conn) lingerClose() {
 func (c *Conn) readCommand(dec *imapwire.Decoder) (err error) {
 	defer func() {
 		if errors.Is(dec.Err(), imapwire.ErrMaxSize) {
+			c.stopNotifyPump()
+			_ = c.flushClosingCondStore()
 			_ = c.writeStatusResp("", &imap.StatusResponse{
 				Type: imap.StatusResponseTypeBye,
 				Text: "Command too long",
@@ -779,6 +781,8 @@ func (c *Conn) readCommand(dec *imapwire.Decoder) (err error) {
 	// follows would be executed as commands. There is no way back from that, so
 	// end the connection instead of continuing to parse (RFC 9051 §2.2.1).
 	if dec.Desynchronized() {
+		c.stopNotifyPump()
+		_ = c.flushClosingCondStore()
 		_ = c.writeStatusResp("", &imap.StatusResponse{
 			Type: imap.StatusResponseTypeBye,
 			Text: "Unable to resynchronize command stream",

@@ -70,6 +70,13 @@ func (c *Conn) clearPendingCondStore() {
 	c.mutex.Unlock()
 }
 
+func (c *Conn) rollbackCondStore() {
+	c.mutex.Lock()
+	c.condStore = false
+	c.condStorePending = false
+	c.mutex.Unlock()
+}
+
 // CondStoreEnabled reports whether the client has become CONDSTORE-aware on this
 // connection, either implicitly via a CONDSTORE-enabling command (see
 // markCondStoreEnabled) or explicitly via ENABLE CONDSTORE/QRESYNC.
