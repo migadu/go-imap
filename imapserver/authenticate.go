@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/base64"
 	"fmt"
+	"strings"
 
 	"github.com/emersion/go-sasl"
 
@@ -171,6 +172,14 @@ func saslReadError(err error) error {
 // NO [SERVERBUG]. In a reply to a continuation request a zero-length response
 // is an empty line; a lone "=" is not base64 and is refused.
 func decodeSASL(s string) ([]byte, error) {
+	// base64.StdEncoding.DecodeString silently ignores '\r' and '\n', so reject
+	// any remaining CR/LF explicitly before decoding.
+	if strings.ContainsAny(s, "\r\n") {
+		return nil, &imap.Error{
+			Type: imap.StatusResponseTypeBad,
+			Text: "Malformed SASL response",
+		}
+	}
 	b, err := base64.StdEncoding.DecodeString(s)
 	if err != nil {
 		return nil, &imap.Error{
