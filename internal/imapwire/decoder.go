@@ -188,11 +188,7 @@ func (dec *Decoder) readByte() (byte, bool) {
 		return 0, false
 	}
 	if dec.MaxSize > 0 && dec.readBytes > dec.MaxSize {
-		if dec.discarding {
-			dec.err = ErrMaxSize
-			return 0, false
-		}
-		return 0, dec.returnErr(ErrMaxSize)
+		return 0, dec.failMaxSize()
 	}
 	dec.crlf = false
 	if dec.literal {
@@ -310,6 +306,14 @@ func (dec *Decoder) EOF() bool {
 	return false
 }
 
+func (dec *Decoder) failMaxSize() bool {
+	if dec.discarding {
+		dec.err = ErrMaxSize
+		return false
+	}
+	return dec.returnErr(ErrMaxSize)
+}
+
 // EmptyLine consumes an empty physical line ("\n" or "\r\n") and reports
 // whether there was one, without consuming a leading space or a bare CR
 // followed by anything else.
@@ -318,7 +322,7 @@ func (dec *Decoder) EmptyLine() bool {
 		return false
 	}
 	if dec.MaxSize > 0 && dec.readBytes > dec.MaxSize {
-		return dec.returnErr(ErrMaxSize)
+		return dec.failMaxSize()
 	}
 	if dec.literal {
 		return dec.returnErr(fmt.Errorf("imapwire: cannot decode while a literal is open"))
@@ -340,6 +344,9 @@ func (dec *Decoder) EmptyLine() bool {
 		dec.prevNonSyncState = 0
 		return true
 	case '\r':
+		if dec.MaxSize > 0 && dec.readBytes >= dec.MaxSize {
+			return dec.failMaxSize()
+		}
 		b2, err := dec.r.Peek(2)
 		if err != nil {
 			if err != io.EOF {
