@@ -832,7 +832,10 @@ func (c *Client) handleFetch(seqNum uint32) (err error) {
 	var uid imap.UID
 	var flags []imap.Flag
 	var modSeq uint64
-	selectCmd := findPendingCmdByType[*SelectCommand](c)
+	selectCmd := c.activeSelectCmd()
+	if selectCmd != nil && !selectCmd.qresync {
+		selectCmd = nil
+	}
 	handled := false
 	shouldBuffer := func() bool { return needsUID && !handled && uid == 0 }
 	shouldBufferMetadata := func() bool { return shouldBuffer() || (!handled && selectCmd != nil) }

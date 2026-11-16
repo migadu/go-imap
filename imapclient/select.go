@@ -14,7 +14,10 @@ func (c *Client) Select(mailbox string, options *imap.SelectOptions) *SelectComm
 		cmdName = "EXAMINE"
 	}
 
-	cmd := &SelectCommand{mailbox: mailbox}
+	cmd := &SelectCommand{
+		mailbox: mailbox,
+		qresync: options != nil && options.QResync != nil,
+	}
 	enc := c.beginCommand(cmdName, cmd)
 	enc.SP().Mailbox(mailbox)
 
@@ -75,7 +78,7 @@ func (c *Client) ignoresMailboxData() bool {
 	// mailbox. A queued SELECT before authentication, or after cancellation,
 	// must not make otherwise unsuitable responses meaningful.
 	return state != imap.ConnStateSelected &&
-		(state != imap.ConnStateAuthenticated || findPendingCmdByType[*SelectCommand](c) == nil)
+		(state != imap.ConnStateAuthenticated || c.activeSelectCmd() == nil)
 }
 
 // ignoresUnsolicitedData reports whether a response no command asked for is
@@ -104,7 +107,7 @@ func (c *Client) handleFlags() error {
 	}
 	c.mutex.Unlock()
 
-	cmd := findPendingCmdByType[*SelectCommand](c)
+	cmd := c.activeSelectCmd()
 	if cmd != nil {
 		cmd.data.Flags = flags
 	} else if handler := c.options.unilateralDataHandler().Mailbox; handler != nil {
@@ -118,7 +121,7 @@ func (c *Client) handleExists(num uint32) error {
 	if c.ignoresMailboxData() {
 		return nil
 	}
-	cmd := findPendingCmdByType[*SelectCommand](c)
+	cmd := c.activeSelectCmd()
 	if cmd != nil {
 		cmd.data.NumMessages = num
 	} else {
@@ -140,6 +143,7 @@ func (c *Client) handleExists(num uint32) error {
 type SelectCommand struct {
 	commandBase
 	mailbox string
+	qresync bool
 	data    imap.SelectData
 }
 
