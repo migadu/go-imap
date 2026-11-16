@@ -258,6 +258,9 @@ type Client struct {
 	closed      bool
 	closeCalled bool  // explicit Close calls, separate from terminal cancellation
 	cancelErr   error // first fatal error, published before closeCh closes; guarded by mutex
+	// A reset leaves pendingCmds before its tagged response has been parsed.
+	// Keep its encoder barrier until the resulting state has been published.
+	completingSessionReset *commandBase // guarded by mutex
 
 	// autoIdle is the IDLE command the client runs on its own account
 	// (Options.AutoIdle), if any; autoIdleTimer starts it, and
@@ -491,6 +494,9 @@ func (c *Client) useQuotedUTF8Locked() bool {
 }
 
 func (c *Client) hasPendingSessionResetLocked() bool {
+	if c.completingSessionReset != nil {
+		return true
+	}
 	for _, pending := range c.pendingCmds {
 		switch pending.(type) {
 		case *unauthenticateCommand, *logoutCommand:
@@ -815,6 +821,10 @@ func (c *Client) deletePendingCmdByTag(tag string) command {
 
 	for i, cmd := range c.pendingCmds {
 		if cmd.base().tag == tag {
+			switch cmd.(type) {
+			case *unauthenticateCommand, *logoutCommand:
+				c.completingSessionReset = cmd.base()
+			}
 			c.pendingCmds = append(c.pendingCmds[:i], c.pendingCmds[i+1:]...)
 			return cmd
 		}
@@ -1119,6 +1129,9 @@ func (c *Client) completeCommand(cmd command, err error) {
 
 	// Start the inactivity interval after state transitions have completed.
 	c.mutex.Lock()
+	if c.completingSessionReset == cmd.base() {
+		c.completingSessionReset = nil
+	}
 	c.armAutoIdleLocked()
 	c.mutex.Unlock()
 
