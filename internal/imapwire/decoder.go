@@ -315,6 +315,25 @@ func (dec *Decoder) ExpectCRLF() bool {
 	return dec.Expect(dec.CRLF(), "CRLF")
 }
 
+// expectLiteralCRLF reads the line ending after a literal's closing '}'.
+//
+// On the client side it uses ExpectCRLF, preserving the trailing-space leniency
+// for non-conformant server responses (emersion/go-imap#540). On the server
+// side a literal announcement requires CR LF (or a lone LF) directly after '}'
+// (RFC 9051 §9: literal = "{" number64 ["+"] "}" CRLF *CHAR8; RFC 7888 §3:
+// "immediately preceding the CRLF").
+func (dec *Decoder) expectLiteralCRLF() bool {
+	if dec.side != ConnSideServer {
+		return dec.ExpectCRLF()
+	}
+	dec.acceptByte('\r')
+	if !dec.acceptByte('\n') {
+		return dec.Expect(false, "CRLF")
+	}
+	dec.crlf = true
+	return true
+}
+
 func (dec *Decoder) Func(ptr *string, valid func(ch byte) bool) bool {
 	var sb strings.Builder
 	for {
@@ -471,7 +490,8 @@ func (dec *Decoder) Desynchronized() bool {
 }
 
 // endsWithNonSyncLiteral reports whether text ends with a non-synchronizing
-// literal announcement such as "{42+}".
+// literal announcement ("{" 1*DIGIT "+}" immediately preceding the CRLF,
+// RFC 7888 §3), including counts that overflow 63 bits.
 func endsWithNonSyncLiteral(text string) bool {
 	if !strings.HasSuffix(text, "+}") {
 		return false
@@ -480,8 +500,16 @@ func endsWithNonSyncLiteral(text string) bool {
 	if start < 0 {
 		return false
 	}
-	_, err := strconv.ParseInt(text[start+1:len(text)-2], 10, 64)
-	return err == nil
+	digits := text[start+1 : len(text)-2]
+	if len(digits) == 0 {
+		return false
+	}
+	for i := 0; i < len(digits); i++ {
+		if digits[i] < '0' || digits[i] > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func (dec *Decoder) DiscardValue() bool {
@@ -1055,14 +1083,13 @@ func (dec *Decoder) LiteralReader() (lit *LiteralReader, nonSync, ok bool) {
 		return nil, false, false
 	}
 	// Defer a numeric overflow until after the complete header is validated.
-	// A valid synchronizing announcement has no payload before continuation,
-	// even when its size cannot be represented, and can still be answered BAD.
+	// A line only announces a non-synchronizing literal when "{" 1*DIGIT "+}"
+	// immediately precedes the CRLF (RFC 7888 §3). Anything that fails before
+	// then does not announce a literal on this token; DiscardLine still checks
+	// the unread remainder of the line in case a later "{N+}" ends it.
 	v, numberOK, numberErr := dec.number(63)
 	if !numberOK && numberErr == nil {
 		dec.Expect(false, "number64")
-		if dec.side == ConnSideServer {
-			dec.MarkDesynchronized()
-		}
 		return nil, false, false
 	}
 	// Refuse obviously hostile sizes. The IMAP grammar permits arbitrary
@@ -1073,14 +1100,7 @@ func (dec *Decoder) LiteralReader() (lit *LiteralReader, nonSync, ok bool) {
 	if dec.side == ConnSideServer {
 		nonSync = dec.acceptByte('+')
 	}
-	// Once a literal prefix has been consumed, malformed framing cannot be
-	// recovered by discarding only the remaining header suffix. Payload may
-	// already follow it, so the server must stop instead of guessing a new
-	// command boundary.
-	if !dec.ExpectSpecial('}') || !dec.ExpectCRLF() {
-		if dec.side == ConnSideServer {
-			dec.MarkDesynchronized()
-		}
+	if !dec.ExpectSpecial('}') || !dec.expectLiteralCRLF() {
 		return nil, false, false
 	}
 	if numberErr != nil {
