@@ -19,12 +19,18 @@ func (c *Conn) handleAuthenticate(tag string, dec *imapwire.Decoder) error {
 	}
 	mech = imapwire.ToUpperASCII(mech)
 
+	var initialRespStr string
+	hasInitialResp := dec.SP()
+	if hasInitialResp && !dec.ExpectAtom(&initialRespStr) {
+		return dec.Err()
+	}
+
+	if !dec.ExpectCRLF() {
+		return dec.Err()
+	}
+
 	var initialResp []byte
-	if dec.SP() {
-		var initialRespStr string
-		if !dec.ExpectText(&initialRespStr) {
-			return dec.Err()
-		}
+	if hasInitialResp {
 		if initialRespStr == "=" {
 			// A single pad character is a zero-length initial response
 			// (RFC 9051 §6.2.2), and is valid only here. go-sasl takes nil
@@ -37,10 +43,6 @@ func (c *Conn) handleAuthenticate(tag string, dec *imapwire.Decoder) error {
 				return err
 			}
 		}
-	}
-
-	if !dec.ExpectCRLF() {
-		return dec.Err()
 	}
 
 	if err := c.checkState(imap.ConnStateNotAuthenticated); err != nil {
