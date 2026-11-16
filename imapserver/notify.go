@@ -185,6 +185,13 @@ func (c *Conn) handleNotify(tag string, dec *imapwire.Decoder) error {
 	if err := session.SetNotify(c.ctx, options, w); err != nil {
 		var imapErr *imap.Error
 		if !wasCondStore && errors.As(err, &imapErr) && (imapErr.Type == imap.StatusResponseTypeBad || imapErr.Type == imap.StatusResponseTypeBye) {
+			if imapErr.Type == imap.StatusResponseTypeBye {
+				// SetNotify may have already emitted MODSEQ updates before
+				// ending the session. Flush their safe watermark while the
+				// provisional awareness is still visible; the pump is stopped.
+				// Preserve the original BYE even if this best-effort write fails.
+				_ = c.flushClosingCondStore()
+			}
 			c.rollbackCondStore()
 		}
 		// RFC 5465 section 3.1: the effect of a successful NOTIFY command
