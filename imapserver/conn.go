@@ -1217,10 +1217,6 @@ func writeStatusResp(enc *imapwire.Encoder, tag string, statusResp *imap.StatusR
 	return enc.CRLF()
 }
 
-func writeCapabilityOK(enc *imapwire.Encoder, tag string, caps []imap.Cap, text string) error {
-	return writeCapabilityStatus(enc, tag, imap.StatusResponseTypeOK, caps, text)
-}
-
 func writeCapabilityStatus(enc *imapwire.Encoder, tag string, typ imap.StatusResponseType, caps []imap.Cap, text string) error {
 	if tag == "" {
 		tag = "*"
