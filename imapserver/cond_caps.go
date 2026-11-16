@@ -123,11 +123,18 @@ func (c *Conn) CondStoreEnabled() bool {
 // The response follows the command's own responses and its post-command poll
 // (RFC 7162 does not place it within the command), so the session can report
 // every change those delivered.
-func (c *Conn) finishCondStore(enc *imapwire.Encoder, wasCondStore, wasSelected bool) error {
+func (c *Conn) finishCondStore(enc *imapwire.Encoder, resp *imap.StatusResponse, wasCondStore, wasSelected bool) error {
 	// A mark left pending belongs to a command rejected before validation.
-	// Valid commands already committed awareness, independently of their result.
+	// A BAD response rejects the command as a protocol error even if reached
+	// after commitCondStore (e.g. from a backend Session method).
 	c.clearPendingCondStore()
-	firstEnabling := !wasCondStore && wasSelected
+	if !wasCondStore && resp.Type == imap.StatusResponseTypeBad {
+		c.mutex.Lock()
+		c.condStore = false
+		c.mutex.Unlock()
+		return nil
+	}
+	firstEnabling := resp.Type != imap.StatusResponseTypeBad && !wasCondStore && wasSelected
 	fetchModSeq := c.fetchModSeq.Load()
 	if !firstEnabling && fetchModSeq == 0 {
 		return nil
