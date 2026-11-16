@@ -165,6 +165,9 @@ func (c *Conn) handleESearch(tag string, dec *imapwire.Decoder) (err error) {
 		if multiSearchDataIsEmpty(data, &options) && !(options.ReturnAll && data.All != nil && data.All.Dynamic()) {
 			continue
 		}
+		if data.Mailbox == "" {
+			return fmt.Errorf("imapserver: backend did not populate Mailbox in MultiSearch SearchData")
+		}
 		if err := checkSearchData(data, &options); err != nil {
 			return err
 		}
