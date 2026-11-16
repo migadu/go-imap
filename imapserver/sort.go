@@ -33,6 +33,19 @@ func (c *Conn) handleSort(tag string, dec *imapwire.Decoder, numKind NumKind) er
 		extended = true
 	}
 
+	checkSortBad := func() error {
+		if argErr != nil {
+			return argErr
+		}
+		if c.checkState(imap.ConnStateSelected) != nil {
+			return nil
+		}
+		if extended && !c.supportsESort() {
+			return newClientBugError("SORT RETURN requires ESORT")
+		}
+		return nil
+	}
+
 	// Parse sort criteria list: (REVERSE DATE CC FROM)
 	// sort-criteria = "(" sort-criterion *(SP sort-criterion) ")" (RFC 5256 §5)
 	var sortCriteria []imap.SortCriterion
@@ -86,7 +99,7 @@ func (c *Conn) handleSort(tag string, dec *imapwire.Decoder, numKind NumKind) er
 		sortCriteria = append(sortCriteria, criterion)
 		return nil
 	}); err != nil {
-		return preferBadError(argErr, fmt.Errorf("in sort-criteria: %w", err))
+		return preferBadError(checkSortBad(), fmt.Errorf("in sort-criteria: %w", err))
 	}
 
 	if !dec.ExpectSP() {
@@ -96,7 +109,7 @@ func (c *Conn) handleSort(tag string, dec *imapwire.Decoder, numKind NumKind) er
 	// Parse charset
 	var charset string
 	if !dec.ExpectAString(&charset) {
-		return preferBadError(argErr, dec.Err())
+		return preferBadError(checkSortBad(), dec.Err())
 	}
 	badCharset := !searchCharsetSupported(charset)
 
@@ -108,7 +121,7 @@ func (c *Conn) handleSort(tag string, dec *imapwire.Decoder, numKind NumKind) er
 	var searchCriteria imap.SearchCriteria
 	for {
 		if err := readSearchKey(c, &searchCriteria, dec); err != nil {
-			return preferBadError(argErr, fmt.Errorf("in search-key: %w", err))
+			return preferBadError(checkSortBad(), fmt.Errorf("in search-key: %w", err))
 		}
 
 		if !dec.SP() {

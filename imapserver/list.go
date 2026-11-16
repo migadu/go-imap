@@ -249,8 +249,9 @@ func lsubAttrs(data *imap.ListData) []imap.MailboxAttr {
 }
 
 type listCommandSyntax struct {
-	extended    bool
-	patternList bool
+	extended        bool
+	patternList     bool
+	optionsComplete bool
 }
 
 // checkCaps verifies that the connection advertises every capability required
@@ -271,9 +272,10 @@ func (syntax listCommandSyntax) checkCaps(options *imap.ListOptions, caps imap.C
 		return newClientBugError("LIST-METADATA is not supported")
 	}
 
+	anyStandaloneCap := caps.Has(imap.CapSpecialUse) || caps.Has(imap.CapListStatus) || caps.Has(imap.CapListMetadata)
 	genericExtended := syntax.patternList || options.SelectSubscribed || options.SelectRemote ||
 		options.SelectRecursiveMatch || options.ReturnSubscribed || options.ReturnChildren ||
-		(syntax.extended && !specialUse && !status && !metadata)
+		(syntax.extended && (!anyStandaloneCap || (syntax.optionsComplete && !specialUse && !status && !metadata)))
 	if genericExtended && !caps.Has(imap.CapListExtended) {
 		return newClientBugError("LIST-EXTENDED is not supported")
 	}
@@ -285,15 +287,17 @@ func (syntax listCommandSyntax) checkCaps(options *imap.ListOptions, caps imap.C
 func readListCmd(c *Conn, dec *imapwire.Decoder) (ref string, patterns []string, options *imap.ListOptions, syntax listCommandSyntax, err error) {
 	options = &imap.ListOptions{}
 	var (
-		optErr        error
-		hasSelectOpts bool
-		hasPatterns   bool
-		hasReturnOpts bool
-		allMetadata   bool
+		optErr          error
+		hasSelectOpts   bool
+		hasPatterns     bool
+		hasReturnOpts   bool
+		optionsComplete bool
+		allMetadata     bool
 	)
 	defer func() {
 		syntax.extended = hasSelectOpts || hasPatterns || hasReturnOpts
 		syntax.patternList = hasPatterns
+		syntax.optionsComplete = optionsComplete
 		err = preferBadError(optErr, err)
 	}()
 
@@ -375,6 +379,7 @@ func readListCmd(c *Conn, dec *imapwire.Decoder) (ref string, patterns []string,
 			return "", nil, options, syntax, fmt.Errorf("in list-return-opts: %w", err)
 		}
 	}
+	optionsComplete = true
 
 	if !dec.ExpectCRLF() {
 		return "", nil, options, syntax, dec.Err()
