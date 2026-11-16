@@ -118,7 +118,7 @@ func (c *Conn) handleAuthenticate(tag string, dec *imapwire.Decoder) error {
 	enc := newResponseEncoder(c)
 	defer enc.end()
 	enc.tagged = tag != ""
-	return writeCapabilityOK(enc.Encoder, tag, caps, text)
+	return writeCapabilityStatus(enc.Encoder, tag, imap.StatusResponseTypeOK, caps, text)
 }
 
 // readSASLResponse reads the client's response to a continuation request,
