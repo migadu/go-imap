@@ -486,15 +486,15 @@ func (dec *Decoder) DiscardLine() {
 
 	var text string
 	dec.Text(&text)
-	if !dec.readFailed {
-		dec.CRLF()
-	}
+	// Text stops at a bare CR too. Only a complete line ending makes it safe
+	// to treat the following input as another command.
+	lineEnded := !dec.readFailed && dec.CRLF()
 
 	// A line ending in a non-synchronizing literal announcement that the parser
 	// never reached: its octets follow, but their count was never validated by
 	// this decoder, so skipping them would be a guess. Refuse to resynchronise.
 	// Likewise when the end of the line was never reached.
-	if dec.side == ConnSideServer && (dec.readFailed || endsWithNonSyncLiteral(text)) {
+	if dec.side == ConnSideServer && (!lineEnded || endsWithNonSyncLiteral(text)) {
 		dec.desynced = true
 	}
 }
