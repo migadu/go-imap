@@ -169,12 +169,12 @@ func TestEnableStopsAtPendingAuthBarriers(t *testing.T) {
 				},
 			},
 		}, func(br *bufio.Reader, conn net.Conn) error {
+			defer conn.Close()
 			logoutTag, err := readSelectIsolation307Command(br)
 			if err != nil {
 				return err
 			}
-			enableTag, err := readSelectIsolation307Command(br)
-			if err != nil {
+			if _, err := readSelectIsolation307Command(br); err != nil {
 				return err
 			}
 
@@ -182,8 +182,7 @@ func TestEnableStopsAtPendingAuthBarriers(t *testing.T) {
 				"* ENABLED UTF8=ACCEPT\r\n"+
 					"* LIST () \"/\" \"caf&AOk-\"\r\n"+
 					"* BYE logging out\r\n"+
-					"%s OK logout\r\n"+
-					"%s OK completed\r\n", logoutTag, enableTag); err != nil {
+					"%s OK logout\r\n", logoutTag); err != nil {
 				return err
 			}
 			return nil
@@ -196,8 +195,8 @@ func TestEnableStopsAtPendingAuthBarriers(t *testing.T) {
 			t.Fatal(err)
 		}
 		data, err := enable.Wait()
-		if err != nil {
-			t.Fatal(err)
+		if err == nil {
+			t.Fatal("post-LOGOUT Enable succeeded after the server closed the connection")
 		}
 		c.Close()
 		if err := <-done; err != nil {
