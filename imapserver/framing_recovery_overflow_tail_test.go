@@ -63,3 +63,29 @@ func TestWireContinuationLongLiteralSuffixClosesWithBye(t *testing.T) {
 		}
 	}
 }
+
+func TestWireIdlePartialEOFDoesNotCompleteCommand(t *testing.T) {
+	for _, input := range []string{"NOTDONE", "DONE", "DONE\r\n"} {
+		t.Run(fmt.Sprintf("input=%q", input), func(t *testing.T) {
+			w := dialFramingIdleServer(t, nil)
+			_ = w.conn.SetDeadline(time.Now().Add(3 * time.Second))
+			fmt.Fprint(w.conn, "a2 IDLE\r\n")
+			if got := w.line(); !strings.HasPrefix(got, "+") {
+				t.Fatalf("continuation = %q", got)
+			}
+			if _, err := io.WriteString(w.conn, input); err != nil {
+				t.Fatal(err)
+			}
+			_ = w.conn.(*net.TCPConn).CloseWrite()
+			raw, err := io.ReadAll(w.rd)
+			if err != nil {
+				t.Fatalf("read: %v (output %q)", err, raw)
+			}
+			completed := strings.Contains(string(raw), "a2 OK ")
+			wantComplete := input == "DONE\r\n"
+			if completed != wantComplete {
+				t.Fatalf("tagged OK = %v, want %v after input %q:\n%s", completed, wantComplete, input, raw)
+			}
+		})
+	}
+}
