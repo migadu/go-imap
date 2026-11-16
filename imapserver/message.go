@@ -314,7 +314,9 @@ func writeBinarySection(w io.Writer, r io.Reader, part []int, lenient bool) erro
 	// RFC 2045 §6.4 restricts to the identity encodings.
 	if !strings.HasPrefix(mediaType, "multipart/") {
 		mech := cteMechanism(header.Get("Content-Transfer-Encoding"))
-		if !isASCIIToken(mech) {
+		// Balanced comments have already been removed. Residual parentheses
+		// are not mechanism tokens, even if a decoder can recover from them.
+		if !isASCIIToken(mech) || strings.ContainsAny(mech, "()") {
 			if !lenient {
 				return ErrUnknownCTE
 			}

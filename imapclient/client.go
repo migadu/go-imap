@@ -1895,7 +1895,10 @@ func (c *Client) handleVanished() error {
 		if !c.dec.ExpectAtom(&tag) || !c.dec.ExpectSpecial(')') {
 			return c.dec.Err()
 		}
-		data.Earlier = imapwire.EqualFoldASCII(tag, "EARLIER")
+		if !imapwire.EqualFoldASCII(tag, "EARLIER") {
+			return fmt.Errorf("in VANISHED: expected EARLIER modifier, got %q", tag)
+		}
+		data.Earlier = true
 		// A SP separates the "(EARLIER)" group from the UID set. The SP after
 		// the VANISHED atom itself was already consumed by the response
 		// dispatcher, so only expect this one when the paren group is present.
