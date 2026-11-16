@@ -378,12 +378,12 @@ func TestPR254_CondStoreWithoutQResyncNoClosedAndPreClosedUnilateralUpdates(t *t
 					"%s OK [READ-WRITE] selected\r\n", tag2, tag3)
 		}()
 
-		var unilateralFetches atomic.Int32
+		fetchCh := make(chan struct{}, 2)
 		c := imapclient.New(cConn, &imapclient.Options{
 			ResponseTimeout: 2 * time.Second,
 			UnilateralDataHandler: &imapclient.UnilateralDataHandler{
 				Fetch: func(*imapclient.FetchMessageData) {
-					unilateralFetches.Add(1)
+					fetchCh <- struct{}{}
 				},
 			},
 		})
@@ -406,8 +406,10 @@ func TestPR254_CondStoreWithoutQResyncNoClosedAndPreClosedUnilateralUpdates(t *t
 		if len(data.Modified) != 0 {
 			t.Errorf("Select(Other).Modified = %+v, want empty (leaked from INBOX on CONDSTORE-only server without CLOSED)", data.Modified)
 		}
-		if got := unilateralFetches.Load(); got != 1 {
-			t.Errorf("UnilateralDataHandler.Fetch count = %d, want 1 for INBOX update during NOOP", got)
+		select {
+		case <-fetchCh:
+		case <-time.After(500 * time.Millisecond):
+			t.Errorf("UnilateralDataHandler.Fetch was not called for INBOX update during NOOP")
 		}
 	})
 

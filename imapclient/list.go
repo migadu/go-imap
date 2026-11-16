@@ -71,6 +71,7 @@ func (c *Client) List(ref, pattern string, options *imap.ListOptions) *ListComma
 		pattern:        pattern,
 		returnStatus:   options != nil && options.ReturnStatus != nil,
 		returnMetadata: options != nil && options.ReturnMetadata != nil,
+		highestModSeq:  options != nil && options.ReturnStatus != nil && options.ReturnStatus.HighestModSeq,
 	}
 	enc := c.beginCommand("LIST", cmd)
 	if selectOpts := getSelectOpts(options); len(selectOpts) > 0 {
@@ -222,6 +223,7 @@ type ListCommand struct {
 	lsub           bool // an LSUB command, answered with LSUB responses
 	returnStatus   bool
 	returnMetadata bool
+	highestModSeq  bool
 	pendingData    *imap.ListData
 }
 

@@ -41,7 +41,10 @@ func (c *Client) Status(mailbox string, options *imap.StatusOptions) *StatusComm
 		panic("StatusOptions.NumRecent is not supported in imapclient")
 	}
 
-	cmd := &StatusCommand{mailbox: mailbox}
+	cmd := &StatusCommand{
+		mailbox:       mailbox,
+		highestModSeq: options.HighestModSeq,
+	}
 	enc := c.beginCommand("STATUS", cmd)
 	enc.SP().Mailbox(mailbox).SP()
 	items := statusItems(options)
@@ -98,9 +101,10 @@ func (c *Client) handleStatus() error {
 // StatusCommand is a STATUS command.
 type StatusCommand struct {
 	commandBase
-	mailbox  string
-	received bool // a STATUS response has been attributed to this command
-	data     imap.StatusData
+	mailbox       string
+	highestModSeq bool
+	received      bool // a STATUS response has been attributed to this command
+	data          imap.StatusData
 }
 
 // mergeStatusData copies the items src reports into dst, keeping items dst

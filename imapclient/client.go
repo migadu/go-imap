@@ -840,15 +840,53 @@ func usesSelectedMailbox(name string) bool {
 	}
 }
 
+func (c *Client) expectsClosedOnSwitchLocked(sel *SelectCommand) bool {
+	if sel.qresync || c.enabled.Has(imap.CapQResync) || c.enabled.Has(imap.CapIMAP4rev2) {
+		return true
+	}
+	return len(c.caps) > 0 && !c.caps.Has(imap.CapIMAP4rev1) && c.caps.Has(imap.CapIMAP4rev2)
+}
+
+func (c *Client) cmdUsesSelectedMailboxLocked(cmd command) bool {
+	if usesSelectedMailbox(cmd.base().name) {
+		return true
+	}
+	selectedName := ""
+	if c.mailbox != nil {
+		selectedName = canonicalMailbox(c.mailbox.Name)
+	}
+	switch cmd := cmd.(type) {
+	case *MultiSearchCommand:
+		return cmd.usesSelected
+	case *AppendCommand:
+		return selectedName != "" && cmd.mailbox == selectedName
+	case *AppendCatenateCommand:
+		return selectedName != "" && cmd.mailbox == selectedName
+	case *StatusCommand:
+		return cmd.highestModSeq || (selectedName != "" && canonicalMailbox(cmd.mailbox) == selectedName)
+	case *ListCommand:
+		return cmd.highestModSeq
+	case *mailboxTargetCommand:
+		return selectedName != "" && cmd.mailbox == selectedName
+	default:
+		return false
+	}
+}
+
 func (c *Client) activeSelectCmd() *SelectCommand {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 
 	for _, cmd := range c.pendingCmds {
 		if sel, ok := cmd.(*SelectCommand); ok {
+			if c.state == imap.ConnStateSelected && c.mailbox != nil &&
+				canonicalMailbox(c.mailbox.Name) != canonicalMailbox(sel.mailbox) &&
+				c.expectsClosedOnSwitchLocked(sel) {
+				return nil
+			}
 			return sel
 		}
-		if c.state == imap.ConnStateSelected && usesSelectedMailbox(cmd.base().name) {
+		if c.state == imap.ConnStateSelected && c.cmdUsesSelectedMailboxLocked(cmd) {
 			return nil
 		}
 		switch cmd.(type) {
@@ -1766,24 +1804,29 @@ func (c *Client) Login(username, password string) *Command {
 	return &cmd.Command
 }
 
+type mailboxTargetCommand struct {
+	Command
+	mailbox string
+}
+
 // Delete sends a DELETE command.
 func (c *Client) Delete(mailbox string) *Command {
-	cmd := &Command{}
+	cmd := &mailboxTargetCommand{mailbox: canonicalMailbox(mailbox)}
 	enc := c.beginCommand("DELETE", cmd)
 	enc.SP().Mailbox(mailbox)
 	enc.end()
-	return cmd
+	return &cmd.Command
 }
 
 // Rename sends a RENAME command.
 //
 // A nil options pointer is equivalent to a zero options value.
 func (c *Client) Rename(mailbox, newName string, options *imap.RenameOptions) *Command {
-	cmd := &Command{}
+	cmd := &mailboxTargetCommand{mailbox: canonicalMailbox(mailbox)}
 	enc := c.beginCommand("RENAME", cmd)
 	enc.SP().Mailbox(mailbox).SP().Mailbox(newName)
 	enc.end()
-	return cmd
+	return &cmd.Command
 }
 
 // Subscribe sends a SUBSCRIBE command.
