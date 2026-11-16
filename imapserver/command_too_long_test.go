@@ -32,7 +32,7 @@ func TestCommandTooLongIsBad(t *testing.T) {
 	// The rest of the line was not read, so the connection ends.
 	var rest bytes.Buffer
 	io.Copy(&rest, rc.br)
-	if !strings.Contains(rest.String(), "* BYE ") {
-		t.Errorf("after the oversized command the server sent %q, want BYE", rest.String())
+	if strings.Count(rest.String(), "* BYE ") != 1 {
+		t.Errorf("after the oversized command the server sent %q, want exactly one BYE", rest.String())
 	}
 }

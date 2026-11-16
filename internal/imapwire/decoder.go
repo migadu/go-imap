@@ -96,7 +96,14 @@ type Decoder struct {
 	// desynced records that the command stream could not be resynchronised:
 	// octets of the current command remain in the stream and cannot safely be
 	// skipped. The connection has to be torn down; see Desynchronized.
-	desynced  bool
+	desynced bool
+
+	// readFailed records that a read from the underlying reader failed (a
+	// timeout, a closed connection) while decoding. The line being read was
+	// cut short, so its end -- and whether a non-synchronizing literal
+	// announcement sits there -- is unknown; see DiscardLine.
+	readFailed bool
+
 	crlf      bool
 	listDepth int
 	readBytes int64
@@ -158,6 +165,7 @@ func (dec *Decoder) readByte() (byte, bool) {
 	}
 	b, err := dec.r.ReadByte()
 	if err != nil {
+		dec.readFailed = true
 		if err == io.EOF {
 			err = io.ErrUnexpectedEOF
 		}
@@ -226,6 +234,7 @@ func (dec *Decoder) NextBytesFold(s string) bool {
 	for i := 1; i <= len(s); i++ {
 		b, err := dec.r.Peek(i)
 		if err != nil {
+			dec.readFailed = true
 			if err == io.EOF {
 				err = io.ErrUnexpectedEOF
 			}
@@ -313,6 +322,25 @@ func (dec *Decoder) CRLF() bool {
 
 func (dec *Decoder) ExpectCRLF() bool {
 	return dec.Expect(dec.CRLF(), "CRLF")
+}
+
+// expectLiteralCRLF reads the line ending after a literal's closing '}'.
+//
+// On the client side it uses ExpectCRLF, preserving the trailing-space leniency
+// for non-conformant server responses (emersion/go-imap#540). On the server
+// side a literal announcement requires CR LF (or a lone LF) directly after '}'
+// (RFC 9051 §9: literal = "{" number64 ["+"] "}" CRLF *CHAR8; RFC 7888 §3:
+// "immediately preceding the CRLF").
+func (dec *Decoder) expectLiteralCRLF() bool {
+	if dec.side != ConnSideServer {
+		return dec.ExpectCRLF()
+	}
+	dec.acceptByte('\r')
+	if !dec.acceptByte('\n') {
+		return dec.Expect(false, "CRLF")
+	}
+	dec.crlf = true
+	return true
 }
 
 func (dec *Decoder) Func(ptr *string, valid func(ch byte) bool) bool {
@@ -419,8 +447,19 @@ const MaxDiscardLiteralSize = 64 << 10
 // client-supplied data. When they cannot be skipped — too many to read, or a
 // literal whose announcement was never parsed — the stream is marked
 // desynchronised instead of guessing; see Desynchronized.
+//
+// So is a server-side stream on which a read failed before the end of the
+// line, whether while decoding the command or while skipping here. The line
+// was cut short: what the client sends next continues it, and if it ends in a
+// non-synchronizing literal announcement (RFC 7888 §3) that continuation is
+// followed by client data. A read deadline that is renewed for the next
+// command must not turn either into commands.
 func (dec *Decoder) DiscardLine() {
 	if dec.desynced {
+		return
+	}
+	if dec.side == ConnSideServer && dec.readFailed {
+		dec.desynced = true
 		return
 	}
 	dec.discarding = true
@@ -447,12 +486,15 @@ func (dec *Decoder) DiscardLine() {
 
 	var text string
 	dec.Text(&text)
-	dec.CRLF()
+	// Text stops at a bare CR too. Only a complete line ending makes it safe
+	// to treat the following input as another command.
+	lineEnded := !dec.readFailed && dec.CRLF()
 
 	// A line ending in a non-synchronizing literal announcement that the parser
 	// never reached: its octets follow, but their count was never validated by
 	// this decoder, so skipping them would be a guess. Refuse to resynchronise.
-	if dec.side == ConnSideServer && endsWithNonSyncLiteral(text) {
+	// Likewise when the end of the line was never reached.
+	if dec.side == ConnSideServer && (!lineEnded || endsWithNonSyncLiteral(text)) {
 		dec.desynced = true
 	}
 }
@@ -471,7 +513,8 @@ func (dec *Decoder) Desynchronized() bool {
 }
 
 // endsWithNonSyncLiteral reports whether text ends with a non-synchronizing
-// literal announcement such as "{42+}".
+// literal announcement ("{" 1*DIGIT "+}" immediately preceding the CRLF,
+// RFC 7888 §3), including counts that overflow 63 bits.
 func endsWithNonSyncLiteral(text string) bool {
 	if !strings.HasSuffix(text, "+}") {
 		return false
@@ -480,8 +523,16 @@ func endsWithNonSyncLiteral(text string) bool {
 	if start < 0 {
 		return false
 	}
-	_, err := strconv.ParseInt(text[start+1:len(text)-2], 10, 64)
-	return err == nil
+	digits := text[start+1 : len(text)-2]
+	if len(digits) == 0 {
+		return false
+	}
+	for i := 0; i < len(digits); i++ {
+		if digits[i] < '0' || digits[i] > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func (dec *Decoder) DiscardValue() bool {
@@ -1055,14 +1106,14 @@ func (dec *Decoder) LiteralReader() (lit *LiteralReader, nonSync, ok bool) {
 		return nil, false, false
 	}
 	// Defer a numeric overflow until after the complete header is validated.
-	// A valid synchronizing announcement has no payload before continuation,
-	// even when its size cannot be represented, and can still be answered BAD.
+	// A line only announces a non-synchronizing literal when "{" 1*DIGIT "+}"
+	// immediately precedes the CRLF (RFC 7888 §3). Anything that fails before
+	// then does not announce a literal on this token; DiscardLine still checks
+	// the unread remainder of the line in case a later "{N+}" ends it, and
+	// gives up on a line that a failed read cut short inside the announcement.
 	v, numberOK, numberErr := dec.number(63)
 	if !numberOK && numberErr == nil {
 		dec.Expect(false, "number64")
-		if dec.side == ConnSideServer {
-			dec.MarkDesynchronized()
-		}
 		return nil, false, false
 	}
 	// Refuse obviously hostile sizes. The IMAP grammar permits arbitrary
@@ -1073,14 +1124,7 @@ func (dec *Decoder) LiteralReader() (lit *LiteralReader, nonSync, ok bool) {
 	if dec.side == ConnSideServer {
 		nonSync = dec.acceptByte('+')
 	}
-	// Once a literal prefix has been consumed, malformed framing cannot be
-	// recovered by discarding only the remaining header suffix. Payload may
-	// already follow it, so the server must stop instead of guessing a new
-	// command boundary.
-	if !dec.ExpectSpecial('}') || !dec.ExpectCRLF() {
-		if dec.side == ConnSideServer {
-			dec.MarkDesynchronized()
-		}
+	if !dec.ExpectSpecial('}') || !dec.expectLiteralCRLF() {
 		return nil, false, false
 	}
 	if numberErr != nil {
