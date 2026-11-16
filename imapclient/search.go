@@ -377,7 +377,7 @@ func writeSearchKey(enc *imapwire.Encoder, criteria *imap.SearchCriteria, condst
 	}
 
 	for _, kv := range criteria.Header {
-		switch k := strings.ToUpper(kv.Key); {
+		switch k := imapwire.ToUpperASCII(kv.Key); {
 		case !kv.IsHeader && (k == "BCC" || k == "CC" || k == "FROM" || k == "SUBJECT" || k == "TO"):
 			encodeItem().Atom(k)
 		default:
