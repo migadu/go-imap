@@ -11,6 +11,7 @@ import (
 	"net"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -49,9 +50,8 @@ func (ln glitchAfterPrefixListener) Accept() (net.Conn, error) {
 func TestIdleMidReadNonEOFErrorClosesWithoutServerBugOrSmuggling(t *testing.T) {
 	t.Run("mid-IDLE non-EOF read error closes without SERVERBUG or smuggling", func(t *testing.T) {
 		var armed atomic.Bool
-		w := dialFramingIdleServer(t, func(ln net.Listener) net.Listener {
-			return glitchAfterPrefixListener{Listener: ln, armed: &armed}
-		})
+		var creates atomic.Int32
+		w, sessionClosed := dialIdleMidReadSpyServer(t, &armed, &creates)
 		_ = w.conn.SetDeadline(time.Now().Add(3 * time.Second))
 
 		fmt.Fprint(w.conn, "a2 IDLE\r\n")
@@ -68,8 +68,18 @@ func TestIdleMidReadNonEOFErrorClosesWithoutServerBugOrSmuggling(t *testing.T) {
 		_ = w.conn.(*net.TCPConn).CloseWrite()
 
 		raw, err := io.ReadAll(w.rd)
-		if err != nil {
+		// A late write after the server closes can produce TCP RST instead
+		// of EOF. Verify the backend too, since RST can discard wire output.
+		if err != nil && !errors.Is(err, syscall.ECONNRESET) {
 			t.Fatalf("read: %v (output %q)", err, raw)
+		}
+		select {
+		case <-sessionClosed:
+		case <-time.After(time.Second):
+			t.Fatal("backend session did not end after read failure")
+		}
+		if got := creates.Load(); got != 0 {
+			t.Fatalf("smuggled CREATE reached backend %d times", got)
 		}
 		out := string(raw)
 		if strings.Contains(out, "SERVERBUG") {
@@ -152,4 +162,61 @@ func TestIdleMidReadNonEOFErrorClosesWithoutServerBugOrSmuggling(t *testing.T) {
 			t.Fatalf("truncated TLS record mid-IDLE answered with tagged SERVERBUG:\n%s", rest)
 		}
 	})
+}
+
+// Observe backend dispatch directly: a reset can discard unread server output.
+type idleMidReadSpySession struct {
+	imapserver.Session
+	creates *atomic.Int32
+	closed  chan struct{}
+}
+
+func (s *idleMidReadSpySession) Create(ctx context.Context, mailbox string, options *imap.CreateOptions) error {
+	if mailbox == "smuggled-mailbox" {
+		s.creates.Add(1)
+	}
+	return s.Session.Create(ctx, mailbox, options)
+}
+
+func (s *idleMidReadSpySession) Close() error {
+	defer close(s.closed)
+	return s.Session.Close()
+}
+
+func dialIdleMidReadSpyServer(t *testing.T, armed *atomic.Bool, creates *atomic.Int32) (*parseWire, <-chan struct{}) {
+	t.Helper()
+	mem := imapmemserver.New()
+	closed := make(chan struct{})
+	u := imapmemserver.NewUser("user1", "pass1")
+	if err := u.Create(context.Background(), "INBOX", nil); err != nil {
+		t.Fatal(err)
+	}
+	mem.AddUser(u)
+	srv := imapserver.New(&imapserver.Options{
+		NewSession: func(*imapserver.Conn) (imapserver.Session, *imapserver.GreetingData, error) {
+			return &idleMidReadSpySession{Session: mem.NewSession(), creates: creates, closed: closed}, nil, nil
+		},
+		InsecureAuth: true,
+		Caps:         imap.CapSet{imap.CapIMAP4rev1: {}, imap.CapIdle: {}},
+		Logger:       log.New(io.Discard, "", 0),
+	})
+	rawLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln := glitchAfterPrefixListener{Listener: rawLn, armed: armed}
+	go srv.Serve(ln)
+	t.Cleanup(func() { ln.Close(); srv.Close() })
+	c, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { c.Close() })
+	w := &parseWire{t: t, conn: c, rd: bufio.NewReader(c)}
+	w.line()
+	fmt.Fprint(c, "a1 LOGIN user1 pass1\r\n")
+	if got := w.until("a1"); !strings.HasPrefix(got, "a1 OK ") {
+		t.Fatalf("LOGIN = %q", got)
+	}
+	return w, closed
 }
