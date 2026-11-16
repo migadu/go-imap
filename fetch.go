@@ -92,16 +92,25 @@ type FetchItemBinarySectionSize struct {
 // In-Reply-To and Message-ID values contain message identifiers without angle
 // brackets.
 type Envelope struct {
-	Date      time.Time
-	Subject   string
-	From      []Address
-	Sender    []Address
-	ReplyTo   []Address
-	To        []Address
-	Cc        []Address
-	Bcc       []Address
-	InReplyTo []string
-	MessageID string
+	// Date is the Date: header field, or the zero time for NIL. The server writes
+	// it in its own zone unless DateUnknownZone is set.
+	Date time.Time
+	// DateUnknownZone indicates that the source date contains no information
+	// about its local time zone (RFC 5322 section 3.3). The server writes Date in
+	// UTC with the zone "-0000" when this is set; otherwise a zero offset,
+	// including time.UTC, is written "+0000". It is ignored when Date is zero.
+	// Persist this field alongside Date to preserve the distinction.
+	// The client does not currently populate this field when decoding ENVELOPE.
+	DateUnknownZone bool
+	Subject         string
+	From            []Address
+	Sender          []Address
+	ReplyTo         []Address
+	To              []Address
+	Cc              []Address
+	Bcc             []Address
+	InReplyTo       []string
+	MessageID       string
 }
 
 // Address represents a sender or recipient of a message.

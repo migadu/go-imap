@@ -409,23 +409,39 @@ type ExtractOptions struct {
 	// go-message's mail.Header.Date is used, which is net/mail.ParseDate: it
 	// reads an obsolete alphabetic zone such as "PDT" in the host's time zone
 	// rather than as RFC 5322 section 4.3 defines it.
+	// This callback does not set imap.Envelope.DateUnknownZone. Use
+	// ParseDateWithZone when the parser can identify an unknown source zone.
 	ParseDate func(value string) (time.Time, error)
+	// ParseDateWithZone parses a Date header field and reports whether its
+	// source time zone is unknown (see imap.Envelope.DateUnknownZone). If set,
+	// it takes precedence over ParseDate. A parse error or zero date gives NIL
+	// with DateUnknownZone false. Neither callback is called for a missing or
+	// empty Date header. If nil, ParseDate or the default parser is used and
+	// DateUnknownZone is false.
+	ParseDateWithZone func(value string) (date time.Time, unknownZone bool, err error)
 }
 
-func (options *ExtractOptions) date(mh mail.Header) time.Time {
-	if options == nil || options.ParseDate == nil {
+func (options *ExtractOptions) date(mh mail.Header) (time.Time, bool) {
+	if options == nil || (options.ParseDate == nil && options.ParseDateWithZone == nil) {
 		date, _ := mh.Date()
-		return date
+		return date, false
 	}
 	v := mh.Get("Date")
 	if v == "" {
-		return time.Time{}
+		return time.Time{}, false
+	}
+	if options.ParseDateWithZone != nil {
+		date, unknownZone, err := options.ParseDateWithZone(v)
+		if err != nil || date.IsZero() {
+			return time.Time{}, false
+		}
+		return date, unknownZone
 	}
 	date, err := options.ParseDate(v)
 	if err != nil {
-		return time.Time{}
+		return time.Time{}, false
 	}
-	return date
+	return date, false
 }
 
 // ExtractEnvelope returns a message envelope from its header.
@@ -438,21 +454,22 @@ func ExtractEnvelope(h textproto.Header) *imap.Envelope {
 // ExtractEnvelopeWithOptions is ExtractEnvelope with options.
 func ExtractEnvelopeWithOptions(h textproto.Header, options *ExtractOptions) *imap.Envelope {
 	mh := mail.Header{Header: gomessage.Header{Header: h}}
-	date := options.date(mh)
+	date, dateUnknownZone := options.date(mh)
 	subject, _ := mh.Subject()
 	inReplyTo, _ := mh.MsgIDList("In-Reply-To")
 	messageID, _ := mh.MessageID()
 	return &imap.Envelope{
-		Date:      date,
-		Subject:   subject,
-		From:      parseAddressList(mh, "From"),
-		Sender:    parseAddressList(mh, "Sender"),
-		ReplyTo:   parseAddressList(mh, "Reply-To"),
-		To:        parseAddressList(mh, "To"),
-		Cc:        parseAddressList(mh, "Cc"),
-		Bcc:       parseAddressList(mh, "Bcc"),
-		InReplyTo: inReplyTo,
-		MessageID: messageID,
+		Date:            date,
+		DateUnknownZone: dateUnknownZone,
+		Subject:         subject,
+		From:            parseAddressList(mh, "From"),
+		Sender:          parseAddressList(mh, "Sender"),
+		ReplyTo:         parseAddressList(mh, "Reply-To"),
+		To:              parseAddressList(mh, "To"),
+		Cc:              parseAddressList(mh, "Cc"),
+		Bcc:             parseAddressList(mh, "Bcc"),
+		InReplyTo:       inReplyTo,
+		MessageID:       messageID,
 	}
 }
 
