@@ -105,7 +105,10 @@ func (g *previewGenerator) walk(entity *gomessage.Entity, depth int, parentMedia
 	if dispErr != nil {
 		disposition, _, _ = strings.Cut(disposition, ";")
 		disposition = imapwire.ToLowerASCII(strings.TrimSpace(disposition))
-	} else if rawDispType, _, _ := strings.Cut(rawDisp, ";"); !isASCIIPreviewToken(rawDispType) {
+	}
+	// A parser may return a normalized disposition alongside a parameter error.
+	// Always check the original token before exposing this part's text.
+	if rawDispType, _, _ := strings.Cut(rawDisp, ";"); !isASCIIPreviewToken(rawDispType) {
 		disposition = ""
 	}
 	// A multipart disposition applies to its entire subtree (RFC 2183

@@ -123,9 +123,10 @@ func filterHeaderFields(header *textproto.Header, names []string, keep bool) err
 
 // mimeHeaderTokenASCII preserves the raw type token instead of allowing
 // mime.ParseMediaType's Unicode lowercasing to turn a lookalike into a known
-// type. Keep the parser's defaults and malformed-header fallback unchanged.
+// type. Keep the parser's defaults and raw malformed-header fallback unchanged;
+// a usable normalized token can also accompany a parameter error.
 func mimeHeaderTokenASCII(raw, parsed string, parseErr error) string {
-	if raw == "" || parseErr != nil {
+	if raw == "" || (parseErr != nil && parsed == raw) {
 		return parsed
 	}
 	token, _, _ := strings.Cut(raw, ";")
