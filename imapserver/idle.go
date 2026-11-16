@@ -166,7 +166,7 @@ func (c *Conn) handleIdle(dec *imapwire.Decoder) error {
 	if !active {
 		return errShutdown
 	}
-	if backendEnded.Load() {
+	if backendEnded.Load() || isByeError(backendErr) {
 		// The backend ended the IDLE with a BYE, so that is the answer and err
 		// (if any) is this handler's own interrupt rather than anything the
 		// client did. Checked before err on purpose: a DONE arriving in the same

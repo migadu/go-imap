@@ -162,8 +162,8 @@ func (c *Conn) handleNotify(tag string, dec *imapwire.Decoder) error {
 	if invalidOptions != nil {
 		return invalidOptions
 	}
-	c.commitCondStore()
 	if overflow {
+		c.commitCondStore()
 		// A resource refusal still executes a valid CONDSTORE-enabling command
 		// (RFC 7162 §3.1), without installing its oversized watch (RFC 5465 §3.1).
 		return &imap.Error{
@@ -173,10 +173,13 @@ func (c *Conn) handleNotify(tag string, dec *imapwire.Decoder) error {
 		}
 	}
 
-	// Stop the current pump before touching the backend watch: NotifyPoll
-	// must not run while SetNotify swaps the state underneath it.
+	// Stop the current pump before touching the backend watch or committing
+	// provisional CONDSTORE state: NotifyPoll must not run while SetNotify
+	// swaps the state underneath it or observe an uncommitted mark if SetNotify
+	// rejects the command with BAD.
 	hadPump := c.notifyPumpRunning()
 	c.stopNotifyPump()
+	c.commitCondStore()
 
 	w := &UpdateWriter{conn: c, allowExpunge: true, notify: true}
 	if err := session.SetNotify(c.ctx, options, w); err != nil {

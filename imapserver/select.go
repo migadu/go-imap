@@ -79,7 +79,14 @@ func (c *Conn) handleSelect(tag string, dec *imapwire.Decoder, readOnly bool) er
 	if err := c.checkState(imap.ConnStateAuthenticated); err != nil {
 		return err
 	}
-	c.commitCondStore()
+	wasCondStore := c.CondStoreEnabled()
+	rollbackOnBad := func(err error) error {
+		var imapErr *imap.Error
+		if !wasCondStore && errors.As(err, &imapErr) && imapErr.Type == imap.StatusResponseTypeBad {
+			c.rollbackCondStore()
+		}
+		return err
+	}
 
 	// The selected mailbox is about to change: no NotifyPoll delivery may be in
 	// flight across the switch, or an update queued for the old mailbox would
@@ -95,8 +102,9 @@ func (c *Conn) handleSelect(tag string, dec *imapwire.Decoder, readOnly bool) er
 		if err := c.flushClosingCondStore(); err != nil {
 			return err
 		}
+		c.commitCondStore()
 		if err := c.session.Unselect(c.ctx); err != nil {
-			return err
+			return rollbackOnBad(err)
 		}
 		c.state = imap.ConnStateAuthenticated
 		c.selectedReadOnly = false
@@ -109,11 +117,13 @@ func (c *Conn) handleSelect(tag string, dec *imapwire.Decoder, readOnly bool) er
 		if err != nil {
 			return err
 		}
+	} else {
+		c.commitCondStore()
 	}
 
 	data, err := c.session.Select(c.ctx, mailbox, &options)
 	if err != nil {
-		return err
+		return rollbackOnBad(err)
 	}
 
 	enc := newResponseEncoder(c)
