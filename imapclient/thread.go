@@ -40,7 +40,7 @@ func (c *Client) UIDThread(options *ThreadOptions) *ThreadCommand {
 }
 
 func (c *Client) handleThread() error {
-	cmd := findPendingCmdByType[*ThreadCommand](c)
+	cmd := findPendingSelectedCmdByType[*ThreadCommand](c)
 	for c.dec.SP() {
 		data, err := readThreadList(c.dec)
 		if err != nil {

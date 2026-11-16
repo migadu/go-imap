@@ -1016,6 +1016,7 @@ func (c *Client) handleFetch(seqNum uint32) (err error) {
 				selectCmd.data.Modified = append(selectCmd.data.Modified, imap.SelectModifiedData{
 					SeqNum: seqNum, UID: uid, Flags: flags, ModSeq: modSeq,
 				})
+				selectCmd.recorded = true
 			}
 			handler := c.options.unilateralDataHandler().Fetch
 			if handler == nil {

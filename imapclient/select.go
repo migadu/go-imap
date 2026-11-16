@@ -217,10 +217,11 @@ func (c *Client) discardSelectUpdates(cmd *SelectCommand) {
 // SelectCommand is a SELECT command.
 type SelectCommand struct {
 	commandBase
-	mailbox string
-	qresync bool
-	data    imap.SelectData
-	updates []selectUpdate
+	mailbox  string
+	qresync  bool
+	recorded bool
+	data     imap.SelectData
+	updates  []selectUpdate
 }
 
 func (cmd *SelectCommand) Wait() (*imap.SelectData, error) {

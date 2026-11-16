@@ -79,7 +79,7 @@ func (c *Client) sort(numKind imapwire.NumKind, options *SortOptions) *SortComma
 }
 
 func (c *Client) handleSort() error {
-	cmd := findPendingCmdByType[*SortCommand](c)
+	cmd := findPendingSelectedCmdByType[*SortCommand](c)
 	for c.dec.SP() {
 		if c.dec.Special('(') {
 			// RFC 7162 §3.1.9: "* SORT 2 3 4 (MODSEQ 917162500)"
@@ -119,7 +119,7 @@ func (c *Client) handleSort() error {
 // readESortData. Servers built from this fork sent ESORT before they were
 // fixed, so it is still accepted.
 func (c *Client) handleESort() error {
-	cmd := findPendingCmdByType[*SortCommand](c)
+	cmd := findPendingSelectedCmdByType[*SortCommand](c)
 	if cmd == nil {
 		// This is an unsolicited ESORT response, parse and discard its parameters
 		for c.dec.SP() {

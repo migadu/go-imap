@@ -98,14 +98,16 @@ func (c *Client) MultiSearch(source *imap.SearchSource, criteria *imap.SearchCri
 		charset = "UTF-8"
 	}
 
+	requiresSelected := source == nil || source.IsZero() || source.Selected
 	cmd := &MultiSearchCommand{
 		// Namespace membership, subscriptions and hierarchy delimiters are
 		// server-defined and not cached here. These scopes may include the
 		// selected mailbox, so keep their updates ahead of a queued SELECT.
-		usesSelected: source == nil || source.IsZero() || source.Selected ||
+		usesSelected: requiresSelected ||
 			source.Inboxes || source.Personal || source.Subscribed ||
 			len(source.Subtree) > 0 || len(source.SubtreeOne) > 0 ||
 			(condStore && searchCriteriaHasModSeq(criteria)),
+		requiresSelected: requiresSelected,
 	}
 	if source != nil {
 		// The caller may reuse source after this method returns. Attribution
@@ -187,7 +189,7 @@ func writeSearchSource(enc *imapwire.Encoder, source *imap.SearchSource) {
 }
 
 func (c *Client) handleSearch() error {
-	cmd := findPendingCmdByType[*SearchCommand](c)
+	cmd := findPendingSelectedCmdByType[*SearchCommand](c)
 	for c.dec.SP() {
 		if c.dec.Special('(') {
 			var name string
@@ -243,16 +245,42 @@ func (c *Client) handleESearch() error {
 	// RFC 4466 section 2.6.2 and RFC 9051 section 7.3.4: without a
 	// correlator the response was not caused by a particular command, even
 	// if only one command is pending. Still parse it to consume the response.
-	var cmd command
+	var (
+		cmd              command
+		blockedSort      *SortCommand
+		crossedSelection bool
+		crossedAuth      bool
+	)
 	if tag != "" {
 		cmd = c.findPendingCmdFunc(func(cmd command) bool {
-			switch cmd.(type) {
-			case *SearchCommand, *MultiSearchCommand, *SortCommand:
-				return cmd.base().tag == tag
+			switch cmd := cmd.(type) {
+			case *SelectCommand, *unselectCommand:
+				crossedSelection = true
+				return false
+			case *unauthenticateCommand:
+				crossedSelection = true
+				crossedAuth = true
+				return false
+			case *SearchCommand:
+				return !crossedSelection && cmd.base().tag == tag
+			case *SortCommand:
+				if cmd.base().tag == tag {
+					if crossedSelection {
+						blockedSort = cmd
+						return false
+					}
+					return true
+				}
+				return false
+			case *MultiSearchCommand:
+				return !crossedAuth && (!cmd.requiresSelected || !crossedSelection) && cmd.base().tag == tag
 			default:
 				return false
 			}
 		})
+	}
+	if blockedSort != nil {
+		return c.readESortData(&SortCommand{numKind: blockedSort.numKind}, spRead)
 	}
 	if sortCmd, ok := cmd.(*SortCommand); ok {
 		// RFC 5267 §3.1: an extended SORT is answered with ESEARCH too. Its ALL
@@ -287,9 +315,10 @@ func (cmd *SearchCommand) Wait() (*imap.SearchData, error) {
 // MultiSearchCommand is a MULTISEARCH command.
 type MultiSearchCommand struct {
 	commandBase
-	usesSelected bool
-	mailboxes    []string
-	data         []*imap.SearchData
+	usesSelected     bool // conservative dependency for selected-mailbox updates
+	requiresSelected bool // source includes or defaults to "selected"
+	mailboxes        []string
+	data             []*imap.SearchData
 }
 
 func searchCriteriaHasModSeq(criteria *imap.SearchCriteria) bool {

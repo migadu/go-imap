@@ -830,6 +830,25 @@ func findPendingCmdByType[T command](c *Client) T {
 	return cmd
 }
 
+func findPendingSelectedCmdByType[T command](c *Client) T {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+
+	for _, cmd := range c.pendingCmds {
+		switch cmd.(type) {
+		case *SelectCommand, *unselectCommand, *unauthenticateCommand:
+			var zero T
+			return zero
+		}
+		if cmd, ok := cmd.(T); ok {
+			return cmd
+		}
+	}
+
+	var cmd T
+	return cmd
+}
+
 func usesSelectedMailbox(name string) bool {
 	switch name {
 	case "NOOP", "CHECK", "IDLE", "CLOSE", "UNSELECT", "UNAUTHENTICATE", "LOGOUT",
@@ -923,7 +942,7 @@ func (c *Client) activeSelectCmd() *SelectCommand {
 		if sel, ok := cmd.(*SelectCommand); ok {
 			if c.state == imap.ConnStateSelected && c.mailbox != nil &&
 				canonicalMailbox(c.mailbox.Name) != canonicalMailbox(sel.mailbox) &&
-				len(sel.updates) == 0 && c.expectsClosedOnSwitchLocked(sel) {
+				len(sel.updates) == 0 && !sel.recorded && c.expectsClosedOnSwitchLocked(sel) {
 				return nil
 			}
 			return sel
@@ -943,6 +962,7 @@ func (c *Client) resetPendingSelectDataLocked() {
 	for _, pending := range c.pendingCmds {
 		if sel, ok := pending.(*SelectCommand); ok {
 			sel.data = imap.SelectData{}
+			sel.recorded = false
 			break
 		}
 	}
@@ -1578,6 +1598,7 @@ func (c *Client) readResponseData(typ string) error {
 				}
 				if cmd := c.activeSelectCmd(); cmd != nil {
 					cmd.data.UIDNext = imap.UID(num)
+					cmd.recorded = true
 				}
 			case "UIDVALIDITY":
 				var uidValidity uint32
@@ -1587,13 +1608,25 @@ func (c *Client) readResponseData(typ string) error {
 				}
 				if cmd := c.activeSelectCmd(); cmd != nil {
 					cmd.data.UIDValidity = uidValidity
+					cmd.recorded = true
 				}
 			case "COPYUID":
 				data, err := readRespCodeCopyUID(c.dec)
 				if err != nil {
 					return fmt.Errorf("in resp-code-copy: %w", err)
 				}
-				if cmd := findPendingCmdByType[*MoveCommand](c); cmd != nil {
+				pending := c.findPendingCmdFunc(func(cmd command) bool {
+					switch cmd := cmd.(type) {
+					case *SelectCommand, *unselectCommand, *unauthenticateCommand:
+						return true
+					case *MoveCommand:
+						// The fallback is published as COPY before its STORE is
+						// assigned. Use the immutable command name to identify MOVE.
+						return cmd.name == "MOVE" || cmd.name == "UID MOVE"
+					}
+					return false
+				})
+				if cmd, ok := pending.(*MoveCommand); ok {
 					cmd.data = MoveData(data)
 				}
 			case "HIGHESTMODSEQ":
@@ -1607,10 +1640,12 @@ func (c *Client) readResponseData(typ string) error {
 				// provisional data that belonged to the previous mailbox.
 				if cmd := c.activeSelectCmd(); cmd != nil {
 					cmd.data.HighestModSeq = modSeq
+					cmd.recorded = true
 				}
 			case "NOMODSEQ":
 				if cmd := c.activeSelectCmd(); cmd != nil {
 					cmd.data.HighestModSeq = 0
+					cmd.recorded = true
 				}
 			case "NOTIFICATIONOVERFLOW":
 				if handler := c.options.unilateralDataHandler().NotificationOverflow; handler != nil && !c.ignoresUnsolicitedData() {
