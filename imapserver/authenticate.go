@@ -77,9 +77,10 @@ func (c *Conn) handleAuthenticate(tag string, dec *imapwire.Decoder) error {
 		})
 	}
 
-	enc := newResponseEncoder(c)
-	defer enc.end()
-
+	// Every response below takes the encoder, and with it a fresh write
+	// deadline, for its own write only. Waiting for the client's response and
+	// for the login is not writing: it must not use up the write deadline, nor
+	// hold encMutex.
 	resp := initialResp
 	for {
 		challenge, done, err := saslServer.Next(resp)
@@ -92,7 +93,7 @@ func (c *Conn) handleAuthenticate(tag string, dec *imapwire.Decoder) error {
 		// A challenge is plain base64 (RFC 9051 §6.2.2), so an empty one is
 		// sent as "+ " (RFC 4648 §10: BASE64("") = ""). The "=" of
 		// internal.EncodeSASL marks a zero-length initial response only.
-		if err := writeContReq(enc.Encoder, base64.StdEncoding.EncodeToString(challenge)); err != nil {
+		if err := c.writeContReq(base64.StdEncoding.EncodeToString(challenge)); err != nil {
 			return err
 		}
 
@@ -114,8 +115,7 @@ func (c *Conn) handleAuthenticate(tag string, dec *imapwire.Decoder) error {
 
 	c.state = imap.ConnStateAuthenticated
 	text := fmt.Sprintf("%v authentication successful", mech)
-	enc.tagged = tag != ""
-	return writeCapabilityOK(enc.Encoder, tag, c.availableCaps(), text)
+	return c.writeCapabilityStatus(tag, imap.StatusResponseTypeOK, text)
 }
 
 // readSASLResponse reads the client's response to a continuation request,
