@@ -207,7 +207,9 @@ func (c *Client) handleLsub() error {
 	cmd := c.findPendingCmdFunc(func(cmd command) bool {
 		return isAuthBarrier(cmd) || (isLsub(cmd) && cmd.(*ListCommand).matches(data))
 	})
-	if cmd == nil {
+	if cmd == nil || isAuthBarrier(cmd) {
+		// A barrier can end matching while an earlier LSUB still owns a
+		// canonicalized response. The fallback scan stops at that barrier too.
 		cmd = c.findPendingCmdFunc(func(cmd command) bool {
 			return isAuthBarrier(cmd) || isLsub(cmd)
 		})
