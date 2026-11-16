@@ -8,7 +8,7 @@ import (
 	"github.com/migadu/go-imap/internal/imapwire"
 )
 
-func (c *Conn) handleSelect(tag string, dec *imapwire.Decoder, readOnly bool) error {
+func (c *Conn) handleSelect(tag string, dec *imapwire.Decoder, readOnly bool) (err error) {
 	var mailbox string
 	if !dec.ExpectSP() || !dec.ExpectMailbox(&mailbox) {
 		return dec.Err()
@@ -80,9 +80,9 @@ func (c *Conn) handleSelect(tag string, dec *imapwire.Decoder, readOnly bool) er
 		return err
 	}
 	wasCondStore := c.CondStoreEnabled()
-	rollbackOnBad := func(err error) error {
+	rollbackOnReject := func(err error) error {
 		var imapErr *imap.Error
-		if !wasCondStore && errors.As(err, &imapErr) && imapErr.Type == imap.StatusResponseTypeBad {
+		if !wasCondStore && errors.As(err, &imapErr) && (imapErr.Type == imap.StatusResponseTypeBad || imapErr.Type == imap.StatusResponseTypeBye) {
 			c.rollbackCondStore()
 		}
 		return err
@@ -94,9 +94,15 @@ func (c *Conn) handleSelect(tag string, dec *imapwire.Decoder, readOnly bool) er
 	// that then means something entirely different (RFC 5465 §6.1: the SELECTED
 	// specifiers refer to "the mailbox that was selected using either SELECT or
 	// EXAMINE"). The pump is restarted once the whole SELECT response has been
-	// written: this defer is registered before the response encoder is opened,
-	// so it runs after the encoder is closed.
-	defer c.restartNotifyPump(c.fenceNotifyPump())
+	// written (unless the session terminated with BYE): this defer is registered
+	// before the response encoder is opened, so it runs after the encoder is
+	// closed.
+	hadPump := c.fenceNotifyPump()
+	defer func() {
+		if !isByeError(err) {
+			c.restartNotifyPump(hadPump)
+		}
+	}()
 
 	if c.state == imap.ConnStateSelected {
 		if err := c.flushClosingCondStore(); err != nil {
@@ -104,7 +110,7 @@ func (c *Conn) handleSelect(tag string, dec *imapwire.Decoder, readOnly bool) er
 		}
 		c.commitCondStore()
 		if err := c.session.Unselect(c.ctx); err != nil {
-			return rollbackOnBad(err)
+			return rollbackOnReject(err)
 		}
 		c.state = imap.ConnStateAuthenticated
 		c.selectedReadOnly = false
@@ -123,7 +129,7 @@ func (c *Conn) handleSelect(tag string, dec *imapwire.Decoder, readOnly bool) er
 
 	data, err := c.session.Select(c.ctx, mailbox, &options)
 	if err != nil {
-		return rollbackOnBad(err)
+		return rollbackOnReject(err)
 	}
 
 	enc := newResponseEncoder(c)
@@ -294,7 +300,7 @@ func refuseQResyncStar(set imap.NumSet, name string) error {
 	return nil
 }
 
-func (c *Conn) handleUnselect(dec *imapwire.Decoder, expunge bool) error {
+func (c *Conn) handleUnselect(dec *imapwire.Decoder, expunge bool) (err error) {
 	if !dec.ExpectCRLF() {
 		return dec.Err()
 	}
@@ -304,8 +310,13 @@ func (c *Conn) handleUnselect(dec *imapwire.Decoder, expunge bool) error {
 	}
 
 	// Same fence as SELECT: nothing may be delivered for the mailbox being
-	// closed while it is being closed.
-	defer c.restartNotifyPump(c.fenceNotifyPump())
+	// closed while it is being closed, and do not restart after BYE.
+	hadPump := c.fenceNotifyPump()
+	defer func() {
+		if !isByeError(err) {
+			c.restartNotifyPump(hadPump)
+		}
+	}()
 
 	if err := c.flushClosingCondStore(); err != nil {
 		return err
