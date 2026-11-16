@@ -303,8 +303,13 @@ func readListCmd(c *Conn, dec *imapwire.Decoder) (ref string, patterns []string,
 	if err != nil {
 		return "", nil, nil, syntax, fmt.Errorf("in list-select-opts: %w", err)
 	}
-	if hasSelectOpts && !dec.ExpectSP() {
-		return "", nil, nil, syntax, dec.Err()
+	if hasSelectOpts {
+		if options.SelectRecursiveMatch && !options.SelectSubscribed && optErr == nil {
+			optErr = newClientBugError("The LIST RECURSIVEMATCH select option requires SUBSCRIBED")
+		}
+		if !dec.ExpectSP() {
+			return "", nil, nil, syntax, dec.Err()
+		}
 	}
 
 	if !dec.ExpectMailbox(&ref) || !dec.ExpectSP() {
@@ -355,10 +360,6 @@ func readListCmd(c *Conn, dec *imapwire.Decoder) (ref string, patterns []string,
 
 	if optErr != nil {
 		return "", nil, nil, syntax, optErr
-	}
-
-	if options.SelectRecursiveMatch && !options.SelectSubscribed {
-		return "", nil, nil, syntax, newClientBugError("The LIST RECURSIVEMATCH select option requires SUBSCRIBED")
 	}
 
 	syntax.extended = hasSelectOpts || hasPatterns || hasReturnOpts
@@ -418,7 +419,9 @@ func readReturnOption(dec *imapwire.Decoder, options *imap.ListOptions, optErr *
 		if !dec.ExpectSP() {
 			return dec.Err()
 		}
-		options.ReturnStatus = new(imap.StatusOptions)
+		if options.ReturnStatus == nil {
+			options.ReturnStatus = new(imap.StatusOptions)
+		}
 		// status-option = "STATUS" SP "(" status-att *(SP status-att) ")"
 		// (RFC 5819 §4)
 		return dec.ExpectNonEmptyList(func() error {

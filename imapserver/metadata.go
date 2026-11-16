@@ -65,13 +65,25 @@ func (c *Conn) handleGetMetadata(tag string, dec *imapwire.Decoder) (err error) 
 		return dec.Err()
 	}
 
+	addEntry := func(entry string) {
+		if optErr == nil {
+			if err := imap.ValidateMetadataEntry(entry); err != nil {
+				optErr = &imap.Error{
+					Type: imap.StatusResponseTypeBad,
+					Text: err.Error(),
+				}
+			}
+		}
+		entries = append(entries, entry)
+	}
+
 	// Parse entries: single entry or non-empty list (RFC 5464 §5).
 	isList, err := dec.NonEmptyList(func() error {
 		var entry string
 		if !dec.ExpectAString(&entry) {
 			return dec.Err()
 		}
-		entries = append(entries, entry)
+		addEntry(entry)
 		return nil
 	})
 	if err != nil {
@@ -84,7 +96,7 @@ func (c *Conn) handleGetMetadata(tag string, dec *imapwire.Decoder) (err error) 
 		if !dec.ExpectAString(&entry) {
 			return dec.Err()
 		}
-		entries = append(entries, entry)
+		addEntry(entry)
 	}
 
 	if !dec.ExpectCRLF() {
@@ -93,15 +105,6 @@ func (c *Conn) handleGetMetadata(tag string, dec *imapwire.Decoder) (err error) 
 
 	if optErr != nil {
 		return optErr
-	}
-
-	for _, entry := range entries {
-		if err := imap.ValidateMetadataEntry(entry); err != nil {
-			return &imap.Error{
-				Type: imap.StatusResponseTypeBad,
-				Text: err.Error(),
-			}
-		}
 	}
 
 	if err := c.checkState(imap.ConnStateAuthenticated); err != nil {
