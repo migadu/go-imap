@@ -55,6 +55,9 @@ func (c *Client) handleEnabled() error {
 	// assuming that pipelined ENABLE commands complete in send order.
 	var pending []*EnableCommand
 	for _, cmd := range c.pendingCmds {
+		if isAuthBarrier(cmd) {
+			break
+		}
 		if cmd, ok := cmd.(*EnableCommand); ok {
 			pending = append(pending, cmd)
 		}

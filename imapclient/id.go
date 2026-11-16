@@ -95,7 +95,7 @@ func (c *Client) handleID() error {
 		return fmt.Errorf("in id: %w", err)
 	}
 
-	if cmd := findPendingCmdByType[*IDCommand](c); cmd != nil {
+	if cmd := findPendingAuthCmdByType[*IDCommand](c); cmd != nil {
 		cmd.data = *data
 	}
 

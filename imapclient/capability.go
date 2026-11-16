@@ -21,7 +21,7 @@ func (c *Client) handleCapability() error {
 		return err
 	}
 	c.setCaps(caps)
-	if cmd := findPendingCmdByType[*CapabilityCommand](c); cmd != nil {
+	if cmd := findPendingAuthCmdByType[*CapabilityCommand](c); cmd != nil {
 		cmd.caps = caps
 	}
 
