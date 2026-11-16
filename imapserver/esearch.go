@@ -42,11 +42,16 @@ func (c *Conn) handleESearch(tag string, dec *imapwire.Decoder) (err error) {
 		atom    string
 		options imap.SearchOptions
 		source  imap.SearchSource
+		argErr  error
 	)
 	backendCalled := false
 	defer func() {
 		if !backendCalled {
+			err = preferBadError(argErr, err)
 			err = c.failSearchBeforeBackend(err, &options, func() error {
+				if argErr != nil {
+					return argErr
+				}
 				_, badErr := c.checkESearch(&source, &options)
 				return badErr
 			})
@@ -58,7 +63,7 @@ func (c *Conn) handleESearch(tag string, dec *imapwire.Decoder) (err error) {
 		if !dec.ExpectSP() {
 			return dec.Err()
 		}
-		if err := readSearchSource(dec, &source); err != nil {
+		if err := readSearchSource(dec, &source, &argErr); err != nil {
 			return fmt.Errorf("in esearch-source-opts: %w", err)
 		}
 		if !dec.ExpectSP() {
@@ -70,7 +75,7 @@ func (c *Conn) handleESearch(tag string, dec *imapwire.Decoder) (err error) {
 
 	// Optional "RETURN (...)".
 	if imapwire.EqualFoldASCII(atom, "RETURN") {
-		if err := readSearchReturnOpts(dec, &options); err != nil {
+		if err := readSearchReturnOpts(dec, &options, &argErr); err != nil {
 			return fmt.Errorf("in search-return-opts: %w", err)
 		}
 		if !dec.ExpectSP() {
@@ -113,6 +118,9 @@ func (c *Conn) handleESearch(tag string, dec *imapwire.Decoder) (err error) {
 
 	if !dec.ExpectCRLF() {
 		return dec.Err()
+	}
+	if argErr != nil {
+		return argErr
 	}
 
 	// No IN clause ⇒ "selected" is assumed (RFC 7377 §2.1).
@@ -247,7 +255,7 @@ func multiSearchDataIsEmpty(data *imap.SearchData, options *imap.SearchOptions) 
 //
 // The optional trailing "(scope-options)" group (RFC 7377 §2.1) is not
 // implemented — no scope options are defined for SEARCH — and is rejected.
-func readSearchSource(dec *imapwire.Decoder, source *imap.SearchSource) error {
+func readSearchSource(dec *imapwire.Decoder, source *imap.SearchSource, optErr *error) error {
 	if !dec.ExpectSpecial('(') {
 		return dec.Err()
 	}
@@ -286,9 +294,11 @@ func readSearchSource(dec *imapwire.Decoder, source *imap.SearchSource) error {
 			}
 			source.Mailboxes = append(source.Mailboxes, names...)
 		default:
-			return &imap.Error{
-				Type: imap.StatusResponseTypeBad,
-				Text: fmt.Sprintf("Unknown ESEARCH source option: %q", verb),
+			if *optErr == nil {
+				*optErr = fmt.Errorf("in esearch-source-opts: %w", &imap.Error{
+					Type: imap.StatusResponseTypeBad,
+					Text: fmt.Sprintf("Unknown ESEARCH source option: %q", verb),
+				})
 			}
 		}
 

@@ -21,18 +21,23 @@ func (c *Conn) handleSearch(tag string, dec *imapwire.Decoder, numKind NumKind) 
 		atom     string
 		options  imap.SearchOptions
 		extended bool
+		argErr   error
 	)
 	backendCalled := false
 	defer func() {
 		if !backendCalled {
+			err = preferBadError(argErr, err)
 			err = c.failSearchBeforeBackend(err, &options, func() error {
+				if argErr != nil {
+					return argErr
+				}
 				_, badErr := c.checkSearchReturnOpts(&options)
 				return badErr
 			})
 		}
 	}()
 	if maybeReadSearchKeyAtom(dec, &atom) && imapwire.EqualFoldASCII(atom, "RETURN") {
-		if err := readSearchReturnOpts(dec, &options); err != nil {
+		if err := readSearchReturnOpts(dec, &options, &argErr); err != nil {
 			return fmt.Errorf("in search-return-opts: %w", err)
 		}
 		if !dec.ExpectSP() {
@@ -73,6 +78,9 @@ func (c *Conn) handleSearch(tag string, dec *imapwire.Decoder, numKind NumKind) 
 
 	if !dec.ExpectCRLF() {
 		return dec.Err()
+	}
+	if argErr != nil {
+		return argErr
 	}
 
 	if err := c.checkState(imap.ConnStateSelected); err != nil {
@@ -277,7 +285,7 @@ func (c *Conn) writeSearch(numSet imap.NumSet, modSeq uint64) error {
 	return enc.CRLF()
 }
 
-func readSearchReturnOpts(dec *imapwire.Decoder, options *imap.SearchOptions) error {
+func readSearchReturnOpts(dec *imapwire.Decoder, options *imap.SearchOptions, optErr *error) error {
 	if !dec.ExpectSP() {
 		return dec.Err()
 	}
@@ -299,7 +307,9 @@ func readSearchReturnOpts(dec *imapwire.Decoder, options *imap.SearchOptions) er
 			options.ReturnSave = true
 		default:
 			// RFC 4466 §2.6.1 requires rejecting unsupported result options.
-			return newClientBugError(fmt.Sprintf("Unknown SEARCH return option: %q", name))
+			if *optErr == nil {
+				*optErr = fmt.Errorf("in search-return-opts: %w", newClientBugError(fmt.Sprintf("Unknown SEARCH return option: %q", name)))
+			}
 		}
 		return nil
 	})

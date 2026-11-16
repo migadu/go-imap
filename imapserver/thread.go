@@ -67,6 +67,12 @@ func (c *Conn) handleThread(dec *imapwire.Decoder, numKind NumKind) error {
 	if algErr != nil {
 		return algErr
 	}
+	if !c.supportsThreadAlgorithm(algorithm) {
+		return &imap.Error{
+			Type: imap.StatusResponseTypeBad,
+			Text: fmt.Sprintf("Unsupported THREAD algorithm: %s", algorithm),
+		}
+	}
 	c.commitCondStore()
 	if badCharset {
 		return &imap.Error{
@@ -84,11 +90,32 @@ func (c *Conn) handleThread(dec *imapwire.Decoder, numKind NumKind) error {
 	return c.writeThread(data)
 }
 
-func (c *Conn) writeThread(data []imap.ThreadData) error {
-	enc := newResponseEncoder(c)
-	defer enc.end()
+func (c *Conn) supportsThreadAlgorithm(alg imap.ThreadAlgorithm) bool {
+	cap := imap.Cap("THREAD=" + string(alg))
+	if capSession, ok := c.session.(SessionCapabilities); ok {
+		return capSession.GetCapabilities().Has(cap)
+	}
+	return c.availableCapsSet().Has(cap)
+}
 
-	enc.Atom("*").SP().Atom("THREAD")
+func checkThreadData(data []imap.ThreadData) error {
+	for _, t := range data {
+		for _, num := range t.Chain {
+			if num == 0 {
+				return fmt.Errorf("imapserver: invalid message number 0 in ThreadData")
+			}
+		}
+		if err := checkThreadData(t.SubThreads); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (c *Conn) writeThread(data []imap.ThreadData) error {
+	if err := checkThreadData(data); err != nil {
+		return err
+	}
 
 	var lists []imap.ThreadData
 	for _, t := range data {
@@ -96,6 +123,11 @@ func (c *Conn) writeThread(data []imap.ThreadData) error {
 			lists = append(lists, t)
 		}
 	}
+
+	enc := newResponseEncoder(c)
+	defer enc.end()
+
+	enc.Atom("*").SP().Atom("THREAD")
 
 	// thread-data = "THREAD" [SP 1*thread-list] (RFC 5256 section 5): one SP,
 	// then the thread-lists back to back. Roundcube reads a THREAD response by
