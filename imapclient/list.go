@@ -133,6 +133,7 @@ func (c *Client) handleList() error {
 		return fmt.Errorf("in LIST: %w", err)
 	}
 
+	activeSel := c.activeSelectCmd()
 	cmd := c.findPendingCmdFunc(func(cmd command) bool {
 		switch cmd := cmd.(type) {
 		case *ListCommand:
@@ -141,7 +142,7 @@ func (c *Client) handleList() error {
 			// nothing about subscriptions.
 			return !cmd.lsub && cmd.matches(data)
 		case *SelectCommand:
-			return cmd.mailbox == data.Mailbox && cmd.data.List == nil
+			return cmd == activeSel && canonicalMailbox(cmd.mailbox) == canonicalMailbox(data.Mailbox) && cmd.data.List == nil && data.OldName == ""
 		default:
 			return false
 		}

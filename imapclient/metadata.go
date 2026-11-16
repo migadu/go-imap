@@ -95,7 +95,7 @@ func (c *Client) SetMetadata(mailbox string, entries map[string]*[]byte) *Comman
 		}
 	}
 
-	cmd := &Command{}
+	cmd := &mailboxTargetCommand{mailbox: canonicalMailbox(mailbox)}
 	enc := c.beginCommand("SETMETADATA", cmd)
 	enc.SP().Mailbox(mailbox).SP().Special('(')
 	i := 0
@@ -119,7 +119,7 @@ func (c *Client) SetMetadata(mailbox string, entries map[string]*[]byte) *Comman
 	}
 	enc.Special(')')
 	enc.end()
-	return cmd
+	return &cmd.Command
 }
 
 func (c *Client) handleMetadata() error {

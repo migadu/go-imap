@@ -2,6 +2,8 @@ package imapclient
 
 import (
 	"io"
+	"strings"
+	"sync"
 
 	"github.com/migadu/go-imap"
 	"github.com/migadu/go-imap/internal"
@@ -94,6 +96,10 @@ type AppendCatenateCommand struct {
 	enc      *commandEncoder
 	numParts int
 	data     imap.AppendData
+
+	urlMu           sync.Mutex
+	usesSelectedURL bool
+	urlMailboxes    []string
 }
 
 func (cmd *AppendCatenateCommand) part() *commandEncoder {
@@ -108,7 +114,39 @@ func (cmd *AppendCatenateCommand) part() *commandEncoder {
 // only provides for a relative URL of a message or message part on this
 // server, such as "/Drafts;UIDVALIDITY=385759045/;UID=20/;section=1.MIME".
 func (cmd *AppendCatenateCommand) URL(url string) {
+	cmd.urlMu.Lock()
+	if strings.HasPrefix(url, ";") {
+		cmd.usesSelectedURL = true
+	} else if strings.HasPrefix(url, "/") {
+		mbox := strings.TrimPrefix(url, "/")
+		mbox, _, _ = strings.Cut(mbox, "/;")
+		mbox, _, _ = strings.Cut(mbox, ";")
+		if mbox != "" {
+			cmd.urlMailboxes = append(cmd.urlMailboxes, canonicalMailbox(mbox))
+		}
+	}
+	cmd.urlMu.Unlock()
 	cmd.part().Atom("URL").SP().String(url)
+}
+
+func (cmd *AppendCatenateCommand) mayUseMailbox(selectedName string) bool {
+	if selectedName == "" {
+		return false
+	}
+	if cmd.mailbox == selectedName {
+		return true
+	}
+	cmd.urlMu.Lock()
+	defer cmd.urlMu.Unlock()
+	if cmd.usesSelectedURL {
+		return true
+	}
+	for _, m := range cmd.urlMailboxes {
+		if m == selectedName {
+			return true
+		}
+	}
+	return false
 }
 
 // Text adds a literal of size octets. The caller must write exactly that

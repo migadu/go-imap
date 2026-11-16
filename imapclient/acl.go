@@ -12,7 +12,7 @@ import (
 //
 // This command requires support for the ACL extension.
 func (c *Client) MyRights(mailbox string) *MyRightsCommand {
-	cmd := &MyRightsCommand{}
+	cmd := &MyRightsCommand{mailbox: canonicalMailbox(mailbox)}
 	enc := c.beginCommand("MYRIGHTS", cmd)
 	enc.SP().Mailbox(mailbox)
 	enc.end()
@@ -23,7 +23,7 @@ func (c *Client) MyRights(mailbox string) *MyRightsCommand {
 //
 // This command requires support for the ACL extension.
 func (c *Client) SetACL(mailbox string, ri imap.RightsIdentifier, rm imap.RightModification, rs imap.RightSet) *SetACLCommand {
-	cmd := &SetACLCommand{}
+	cmd := &SetACLCommand{mailbox: canonicalMailbox(mailbox)}
 	enc := c.beginCommand("SETACL", cmd)
 	enc.SP().Mailbox(mailbox).SP().String(string(ri)).SP()
 	enc.String(internal.FormatRights(rm, rs))
@@ -34,6 +34,7 @@ func (c *Client) SetACL(mailbox string, ri imap.RightsIdentifier, rm imap.RightM
 // SetACLCommand is a SETACL command.
 type SetACLCommand struct {
 	commandBase
+	mailbox string
 }
 
 func (cmd *SetACLCommand) Wait() error {
@@ -44,7 +45,7 @@ func (cmd *SetACLCommand) Wait() error {
 //
 // This command requires support for the ACL extension.
 func (c *Client) DeleteACL(mailbox string, ri imap.RightsIdentifier) *DeleteACLCommand {
-	cmd := &DeleteACLCommand{}
+	cmd := &DeleteACLCommand{mailbox: canonicalMailbox(mailbox)}
 	enc := c.beginCommand("DELETEACL", cmd)
 	enc.SP().Mailbox(mailbox).SP().String(string(ri))
 	enc.end()
@@ -54,6 +55,7 @@ func (c *Client) DeleteACL(mailbox string, ri imap.RightsIdentifier) *DeleteACLC
 // DeleteACLCommand is a DELETEACL command.
 type DeleteACLCommand struct {
 	commandBase
+	mailbox string
 }
 
 func (cmd *DeleteACLCommand) Wait() error {
@@ -64,7 +66,7 @@ func (cmd *DeleteACLCommand) Wait() error {
 //
 // This command requires support for the ACL extension.
 func (c *Client) ListRights(mailbox string, ri imap.RightsIdentifier) *ListRightsCommand {
-	cmd := &ListRightsCommand{}
+	cmd := &ListRightsCommand{mailbox: canonicalMailbox(mailbox)}
 	enc := c.beginCommand("LISTRIGHTS", cmd)
 	enc.SP().Mailbox(mailbox).SP().String(string(ri))
 	enc.end()
@@ -74,7 +76,8 @@ func (c *Client) ListRights(mailbox string, ri imap.RightsIdentifier) *ListRight
 // ListRightsCommand is a LISTRIGHTS command.
 type ListRightsCommand struct {
 	commandBase
-	data ListRightsData
+	mailbox string
+	data    ListRightsData
 }
 
 func (cmd *ListRightsCommand) Wait() (*ListRightsData, error) {
@@ -85,7 +88,7 @@ func (cmd *ListRightsCommand) Wait() (*ListRightsData, error) {
 //
 // This command requires support for the ACL extension.
 func (c *Client) GetACL(mailbox string) *GetACLCommand {
-	cmd := &GetACLCommand{}
+	cmd := &GetACLCommand{mailbox: canonicalMailbox(mailbox)}
 	enc := c.beginCommand("GETACL", cmd)
 	enc.SP().Mailbox(mailbox)
 	enc.end()
@@ -95,7 +98,8 @@ func (c *Client) GetACL(mailbox string) *GetACLCommand {
 // GetACLCommand is a GETACL command.
 type GetACLCommand struct {
 	commandBase
-	data GetACLData
+	mailbox string
+	data    GetACLData
 }
 
 func (cmd *GetACLCommand) Wait() (*GetACLData, error) {
@@ -138,7 +142,8 @@ func (c *Client) handleListRights() error {
 // MyRightsCommand is a MYRIGHTS command.
 type MyRightsCommand struct {
 	commandBase
-	data MyRightsData
+	mailbox string
+	data    MyRightsData
 }
 
 func (cmd *MyRightsCommand) Wait() (*MyRightsData, error) {

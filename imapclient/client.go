@@ -860,17 +860,34 @@ func (c *Client) cmdUsesSelectedMailboxLocked(cmd command) bool {
 	}
 	switch cmd := cmd.(type) {
 	case *MultiSearchCommand:
-		return cmd.usesSelected
+		return cmd.usesSelected || searchSourceMayMatch(cmd.source, selectedName)
 	case *AppendCommand:
 		return selectedName != "" && cmd.mailbox == selectedName
 	case *AppendCatenateCommand:
-		return selectedName != "" && cmd.mailbox == selectedName
+		return cmd.mayUseMailbox(selectedName)
 	case *StatusCommand:
 		return cmd.highestModSeq || (selectedName != "" && canonicalMailbox(cmd.mailbox) == selectedName)
 	case *ListCommand:
-		return cmd.highestModSeq
+		return cmd.highestModSeq || (cmd.returnStatus && selectedName != "")
 	case *mailboxTargetCommand:
+		if selectedName == "" {
+			return false
+		}
+		return cmd.mailbox == selectedName || (cmd.prefixMatch && cmd.mailbox != "" && strings.HasPrefix(selectedName, cmd.mailbox))
+	case *SetACLCommand:
 		return selectedName != "" && cmd.mailbox == selectedName
+	case *DeleteACLCommand:
+		return selectedName != "" && cmd.mailbox == selectedName
+	case *GetACLCommand:
+		return selectedName != "" && cmd.mailbox == selectedName
+	case *MyRightsCommand:
+		return selectedName != "" && cmd.mailbox == selectedName
+	case *ListRightsCommand:
+		return selectedName != "" && cmd.mailbox == selectedName
+	case *GetMetadataCommand:
+		return selectedName != "" && canonicalMailbox(cmd.mailbox) == selectedName
+	case *GetQuotaRootCommand:
+		return selectedName != "" && canonicalMailbox(cmd.mailbox) == selectedName
 	default:
 		return false
 	}
@@ -900,13 +917,16 @@ func (c *Client) activeSelectCmd() *SelectCommand {
 	return nil
 }
 
-func (c *Client) resetPendingSelectDataLocked() {
+func (c *Client) resetPendingSelectDataLocked() []func() error {
 	for _, pending := range c.pendingCmds {
 		if sel, ok := pending.(*SelectCommand); ok {
+			replay := sel.preClosed
+			sel.preClosed = nil
 			sel.data = imap.SelectData{}
-			break
+			return replay
 		}
 	}
+	return nil
 }
 
 func (c *Client) completeCommand(cmd command, err error) {
@@ -1426,10 +1446,26 @@ func (c *Client) readResponseTagged(tag, typ string) (startTLS *startTLSCommand,
 			c.setCaps(nil)
 		}
 	}
+	var failedSelectReplay []func() error
+	if sel, ok := cmd.(*SelectCommand); ok && cmdErr != nil {
+		c.mutex.Lock()
+		if c.state == imap.ConnStateSelected {
+			failedSelectReplay = sel.preClosed
+			sel.preClosed = nil
+		}
+		c.mutex.Unlock()
+	}
+
 	// Waiters may immediately ask for capabilities in the new state. Publish
 	// their invalidation (and the refresh to await) before completing LOGIN or
 	// AUTHENTICATE, just as completeCommand publishes the connection state.
 	c.completeCommand(cmd, cmdErr)
+
+	for _, fn := range failedSelectReplay {
+		if err := fn(); err != nil {
+			return nil, err
+		}
+	}
 
 	return startTLS, nil
 }
@@ -1499,6 +1535,16 @@ func (c *Client) readResponseData(typ string) error {
 
 				if cmd := c.activeSelectCmd(); cmd != nil {
 					cmd.data.PermanentFlags = flags
+					c.mutex.Lock()
+					if c.state == imap.ConnStateSelected {
+						if handler := c.options.unilateralDataHandler().Mailbox; handler != nil {
+							f := flags
+							cmd.preClosed = append(cmd.preClosed, func() error {
+								return c.runUnilateralHandler(func() { handler(&UnilateralDataMailbox{PermanentFlags: f}) })
+							})
+						}
+					}
+					c.mutex.Unlock()
 				} else if handler := c.options.unilateralDataHandler().Mailbox; handler != nil {
 					if err := c.runUnilateralHandler(func() { handler(&UnilateralDataMailbox{PermanentFlags: flags}) }); err != nil {
 						return err
@@ -1589,13 +1635,19 @@ func (c *Client) readResponseData(typ string) error {
 		// responses before CLOSED belong to the closing mailbox (RFC 7162
 		// §3.2.11), so discard any provisional SelectData recorded before it.
 		if code == "CLOSED" && c.State() == imap.ConnStateSelected {
+			var replay []func() error
 			c.mutex.Lock()
 			if !c.closed {
 				c.state = imap.ConnStateAuthenticated
 				c.mailbox = nil
-				c.resetPendingSelectDataLocked()
+				replay = c.resetPendingSelectDataLocked()
 			}
 			c.mutex.Unlock()
+			for _, fn := range replay {
+				if err := fn(); err != nil {
+					return err
+				}
+			}
 		}
 
 		if !c.greetingRecv {
@@ -1767,6 +1819,16 @@ func (c *Client) handleVanished() error {
 		// Accumulate: a resynchronization can arrive in more than one
 		// response, and each carries its own part of the expunged set.
 		cmd.data.Vanished = append(cmd.data.Vanished, data.UIDs...)
+		c.mutex.Lock()
+		if c.state == imap.ConnStateSelected {
+			if handler := c.options.unilateralDataHandler().Vanished; handler != nil {
+				d := data
+				cmd.preClosed = append(cmd.preClosed, func() error {
+					return c.runUnilateralHandler(func() { handler(&d) })
+				})
+			}
+		}
+		c.mutex.Unlock()
 	} else if handler := c.options.unilateralDataHandler().Vanished; handler != nil {
 		if err := c.runUnilateralHandler(func() { handler(&data) }); err != nil {
 			return err
@@ -1816,7 +1878,8 @@ func (c *Client) Login(username, password string) *Command {
 
 type mailboxTargetCommand struct {
 	Command
-	mailbox string
+	mailbox     string
+	prefixMatch bool
 }
 
 // Delete sends a DELETE command.
@@ -1832,7 +1895,7 @@ func (c *Client) Delete(mailbox string) *Command {
 //
 // A nil options pointer is equivalent to a zero options value.
 func (c *Client) Rename(mailbox, newName string, options *imap.RenameOptions) *Command {
-	cmd := &mailboxTargetCommand{mailbox: canonicalMailbox(mailbox)}
+	cmd := &mailboxTargetCommand{mailbox: canonicalMailbox(mailbox), prefixMatch: true}
 	enc := c.beginCommand("RENAME", cmd)
 	enc.SP().Mailbox(mailbox).SP().Mailbox(newName)
 	enc.end()
@@ -1841,20 +1904,20 @@ func (c *Client) Rename(mailbox, newName string, options *imap.RenameOptions) *C
 
 // Subscribe sends a SUBSCRIBE command.
 func (c *Client) Subscribe(mailbox string) *Command {
-	cmd := &Command{}
+	cmd := &mailboxTargetCommand{mailbox: canonicalMailbox(mailbox)}
 	enc := c.beginCommand("SUBSCRIBE", cmd)
 	enc.SP().Mailbox(mailbox)
 	enc.end()
-	return cmd
+	return &cmd.Command
 }
 
 // Unsubscribe sends an UNSUBSCRIBE command.
 func (c *Client) Unsubscribe(mailbox string) *Command {
-	cmd := &Command{}
+	cmd := &mailboxTargetCommand{mailbox: canonicalMailbox(mailbox)}
 	enc := c.beginCommand("UNSUBSCRIBE", cmd)
 	enc.SP().Mailbox(mailbox)
 	enc.end()
-	return cmd
+	return &cmd.Command
 }
 
 func uidCmdName(name string, kind imapwire.NumKind) string {

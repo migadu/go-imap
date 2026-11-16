@@ -110,6 +110,16 @@ func (c *Client) handleFlags() error {
 	cmd := c.activeSelectCmd()
 	if cmd != nil {
 		cmd.data.Flags = flags
+		c.mutex.Lock()
+		if c.state == imap.ConnStateSelected {
+			if handler := c.options.unilateralDataHandler().Mailbox; handler != nil {
+				f := flags
+				cmd.preClosed = append(cmd.preClosed, func() error {
+					return c.runUnilateralHandler(func() { handler(&UnilateralDataMailbox{Flags: f}) })
+				})
+			}
+		}
+		c.mutex.Unlock()
 	} else if handler := c.options.unilateralDataHandler().Mailbox; handler != nil {
 		return c.runUnilateralHandler(func() { handler(&UnilateralDataMailbox{Flags: flags}) })
 	}
@@ -124,6 +134,20 @@ func (c *Client) handleExists(num uint32) error {
 	cmd := c.activeSelectCmd()
 	if cmd != nil {
 		cmd.data.NumMessages = num
+		c.mutex.Lock()
+		if c.state == imap.ConnStateSelected {
+			if c.mailbox != nil && canonicalMailbox(c.mailbox.Name) == canonicalMailbox(cmd.mailbox) {
+				c.mailbox = c.mailbox.copy()
+				c.mailbox.NumMessages = num
+			}
+			if handler := c.options.unilateralDataHandler().Mailbox; handler != nil {
+				n := num
+				cmd.preClosed = append(cmd.preClosed, func() error {
+					return c.runUnilateralHandler(func() { handler(&UnilateralDataMailbox{NumMessages: &n}) })
+				})
+			}
+		}
+		c.mutex.Unlock()
 	} else {
 		c.mutex.Lock()
 		if c.state == imap.ConnStateSelected {
@@ -142,9 +166,10 @@ func (c *Client) handleExists(num uint32) error {
 // SelectCommand is a SELECT command.
 type SelectCommand struct {
 	commandBase
-	mailbox string
-	qresync bool
-	data    imap.SelectData
+	mailbox   string
+	qresync   bool
+	data      imap.SelectData
+	preClosed []func() error
 }
 
 func (cmd *SelectCommand) Wait() (*imap.SelectData, error) {

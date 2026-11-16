@@ -897,6 +897,28 @@ func (c *Client) handleFetch(seqNum uint32) (err error) {
 				Flags:  flags,
 				ModSeq: modSeq,
 			})
+			c.mutex.Lock()
+			if c.state == imap.ConnStateSelected {
+				if handler := c.options.unilateralDataHandler().Fetch; handler != nil {
+					sNum, u, f, ms := seqNum, uid, flags, modSeq
+					selectCmd.preClosed = append(selectCmd.preClosed, func() error {
+						ch := make(chan FetchItemData, 3)
+						ch <- FetchItemDataUID{UID: u}
+						if f != nil {
+							ch <- FetchItemDataFlags{Flags: f}
+						}
+						ch <- FetchItemDataModSeq{ModSeq: ms}
+						close(ch)
+						replayMsg := &FetchMessageData{SeqNum: sNum, items: ch, opts: &c.options}
+						go func() {
+							defer replayMsg.releaseAfterCallback()
+							handler(replayMsg)
+						}()
+						return nil
+					})
+				}
+			}
+			c.mutex.Unlock()
 			handled = true
 			released = true
 			go msg.discard() // Discard remaining data

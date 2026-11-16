@@ -98,8 +98,17 @@ func (c *Client) MultiSearch(source *imap.SearchSource, criteria *imap.SearchCri
 		charset = "UTF-8"
 	}
 
+	var srcCopy *imap.SearchSource
+	if source != nil {
+		cp := *source
+		cp.Mailboxes = append([]string(nil), source.Mailboxes...)
+		cp.Subtree = append([]string(nil), source.Subtree...)
+		cp.SubtreeOne = append([]string(nil), source.SubtreeOne...)
+		srcCopy = &cp
+	}
 	cmd := &MultiSearchCommand{
 		usesSelected: source == nil || source.IsZero() || source.Selected || (condStore && searchCriteriaHasModSeq(criteria)),
+		source:       srcCopy,
 	}
 	// Since we aggregate one ESEARCH response per mailbox, we don't prepopulate
 	// cmd.data here.
@@ -275,7 +284,35 @@ func (cmd *SearchCommand) Wait() (*imap.SearchData, error) {
 type MultiSearchCommand struct {
 	commandBase
 	usesSelected bool
+	source       *imap.SearchSource
 	data         []*imap.SearchData
+}
+
+func searchSourceMayMatch(source *imap.SearchSource, selectedName string) bool {
+	if source == nil || selectedName == "" {
+		return false
+	}
+	if source.Inboxes || source.Personal || source.Subscribed {
+		return true
+	}
+	for _, m := range source.Mailboxes {
+		if canonicalMailbox(m) == selectedName {
+			return true
+		}
+	}
+	for _, m := range source.Subtree {
+		cm := canonicalMailbox(m)
+		if cm == "" || cm == selectedName || strings.HasPrefix(selectedName, cm) {
+			return true
+		}
+	}
+	for _, m := range source.SubtreeOne {
+		cm := canonicalMailbox(m)
+		if cm == "" || cm == selectedName || strings.HasPrefix(selectedName, cm) {
+			return true
+		}
+	}
+	return false
 }
 
 func searchCriteriaHasModSeq(criteria *imap.SearchCriteria) bool {
