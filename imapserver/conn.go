@@ -619,10 +619,9 @@ func (c *Conn) readCommand(dec *imapwire.Decoder) (err error) {
 		return nil
 	}
 
-	// Use non-destructive CRLF() instead of ExpectCRLF() to avoid
-	// setting decoder error when we encounter non-empty lines.
-	// Return to serve() after an empty line so idle timeouts and Shutdown apply.
-	if dec.CRLF() {
+	// Return to serve() after an empty line so idle timeouts and Shutdown apply,
+	// without stripping a leading space or bare CR before a command tag.
+	if dec.EmptyLine() {
 		return nil
 	}
 
@@ -654,6 +653,7 @@ func (c *Conn) readCommand(dec *imapwire.Decoder) (err error) {
 
 	// TODO: handle multiple commands concurrently
 	sendOK := true
+	unknownPreAuth := false
 	switch name {
 	case "NOOP":
 		err = c.handleNoop(dec)
@@ -754,7 +754,7 @@ func (c *Conn) readCommand(dec *imapwire.Decoder) (err error) {
 			// mitigate cross-protocol attacks:
 			// https://www-archive.mozilla.org/projects/netlib/portbanning
 			c.state = imap.ConnStateLogout
-			defer c.Bye("Unknown command")
+			unknownPreAuth = true
 		}
 		err = &imap.Error{
 			Type: imap.StatusResponseTypeBad,
@@ -775,6 +775,9 @@ func (c *Conn) readCommand(dec *imapwire.Decoder) (err error) {
 	}
 
 	dec.DiscardLine()
+	if errors.Is(dec.Err(), imapwire.ErrMaxSize) {
+		err = imapwire.ErrMaxSize
+	}
 
 	// A command whose remaining octets could not be skipped leaves the stream
 	// pointing into client data rather than at a command boundary: whatever
@@ -790,6 +793,9 @@ func (c *Conn) readCommand(dec *imapwire.Decoder) (err error) {
 			Text: "Unable to resynchronize command stream",
 		})
 		return fmt.Errorf("imapserver: command stream desynchronized")
+	}
+	if unknownPreAuth && !errors.Is(dec.Err(), imapwire.ErrMaxSize) {
+		defer c.Bye("Unknown command")
 	}
 
 	var (

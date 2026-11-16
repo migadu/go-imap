@@ -104,10 +104,32 @@ type Decoder struct {
 	// announcement sits there -- is unknown; see DiscardLine.
 	readFailed bool
 
-	crlf         bool
-	listDepth    int
-	readBytes    int64
-	literalBytes int64
+	crlf             bool
+	listDepth        int
+	readBytes        int64
+	literalBytes     int64
+	nonSyncState     uint8
+	prevNonSyncState uint8
+}
+
+func nextNonSyncState(state uint8, b byte) uint8 {
+	switch {
+	case b == '{':
+		return 1
+	case b >= '0' && b <= '9':
+		if state == 1 || state == 2 {
+			return 2
+		}
+	case b == '+':
+		if state == 2 {
+			return 3
+		}
+	case b == '}':
+		if state == 3 {
+			return 4
+		}
+	}
+	return 0
 }
 
 // NewDecoder creates a new decoder.
@@ -120,6 +142,7 @@ func (dec *Decoder) mustUnreadByte() {
 		panic(fmt.Errorf("imapwire: failed to unread byte: %v", err))
 	}
 	dec.readBytes--
+	dec.nonSyncState = dec.prevNonSyncState
 }
 
 // Err returns the decoder error, if any.
@@ -165,6 +188,10 @@ func (dec *Decoder) readByte() (byte, bool) {
 		return 0, false
 	}
 	if dec.MaxSize > 0 && dec.readBytes > dec.MaxSize {
+		if dec.discarding {
+			dec.err = ErrMaxSize
+			return 0, false
+		}
 		return 0, dec.returnErr(ErrMaxSize)
 	}
 	dec.crlf = false
@@ -180,6 +207,8 @@ func (dec *Decoder) readByte() (byte, bool) {
 		return b, dec.returnErr(err)
 	}
 	dec.readBytes++
+	dec.prevNonSyncState = dec.nonSyncState
+	dec.nonSyncState = nextNonSyncState(dec.nonSyncState, b)
 	return b, true
 }
 
@@ -271,13 +300,54 @@ func foldASCII(ch byte) byte {
 // because the recorded one wins over anything found later, but they should
 // check Err() if they want to fail at the cause.
 func (dec *Decoder) EOF() bool {
-	_, err := dec.r.ReadByte()
+	_, err := dec.r.Peek(1)
 	if err == io.EOF {
 		return true
 	} else if err != nil {
+		dec.readFailed = true
 		return dec.returnErr(err)
 	}
-	dec.mustUnreadByte()
+	return false
+}
+
+// EmptyLine consumes an empty physical line ("\n" or "\r\n") and reports
+// whether there was one, without consuming a leading space or a bare CR
+// followed by anything else.
+func (dec *Decoder) EmptyLine() bool {
+	b, err := dec.r.Peek(1)
+	if err != nil {
+		if err != io.EOF {
+			dec.readFailed = true
+			dec.returnErr(err)
+		}
+		return false
+	}
+	switch b[0] {
+	case '\n':
+		_, _ = dec.r.Discard(1)
+		dec.readBytes++
+		dec.crlf = true
+		dec.nonSyncState = 0
+		dec.prevNonSyncState = 0
+		return true
+	case '\r':
+		b2, err := dec.r.Peek(2)
+		if err != nil {
+			if err != io.EOF {
+				dec.readFailed = true
+				dec.returnErr(err)
+			}
+			return false
+		}
+		if b2[1] == '\n' {
+			_, _ = dec.r.Discard(2)
+			dec.readBytes += 2
+			dec.crlf = true
+			dec.nonSyncState = 0
+			dec.prevNonSyncState = 0
+			return true
+		}
+	}
 	return false
 }
 
@@ -492,8 +562,15 @@ func (dec *Decoder) DiscardLine() {
 		return
 	}
 
+	priorNonSync := dec.nonSyncState == 4
 	var text string
 	dec.Text(&text)
+	trailingSpace := false
+	if text == "" && !dec.readFailed {
+		if b, err := dec.r.Peek(1); err == nil && b[0] == ' ' {
+			trailingSpace = true
+		}
+	}
 	// Text stops at a bare CR too. Only a complete line ending makes it safe
 	// to treat the following input as another command.
 	lineEnded := !dec.readFailed && dec.CRLF()
@@ -502,7 +579,8 @@ func (dec *Decoder) DiscardLine() {
 	// never reached: its octets follow, but their count was never validated by
 	// this decoder, so skipping them would be a guess. Refuse to resynchronise.
 	// Likewise when the end of the line was never reached.
-	if dec.side == ConnSideServer && (!lineEnded || endsWithNonSyncLiteral(text)) {
+	endedWithNonSync := EndsWithNonSyncLiteral(text) || (text == "" && priorNonSync && !trailingSpace)
+	if dec.side == ConnSideServer && (!lineEnded || endedWithNonSync) {
 		dec.desynced = true
 	}
 }
@@ -520,10 +598,10 @@ func (dec *Decoder) Desynchronized() bool {
 	return dec.desynced
 }
 
-// endsWithNonSyncLiteral reports whether text ends with a non-synchronizing
+// EndsWithNonSyncLiteral reports whether text ends with a non-synchronizing
 // literal announcement ("{" 1*DIGIT "+}" immediately preceding the CRLF,
 // RFC 7888 §3), including counts that overflow 63 bits.
-func endsWithNonSyncLiteral(text string) bool {
+func EndsWithNonSyncLiteral(text string) bool {
 	if !strings.HasSuffix(text, "+}") {
 		return false
 	}
@@ -756,6 +834,10 @@ func (dec *Decoder) quoted(ptr *string, allowStrayQuotes bool) bool {
 		if !ok {
 			return false
 		}
+		if ch == '\r' || ch == '\n' {
+			dec.mustUnreadByte()
+			return dec.Expect(false, `'"'`)
+		}
 
 		if ch == '"' {
 			break
@@ -765,6 +847,10 @@ func (dec *Decoder) quoted(ptr *string, allowStrayQuotes bool) bool {
 			ch, ok = dec.readByte()
 			if !ok {
 				return false
+			}
+			if ch == '\r' || ch == '\n' {
+				dec.mustUnreadByte()
+				return dec.Expect(false, "quoted-specials")
 			}
 		}
 
@@ -1135,6 +1221,11 @@ func (dec *Decoder) LiteralReader() (lit *LiteralReader, nonSync, ok bool) {
 	if !dec.ExpectSpecial('}') || !dec.expectLiteralCRLF() {
 		return nil, false, false
 	}
+	dec.nonSyncState = 0
+	dec.prevNonSyncState = 0
+	if nonSync {
+		dec.crlf = false
+	}
 	if numberErr != nil {
 		if nonSync {
 			dec.MarkDesynchronized()
@@ -1205,6 +1296,9 @@ func (lit *LiteralReader) Size() int64 {
 func (lit *LiteralReader) Read(b []byte) (int, error) {
 	if lit.err != nil {
 		return 0, lit.err
+	}
+	if lit.dec != nil {
+		lit.dec.crlf = false
 	}
 	n, err := lit.r.Read(b)
 	if err == io.EOF {
