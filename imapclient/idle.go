@@ -45,7 +45,7 @@ func (c *Client) startIdle(auto bool) (*IdleCommand, error) {
 // armAutoIdle starts the wait after which the client idles on its own, if
 // that is asked for and no command is in flight. c.mutex must be held.
 func (c *Client) armAutoIdleLocked() {
-	if c.options.AutoIdle <= 0 || c.closed || len(c.pendingCmds) > 0 {
+	if c.options.AutoIdle <= 0 || c.closed || len(c.pendingCmds) > 0 || c.hasPendingSessionResetLocked() {
 		return
 	}
 	if c.autoIdleTimer == nil {
@@ -69,6 +69,7 @@ func (c *Client) startAutoIdle() {
 	// unknown for now, the command which fetches them arms the timer anew.
 	authenticated := c.state == imap.ConnStateAuthenticated || c.state == imap.ConnStateSelected
 	ok := !c.closed && !c.autoIdleRefused && c.autoIdle == nil && len(c.pendingCmds) == 0 &&
+		!c.hasPendingSessionResetLocked() &&
 		authenticated && (c.caps.Has(imap.CapIdle) || c.caps.Has(imap.CapIMAP4rev2))
 	c.mutex.Unlock()
 	if !ok {

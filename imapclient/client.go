@@ -259,7 +259,7 @@ type Client struct {
 	closeCalled bool  // explicit Close calls, separate from terminal cancellation
 	cancelErr   error // first fatal error, published before closeCh closes; guarded by mutex
 	// A reset leaves pendingCmds before its tagged response has been parsed.
-	// Keep its encoder barrier until the resulting state has been published.
+	// Keep its session-reset barrier until the resulting state has been published.
 	completingSessionReset *commandBase // guarded by mutex
 
 	// autoIdle is the IDLE command the client runs on its own account
@@ -1111,7 +1111,16 @@ func (c *Client) completeCommand(cmd command, err error) {
 		}
 	case *logoutCommand:
 		if err == nil {
-			c.setState(imap.ConnStateLogout)
+			c.mutex.Lock()
+			if !c.closed {
+				c.state = imap.ConnStateLogout
+				c.mailbox = nil
+				c.enabled = make(imap.CapSet)
+				// What ENABLE allowed the server to send ends with it.
+				c.dec.QuotedUTF8 = c.useQuotedUTF8Locked()
+				c.resetPendingSelectDataLocked()
+			}
+			c.mutex.Unlock()
 		}
 	case *ListCommand:
 		if cmd.pendingData != nil {
