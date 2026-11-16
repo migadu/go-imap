@@ -8,7 +8,7 @@ import (
 	"github.com/migadu/go-imap/internal/imapwire"
 )
 
-func (c *Conn) handleGetMetadata(tag string, dec *imapwire.Decoder) error {
+func (c *Conn) handleGetMetadata(tag string, dec *imapwire.Decoder) (err error) {
 	if !dec.ExpectSP() {
 		return dec.Err()
 	}
@@ -22,6 +22,9 @@ func (c *Conn) handleGetMetadata(tag string, dec *imapwire.Decoder) error {
 	var options imap.GetMetadataOptions
 	var entries []string
 	var optErr error
+	defer func() {
+		err = preferBadError(optErr, err)
+	}()
 	numOptions := 0
 
 	// Check for optional options list
@@ -33,7 +36,7 @@ func (c *Conn) handleGetMetadata(tag string, dec *imapwire.Decoder) error {
 		}
 		if err := readGetMetadataOption(dec, imapwire.ToUpperASCII(optName), &options); err != nil {
 			var imapErr *imap.Error
-			if errors.As(err, &imapErr) {
+			if errors.As(err, &imapErr) && imapErr.Type == imap.StatusResponseTypeBad {
 				if optErr == nil {
 					optErr = err
 				}

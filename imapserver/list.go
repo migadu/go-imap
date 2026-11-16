@@ -271,6 +271,9 @@ func (syntax listCommandSyntax) checkCaps(options *imap.ListOptions, caps imap.C
 func readListCmd(c *Conn, dec *imapwire.Decoder) (ref string, patterns []string, options *imap.ListOptions, syntax listCommandSyntax, err error) {
 	options = &imap.ListOptions{}
 	var optErr error
+	defer func() {
+		err = preferBadError(optErr, err)
+	}()
 
 	if !dec.ExpectSP() {
 		return "", nil, nil, syntax, dec.Err()
