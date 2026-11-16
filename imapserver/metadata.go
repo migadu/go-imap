@@ -24,6 +24,10 @@ func (c *Conn) handleGetMetadata(tag string, dec *imapwire.Decoder) (err error) 
 	var optErr error
 	defer func() {
 		err = preferBadError(optErr, err)
+		var decErr *imapwire.DecoderExpectError
+		if optErr != nil && errors.As(err, &decErr) {
+			err = optErr
+		}
 	}()
 	numOptions := 0
 
@@ -51,8 +55,8 @@ func (c *Conn) handleGetMetadata(tag string, dec *imapwire.Decoder) (err error) 
 		return err
 	}
 	if hasOptions {
-		if numOptions == 0 {
-			return newClientBugError("GETMETADATA options list must not be empty")
+		if numOptions == 0 && optErr == nil {
+			optErr = newClientBugError("GETMETADATA options list must not be empty")
 		}
 		if !dec.ExpectSP() {
 			return dec.Err()

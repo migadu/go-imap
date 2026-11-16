@@ -2,6 +2,7 @@ package imapserver
 
 import (
 	"fmt"
+	"slices"
 
 	"github.com/migadu/go-imap"
 	"github.com/migadu/go-imap/internal"
@@ -12,11 +13,33 @@ import (
 func (c *Conn) handleList(dec *imapwire.Decoder) error {
 	ref, pattern, options, syntax, err := readListCmd(c, dec)
 	if err != nil {
+		if c.checkState(imap.ConnStateAuthenticated) == nil {
+			err = preferBadError(c.checkListOptions(options, syntax), err)
+		}
 		return err
 	}
 
 	if err := c.checkState(imap.ConnStateAuthenticated); err != nil {
 		return err
+	}
+	if err := c.checkListOptions(options, syntax); err != nil {
+		return err
+	}
+	if options.ReturnStatus != nil && options.ReturnStatus.HighestModSeq {
+		c.markCondStoreEnabled()
+	}
+
+	c.commitCondStore()
+	w := &ListWriter{
+		conn:    c,
+		options: options,
+	}
+	return c.session.List(c.ctx, w, ref, pattern, options)
+}
+
+func (c *Conn) checkListOptions(options *imap.ListOptions, syntax listCommandSyntax) error {
+	if options == nil {
+		return nil
 	}
 	// RFC 5258 §3: options are "enabled by a capability string ..., and a
 	// client MUST NOT send an option for which the server has not advertised
@@ -36,20 +59,11 @@ func (c *Conn) handleList(dec *imapwire.Decoder) error {
 				Text: "Unknown STATUS data item",
 			}
 		}
-		if options.ReturnStatus.HighestModSeq {
-			if !c.supportsCondStore() {
-				return newClientBugError("HIGHESTMODSEQ requires CONDSTORE")
-			}
-			c.markCondStoreEnabled()
+		if options.ReturnStatus.HighestModSeq && !c.supportsCondStore() {
+			return newClientBugError("HIGHESTMODSEQ requires CONDSTORE")
 		}
 	}
-
-	c.commitCondStore()
-	w := &ListWriter{
-		conn:    c,
-		options: options,
-	}
-	return c.session.List(c.ctx, w, ref, pattern, options)
+	return nil
 }
 
 func (c *Conn) handleLSub(dec *imapwire.Decoder) error {
@@ -270,16 +284,24 @@ func (syntax listCommandSyntax) checkCaps(options *imap.ListOptions, caps imap.C
 // inferred from the resulting options or non-empty mailbox patterns alone.
 func readListCmd(c *Conn, dec *imapwire.Decoder) (ref string, patterns []string, options *imap.ListOptions, syntax listCommandSyntax, err error) {
 	options = &imap.ListOptions{}
-	var optErr error
+	var (
+		optErr        error
+		hasSelectOpts bool
+		hasPatterns   bool
+		hasReturnOpts bool
+		allMetadata   bool
+	)
 	defer func() {
+		syntax.extended = hasSelectOpts || hasPatterns || hasReturnOpts
+		syntax.patternList = hasPatterns
 		err = preferBadError(optErr, err)
 	}()
 
 	if !dec.ExpectSP() {
-		return "", nil, nil, syntax, dec.Err()
+		return "", nil, options, syntax, dec.Err()
 	}
 
-	hasSelectOpts, err := dec.List(func() error {
+	hasSelectOpts, err = dec.List(func() error {
 		var selectOpt string
 		if !dec.ExpectAString(&selectOpt) {
 			return dec.Err()
@@ -301,22 +323,22 @@ func readListCmd(c *Conn, dec *imapwire.Decoder) (ref string, patterns []string,
 		return nil
 	})
 	if err != nil {
-		return "", nil, nil, syntax, fmt.Errorf("in list-select-opts: %w", err)
+		return "", nil, options, syntax, fmt.Errorf("in list-select-opts: %w", err)
 	}
 	if hasSelectOpts {
 		if options.SelectRecursiveMatch && !options.SelectSubscribed && optErr == nil {
 			optErr = newClientBugError("The LIST RECURSIVEMATCH select option requires SUBSCRIBED")
 		}
 		if !dec.ExpectSP() {
-			return "", nil, nil, syntax, dec.Err()
+			return "", nil, options, syntax, dec.Err()
 		}
 	}
 
 	if !dec.ExpectMailbox(&ref) || !dec.ExpectSP() {
-		return "", nil, nil, syntax, dec.Err()
+		return "", nil, options, syntax, dec.Err()
 	}
 
-	hasPatterns, err := dec.List(func() error {
+	hasPatterns, err = dec.List(func() error {
 		pattern, err := readListMailbox(dec)
 		if err == nil && pattern != "" {
 			patterns = append(patterns, pattern)
@@ -324,7 +346,7 @@ func readListCmd(c *Conn, dec *imapwire.Decoder) (ref string, patterns []string,
 		return err
 	})
 	if err != nil {
-		return "", nil, nil, syntax, err
+		return "", nil, options, syntax, err
 	} else if hasPatterns && len(patterns) == 0 {
 		if optErr == nil {
 			optErr = newClientBugError("LIST-EXTENDED requires a non-empty parenthesized pattern list")
@@ -332,38 +354,36 @@ func readListCmd(c *Conn, dec *imapwire.Decoder) (ref string, patterns []string,
 	} else if !hasPatterns {
 		pattern, err := readListMailbox(dec)
 		if err != nil {
-			return "", nil, nil, syntax, err
+			return "", nil, options, syntax, err
 		}
 		if pattern != "" {
 			patterns = append(patterns, pattern)
 		}
 	}
 
-	hasReturnOpts := dec.SP()
+	hasReturnOpts = dec.SP()
 	if hasReturnOpts { // list-return-opts
 		var atom string
 		if !dec.ExpectAtom(&atom) || !dec.Expect(imapwire.EqualFoldASCII(atom, "RETURN"), "RETURN") || !dec.ExpectSP() {
-			return "", nil, nil, syntax, dec.Err()
+			return "", nil, options, syntax, dec.Err()
 		}
 
 		err := dec.ExpectList(func() error {
-			return readReturnOption(dec, options, &optErr)
+			return readReturnOption(dec, options, &allMetadata, &optErr)
 		})
 		if err != nil {
-			return "", nil, nil, syntax, fmt.Errorf("in list-return-opts: %w", err)
+			return "", nil, options, syntax, fmt.Errorf("in list-return-opts: %w", err)
 		}
 	}
 
 	if !dec.ExpectCRLF() {
-		return "", nil, nil, syntax, dec.Err()
+		return "", nil, options, syntax, dec.Err()
 	}
 
 	if optErr != nil {
-		return "", nil, nil, syntax, optErr
+		return "", nil, options, syntax, optErr
 	}
 
-	syntax.extended = hasSelectOpts || hasPatterns || hasReturnOpts
-	syntax.patternList = hasPatterns
 	return ref, patterns, options, syntax, nil
 }
 
@@ -402,7 +422,7 @@ func isListChar(ch byte) bool {
 	}
 }
 
-func readReturnOption(dec *imapwire.Decoder, options *imap.ListOptions, optErr *error) error {
+func readReturnOption(dec *imapwire.Decoder, options *imap.ListOptions, allMetadata *bool, optErr *error) error {
 	var name string
 	if !dec.ExpectAtom(&name) {
 		return dec.Err()
@@ -428,9 +448,16 @@ func readReturnOption(dec *imapwire.Decoder, options *imap.ListOptions, optErr *
 			return readStatusItem(dec, options.ReturnStatus, optErr)
 		})
 	case "METADATA":
-		options.ReturnMetadata = []string{}
+		if options.ReturnMetadata == nil {
+			options.ReturnMetadata = []string{}
+		}
 		if !dec.NextBytesFold(" (") {
-			return dec.Err()
+			if err := dec.Err(); err != nil {
+				return err
+			}
+			*allMetadata = true
+			options.ReturnMetadata = []string{}
+			return nil
 		}
 		if !dec.ExpectSP() {
 			return dec.Err()
@@ -452,7 +479,9 @@ func readReturnOption(dec *imapwire.Decoder, options *imap.ListOptions, optErr *
 					})
 				}
 			}
-			options.ReturnMetadata = append(options.ReturnMetadata, entry)
+			if !*allMetadata && !slices.Contains(options.ReturnMetadata, entry) {
+				options.ReturnMetadata = append(options.ReturnMetadata, entry)
+			}
 			return nil
 		})
 	default:
