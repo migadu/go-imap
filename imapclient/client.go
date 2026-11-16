@@ -490,6 +490,24 @@ func (c *Client) useQuotedUTF8Locked() bool {
 		(c.caps != nil && !c.caps.Has(imap.CapIMAP4rev1))
 }
 
+func (c *Client) hasPendingSessionResetLocked() bool {
+	for _, pending := range c.pendingCmds {
+		switch pending.(type) {
+		case *unauthenticateCommand, *logoutCommand:
+			return true
+		}
+	}
+	return false
+}
+
+func (c *Client) useEncoderQuotedUTF8Locked() bool {
+	if !c.hasPendingSessionResetLocked() &&
+		(c.enabled.Has(imap.CapIMAP4rev2) || c.enabled.Has(imap.CapUTF8Accept)) {
+		return true
+	}
+	return c.caps != nil && !c.caps.Has(imap.CapIMAP4rev1)
+}
+
 // State returns the current connection state of the client.
 func (c *Client) State() imap.ConnState {
 	c.mutex.Lock()
@@ -752,7 +770,7 @@ func (c *Client) beginCommand(name string, cmd command) *commandEncoder {
 	if c.awaitingResp {
 		c.setReadTimeout(c.readTimeoutLocked())
 	}
-	quotedUTF8 := c.useQuotedUTF8Locked()
+	quotedUTF8 := c.useEncoderQuotedUTF8Locked()
 	literalMinus := c.caps.Has(imap.CapLiteralMinus)
 	literalPlus := c.caps.Has(imap.CapLiteralPlus)
 
