@@ -515,6 +515,7 @@ func (c *Conn) serve() {
 		// connection hard, defeating the clean close. stopNotifyPump is
 		// idempotent, so the deferred call is then a no-op.
 		c.stopNotifyPump()
+		_ = c.flushClosingCondStore()
 		c.shutdownBye()
 	}
 }
@@ -574,6 +575,8 @@ func (c *Conn) finishBye(err error) error {
 	if !errors.As(err, &imapErr) || imapErr.Type != imap.StatusResponseTypeBye {
 		return err
 	}
+	c.stopNotifyPump()
+	_ = c.flushClosingCondStore()
 	if writeErr := c.writeStatusResp("", (*imap.StatusResponse)(imapErr)); writeErr != nil {
 		return writeErr
 	}
@@ -1011,10 +1014,13 @@ func (c *Conn) writeContReq(text string) error {
 }
 
 func (c *Conn) writeCapabilityStatus(tag string, typ imap.StatusResponseType, text string) error {
+	// Capability lookup can call the backend, so finish it before acquiring
+	// encMutex and arming respWriteTimeout.
+	caps := c.availableCaps()
 	enc := newResponseEncoder(c)
 	defer enc.end()
 	enc.tagged = tag != ""
-	return writeCapabilityStatus(enc.Encoder, tag, typ, c.availableCaps(), text)
+	return writeCapabilityStatus(enc.Encoder, tag, typ, caps, text)
 }
 
 func (c *Conn) checkState(state imap.ConnState) error {
@@ -1184,7 +1190,7 @@ func (enc *responseEncoder) prepareTaggedResponse(tag string, resp *imap.StatusR
 		return nil
 	}
 	enc.tagged = true
-	return enc.conn.finishCondStore(enc.Encoder, wasCondStore, wasSelected)
+	return enc.conn.finishCondStore(enc.Encoder, resp, wasCondStore, wasSelected)
 }
 
 func (enc *responseEncoder) Literal(size int64) io.WriteCloser {

@@ -23,9 +23,10 @@ func (c *Conn) handleThread(dec *imapwire.Decoder, numKind NumKind) error {
 		return dec.Err()
 	}
 
+	var algErr error
 	algorithm := imap.ThreadAlgorithm(imapwire.ToUpperASCII(algStr))
 	if algorithm != imap.ThreadReferences && algorithm != imap.ThreadOrderedSubject && algorithm != imap.ThreadRefs {
-		return &imap.Error{
+		algErr = &imap.Error{
 			Type: imap.StatusResponseTypeBad,
 			Text: fmt.Sprintf("Unsupported THREAD algorithm: %s", algorithm),
 		}
@@ -33,26 +34,14 @@ func (c *Conn) handleThread(dec *imapwire.Decoder, numKind NumKind) error {
 
 	var charset string
 	if !dec.ExpectAString(&charset) || !dec.ExpectSP() {
-		return dec.Err()
+		return preferBadError(algErr, dec.Err())
 	}
-	switch imapwire.ToUpperASCII(charset) {
-	case "US-ASCII", "UTF-8":
-		// IMAP4rev2 mandates US-ASCII and UTF-8 support. The backend
-		// receives this charset string and can enforce its own restrictions.
-	default:
-		return &imap.Error{
-			Type: imap.StatusResponseTypeNo,
-			Code: imap.ResponseCodeBadCharset,
-			Text: "Only US-ASCII and UTF-8 are supported THREAD charsets",
-		}
-	}
+	badCharset := !searchCharsetSupported(charset)
 
 	var criteria imap.SearchCriteria
 	for {
-		var err error
-		err = readSearchKey(c, &criteria, dec)
-		if err != nil {
-			return fmt.Errorf("in search-key: %w", err)
+		if err := readSearchKey(c, &criteria, dec); err != nil {
+			return preferBadError(algErr, fmt.Errorf("in search-key: %w", err))
 		}
 
 		if !dec.SP() {
@@ -75,7 +64,17 @@ func (c *Conn) handleThread(dec *imapwire.Decoder, numKind NumKind) error {
 			Text: "THREAD not supported by server",
 		}
 	}
+	if algErr != nil {
+		return algErr
+	}
 	c.commitCondStore()
+	if badCharset {
+		return &imap.Error{
+			Type: imap.StatusResponseTypeNo,
+			Code: imap.ResponseCodeBadCharset,
+			Text: "Only US-ASCII and UTF-8 are supported THREAD charsets",
+		}
+	}
 
 	data, err := sessionThread.Thread(c.ctx, numKind, algorithm, charset, &criteria)
 	if err != nil {

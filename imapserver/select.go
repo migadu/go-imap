@@ -34,6 +34,9 @@ func (c *Conn) handleSelect(tag string, dec *imapwire.Decoder, readOnly bool) er
 				if !c.supportsCondStore() {
 					return newClientBugError("CONDSTORE parameter requires CONDSTORE")
 				}
+				if options.CondStore {
+					return newClientBugError("duplicate CONDSTORE parameter")
+				}
 				options.CondStore = true
 				// SELECT/EXAMINE (CONDSTORE) is a CONDSTORE-enabling command
 				// (RFC 7162 §3.1): the client is now CONDSTORE-aware.
@@ -47,6 +50,9 @@ func (c *Conn) handleSelect(tag string, dec *imapwire.Decoder, readOnly bool) er
 				// "(QRESYNC)".
 				if !c.enabledHas(imap.CapQResync) {
 					return newClientBugError("QRESYNC parameter requires ENABLE QRESYNC")
+				}
+				if options.QResync != nil {
+					return newClientBugError("duplicate QRESYNC parameter")
 				}
 				if !dec.ExpectSP() {
 					return dec.Err()

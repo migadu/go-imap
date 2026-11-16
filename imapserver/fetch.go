@@ -17,6 +17,14 @@ import (
 
 const envelopeDateLayout = "Mon, 02 Jan 2006 15:04:05 -0700"
 
+// envelopeDate formats an envelope date with its explicit source-zone status.
+func envelopeDate(t time.Time, unknownZone bool) string {
+	if unknownZone {
+		return t.UTC().Format("Mon, 02 Jan 2006 15:04:05") + " -0000"
+	}
+	return t.Format(envelopeDateLayout)
+}
+
 type fetchWriterOptions struct {
 	bodyStructure struct {
 		extended    bool // BODYSTRUCTURE
@@ -848,7 +856,7 @@ func writeEnvelope(enc *imapwire.Encoder, envelope *imap.Envelope) {
 	if envelope.Date.IsZero() {
 		enc.NIL()
 	} else {
-		enc.String(envelope.Date.Format(envelopeDateLayout))
+		enc.String(envelopeDate(envelope.Date, envelope.DateUnknownZone))
 	}
 	enc.SP()
 	writeNString(enc, mime.QEncoding.Encode("utf-8", envelope.Subject))
