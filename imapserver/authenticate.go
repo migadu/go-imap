@@ -100,7 +100,7 @@ func (c *Conn) handleAuthenticate(tag string, dec *imapwire.Decoder) error {
 			return err
 		}
 
-		encodedResp, err := c.readSASLResponse()
+		encodedResp, err := c.readSASLResponse(dec)
 		if err != nil {
 			return err
 		} else if string(encodedResp) == "*" {
@@ -127,18 +127,24 @@ func (c *Conn) handleAuthenticate(tag string, dec *imapwire.Decoder) error {
 // the read under it fails it returns the octets that did arrive as a line, with
 // a nil error, so a response cut off by a timeout or a close would be taken for
 // a whole one.
-func (c *Conn) readSASLResponse() ([]byte, error) {
+func (c *Conn) readSASLResponse(dec *imapwire.Decoder) ([]byte, error) {
 	c.setReadTimeout(cmdReadTimeout)
 	line, err := c.br.ReadSlice('\n')
 	if err == bufio.ErrBufferFull {
 		// The response does not fit the read buffer. That is the client's
 		// doing: skip the rest of the line so the next command is read from a
 		// command boundary, and refuse the exchange.
+		var prevTail string
 		for err == bufio.ErrBufferFull {
-			_, err = c.br.ReadSlice('\n')
+			prevTail = retainLiteralTail(prevTail, line)
+			line, err = c.br.ReadSlice('\n')
 		}
 		if err != nil {
 			return nil, saslReadError(err)
+		}
+		tail := strings.TrimSuffix(strings.TrimSuffix(prevTail+string(line), "\n"), "\r")
+		if imapwire.EndsWithNonSyncLiteral(tail) {
+			dec.MarkDesynchronized()
 		}
 		return nil, newClientBugError("SASL response too long")
 	} else if err != nil {
@@ -148,7 +154,22 @@ func (c *Conn) readSASLResponse() ([]byte, error) {
 	if n := len(line); n > 0 && line[n-1] == '\r' {
 		line = line[:n-1]
 	}
+	if imapwire.EndsWithNonSyncLiteral(string(line)) {
+		dec.MarkDesynchronized()
+	}
 	return line, nil
+}
+
+func retainLiteralTail(prev string, chunk []byte) string {
+	const keep = 64
+	if len(chunk) >= keep {
+		return string(chunk[len(chunk)-keep:])
+	}
+	s := prev + string(chunk)
+	if len(s) > keep {
+		s = s[len(s)-keep:]
+	}
+	return s
 }
 
 // saslReadError ends the connection after a failure to read the client's SASL

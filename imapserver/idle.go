@@ -1,10 +1,12 @@
 package imapserver
 
 import (
+	"bufio"
 	"errors"
 	"fmt"
 	"net"
 	"runtime/debug"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -159,7 +161,7 @@ func (c *Conn) handleIdle(dec *imapwire.Decoder) error {
 		awaitBackend()
 		return errShutdown
 	}
-	line, isPrefix, err := c.br.ReadLine()
+	line, overlong, nonSyncTail, err := readIdleLine(c.br)
 	active := c.setActive()
 	close(stop)
 	backendErr := awaitBackend()
@@ -201,9 +203,33 @@ func (c *Conn) handleIdle(dec *imapwire.Decoder) error {
 			return err
 		}
 	}
-	if isPrefix || string(line) != "DONE" {
+	if overlong || line != "DONE" {
+		if nonSyncTail {
+			dec.MarkDesynchronized()
+		}
 		return newClientBugError("Syntax error: expected DONE to end IDLE command")
 	}
 
 	return backendErr
+}
+
+func readIdleLine(br *bufio.Reader) (line string, overlong, nonSyncTail bool, err error) {
+	slice, err := br.ReadSlice('\n')
+	if err == bufio.ErrBufferFull {
+		var prevTail string
+		for err == bufio.ErrBufferFull {
+			prevTail = retainLiteralTail(prevTail, slice)
+			slice, err = br.ReadSlice('\n')
+		}
+		if err != nil {
+			return "", true, false, err
+		}
+		tail := strings.TrimSuffix(strings.TrimSuffix(prevTail+string(slice), "\n"), "\r")
+		return "", true, imapwire.EndsWithNonSyncLiteral(tail), nil
+	}
+	if err != nil {
+		return "", false, false, err
+	}
+	s := strings.TrimSuffix(string(slice[:len(slice)-1]), "\r")
+	return s, false, imapwire.EndsWithNonSyncLiteral(s), nil
 }
