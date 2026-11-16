@@ -250,8 +250,10 @@ func (c *Conn) handleUnauthenticate(dec *imapwire.Decoder) error {
 
 	if err := session.Unauthenticate(c.ctx); err != nil {
 		// The command failed, so the session — and with it the client's watch —
-		// is still in effect. Put the pump back.
-		c.restartNotifyPump(hadPump)
+		// is still in effect unless the session terminated with BYE.
+		if !isByeError(err) {
+			c.restartNotifyPump(hadPump)
+		}
 		return err
 	}
 

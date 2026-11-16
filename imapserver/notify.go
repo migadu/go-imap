@@ -184,13 +184,21 @@ func (c *Conn) handleNotify(tag string, dec *imapwire.Decoder) error {
 	w := &UpdateWriter{conn: c, allowExpunge: true, notify: true}
 	if err := session.SetNotify(c.ctx, options, w); err != nil {
 		var imapErr *imap.Error
-		if !wasCondStore && errors.As(err, &imapErr) && imapErr.Type == imap.StatusResponseTypeBad {
+		if !wasCondStore && errors.As(err, &imapErr) && (imapErr.Type == imap.StatusResponseTypeBad || imapErr.Type == imap.StatusResponseTypeBye) {
+			if imapErr.Type == imap.StatusResponseTypeBye {
+				// SetNotify may have already emitted MODSEQ updates before
+				// ending the session. Flush their safe watermark while the
+				// provisional awareness is still visible; the pump is stopped.
+				// Preserve the original BYE even if this best-effort write fails.
+				_ = c.flushClosingCondStore()
+			}
 			c.rollbackCondStore()
 		}
 		// RFC 5465 section 3.1: the effect of a successful NOTIFY command
 		// lasts until the next NOTIFY command. A failed one leaves the
-		// previous watch in effect, so restart its pump.
-		if hadPump {
+		// previous watch in effect, so restart its pump unless the session
+		// terminated with BYE.
+		if hadPump && !isByeError(err) {
 			c.startNotifyPump(session)
 		}
 		var badEventErr *UnsupportedNotifyEventError
