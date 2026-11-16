@@ -61,6 +61,8 @@ func canonicalNotifyEvent(name string) imap.NotifyEvent {
 }
 
 func (c *Conn) handleNotify(tag string, dec *imapwire.Decoder) error {
+	wasCondStore, wasSelected := c.CondStoreEnabled(), c.state == imap.ConnStateSelected
+
 	// pendingFetchWriterOptions carries the MessageNew fetch-att writer options
 	// from the parser to the point where the new watch is installed.
 	var pendingFetchWriterOptions *fetchWriterOptions
@@ -71,8 +73,11 @@ func (c *Conn) handleNotify(tag string, dec *imapwire.Decoder) error {
 	}
 
 	var (
-		options  *imap.NotifyOptions
-		overflow bool // a size cap was exceeded; refuse once the command is fully parsed
+		options        *imap.NotifyOptions
+		overflow       bool // a size cap was exceeded; refuse once the command is validated
+		groups         int
+		selectedGroups int
+		invalidOptions error
 	)
 	switch imapwire.ToUpperASCII(verb) {
 	case "NONE":
@@ -92,6 +97,18 @@ func (c *Conn) handleNotify(tag string, dec *imapwire.Decoder) error {
 				if err != nil {
 					return err
 				}
+				groups++
+				// Validate discarded groups too, while continuing to consume the
+				// whole command (including literals) before any structural refusal.
+				if item.MailboxSpec == imap.NotifyMailboxSpecSelected || item.MailboxSpec == imap.NotifyMailboxSpecSelectedDelayed {
+					selectedGroups++
+				}
+				if invalidOptions == nil {
+					invalidOptions = validateNotifyOptions(&imap.NotifyOptions{Items: []imap.NotifyItem{*item}})
+					if invalidOptions == nil && selectedGroups > 1 {
+						invalidOptions = newClientBugError("NOTIFY: only one SELECTED or SELECTED-DELAYED event group is allowed")
+					}
+				}
 				if groupOverflow || len(options.Items) >= maxNotifyEventGroups {
 					overflow = true
 					continue
@@ -105,25 +122,13 @@ func (c *Conn) handleNotify(tag string, dec *imapwire.Decoder) error {
 			if !dec.ExpectAtom(&atom) {
 				return dec.Err()
 			}
-			if imapwire.EqualFoldASCII(atom, "STATUS") && !options.Status && len(options.Items) == 0 {
+			if imapwire.EqualFoldASCII(atom, "STATUS") && !options.Status && groups == 0 {
 				options.Status = true
 				continue
 			}
 			return newClientBugError("Syntax error in NOTIFY command")
 		}
-		if overflow {
-			// RFC 5465 §3.1: the server MAY refuse a watch that would be
-			// prohibitively expensive with NO [NOTIFICATIONOVERFLOW].
-			if !dec.ExpectCRLF() {
-				return dec.Err()
-			}
-			return &imap.Error{
-				Type: imap.StatusResponseTypeNo,
-				Code: imap.ResponseCodeNotificationOverflow,
-				Text: "NOTIFY watch too large",
-			}
-		}
-		if len(options.Items) == 0 {
+		if groups == 0 {
 			return newClientBugError("NOTIFY SET requires at least one event group")
 		}
 	default:
@@ -154,9 +159,17 @@ func (c *Conn) handleNotify(tag string, dec *imapwire.Decoder) error {
 		}
 	}
 
-	if options != nil {
-		if err := validateNotifyOptions(options); err != nil {
-			return err
+	if invalidOptions != nil {
+		return invalidOptions
+	}
+	c.commitCondStore()
+	if overflow {
+		// A resource refusal still executes a valid CONDSTORE-enabling command
+		// (RFC 7162 §3.1), without installing its oversized watch (RFC 5465 §3.1).
+		return &imap.Error{
+			Type: imap.StatusResponseTypeNo,
+			Code: imap.ResponseCodeNotificationOverflow,
+			Text: "NOTIFY watch too large",
 		}
 	}
 
@@ -175,7 +188,7 @@ func (c *Conn) handleNotify(tag string, dec *imapwire.Decoder) error {
 		}
 		var badEventErr *UnsupportedNotifyEventError
 		if errors.As(err, &badEventErr) {
-			return c.writeBadEvent(tag, badEventErr.Supported)
+			return c.writeBadEvent(tag, badEventErr.Supported, wasCondStore, wasSelected)
 		}
 		return err
 	}
@@ -200,10 +213,16 @@ func (c *Conn) handleNotify(tag string, dec *imapwire.Decoder) error {
 	if err := c.poll("NOTIFY"); err != nil {
 		return err
 	}
-	return c.writeStatusResp(tag, &imap.StatusResponse{
+	enc := newResponseEncoder(c)
+	defer enc.end()
+	okResp := &imap.StatusResponse{
 		Type: imap.StatusResponseTypeOK,
 		Text: "NOTIFY completed",
-	})
+	}
+	if err := enc.prepareTaggedResponse(tag, okResp, wasCondStore, wasSelected); err != nil {
+		return err
+	}
+	return writeStatusResp(enc.Encoder, tag, okResp)
 }
 
 // readNotifyEventGroup parses one event-group; the opening parenthesis has
@@ -418,10 +437,10 @@ func validateNotifyOptions(options *imap.NotifyOptions) error {
 
 // writeBadEvent writes a tagged NO response with the BADEVENT response code,
 // listing the events supported by the backend (RFC 5465 section 4).
-func (c *Conn) writeBadEvent(tag string, supported []imap.NotifyEvent) error {
+func (c *Conn) writeBadEvent(tag string, supported []imap.NotifyEvent, wasCondStore, wasSelected bool) error {
 	enc := newResponseEncoder(c)
 	defer enc.end()
-	if err := enc.prepareTaggedResponse(tag, &imap.StatusResponse{Type: imap.StatusResponseTypeNo}, true, false); err != nil {
+	if err := enc.prepareTaggedResponse(tag, &imap.StatusResponse{Type: imap.StatusResponseTypeNo}, wasCondStore, wasSelected); err != nil {
 		return err
 	}
 	if tag == "" {

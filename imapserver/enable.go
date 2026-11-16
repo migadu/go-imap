@@ -15,6 +15,11 @@ func (c *Conn) handleEnable(dec *imapwire.Decoder) error {
 		}
 		requested = append(requested, cap)
 	}
+	if len(requested) == 0 {
+		// enable = "ENABLE" 1*(SP capability) (RFC 9051 §9): "BAD - No
+		// arguments" (RFC 9051 §6.3.1).
+		return newClientBugError("ENABLE requires at least one capability")
+	}
 	if !dec.ExpectCRLF() {
 		return dec.Err()
 	}

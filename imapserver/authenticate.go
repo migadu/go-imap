@@ -77,9 +77,8 @@ func (c *Conn) handleAuthenticate(tag string, dec *imapwire.Decoder) error {
 		})
 	}
 
-	enc := newResponseEncoder(c)
-	defer enc.end()
-
+	// SASL work and client waits must not consume a response's write deadline.
+	// Each challenge gets its own encoder, as does the final completion.
 	resp := initialResp
 	for {
 		challenge, done, err := saslServer.Next(resp)
@@ -92,7 +91,7 @@ func (c *Conn) handleAuthenticate(tag string, dec *imapwire.Decoder) error {
 		// A challenge is plain base64 (RFC 9051 §6.2.2), so an empty one is
 		// sent as "+ " (RFC 4648 §10: BASE64("") = ""). The "=" of
 		// internal.EncodeSASL marks a zero-length initial response only.
-		if err := writeContReq(enc.Encoder, base64.StdEncoding.EncodeToString(challenge)); err != nil {
+		if err := c.writeContReq(base64.StdEncoding.EncodeToString(challenge)); err != nil {
 			return err
 		}
 
@@ -113,9 +112,7 @@ func (c *Conn) handleAuthenticate(tag string, dec *imapwire.Decoder) error {
 	}
 
 	c.state = imap.ConnStateAuthenticated
-	text := fmt.Sprintf("%v authentication successful", mech)
-	enc.tagged = tag != ""
-	return writeCapabilityOK(enc.Encoder, tag, c.availableCaps(), text)
+	return c.writeCapabilityStatus(tag, imap.StatusResponseTypeOK, fmt.Sprintf("%v authentication successful", mech))
 }
 
 // readSASLResponse reads the client's response to a continuation request,
@@ -126,6 +123,7 @@ func (c *Conn) handleAuthenticate(tag string, dec *imapwire.Decoder) error {
 // a nil error, so a response cut off by a timeout or a close would be taken for
 // a whole one.
 func (c *Conn) readSASLResponse() ([]byte, error) {
+	c.setReadTimeout(cmdReadTimeout)
 	line, err := c.br.ReadSlice('\n')
 	if err == bufio.ErrBufferFull {
 		// The response does not fit the read buffer. That is the client's
@@ -196,6 +194,11 @@ func (c *Conn) handleUnauthenticate(dec *imapwire.Decoder) error {
 	hadPump := c.notifyPumpRunning()
 	c.stopNotifyPump()
 
+	if err := c.flushClosingCondStore(); err != nil {
+		c.restartNotifyPump(hadPump)
+		return err
+	}
+
 	if err := session.Unauthenticate(c.ctx); err != nil {
 		// The command failed, so the session — and with it the client's watch —
 		// is still in effect. Put the pump back.
@@ -214,6 +217,7 @@ func (c *Conn) handleUnauthenticate(dec *imapwire.Decoder) error {
 	// not-authenticated as if freshly connected, so a re-authenticated client
 	// that never re-enables CONDSTORE must not receive MODSEQ data items.
 	c.condStore = false
+	c.condStorePending = false
 	c.mutex.Unlock()
 	return nil
 }

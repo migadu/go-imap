@@ -17,7 +17,9 @@ func (c *Conn) handleSelect(tag string, dec *imapwire.Decoder, readOnly bool) er
 	options := imap.SelectOptions{ReadOnly: readOnly}
 
 	if dec.SP() {
-		err := dec.ExpectList(func() error {
+		// select-params = SP "(" select-param *(SP select-param) ")" (RFC 4466
+		// §3): at least one parameter.
+		err := dec.ExpectNonEmptyList(func() error {
 			var param string
 			if !dec.ExpectAtom(&param) {
 				return dec.Err()
@@ -49,76 +51,11 @@ func (c *Conn) handleSelect(tag string, dec *imapwire.Decoder, readOnly bool) er
 				if !dec.ExpectSP() {
 					return dec.Err()
 				}
-				err := dec.ExpectList(func() error {
-					var uidValidity uint32
-					var modSeq uint64
-					if !dec.ExpectNumber(&uidValidity) || !dec.ExpectSP() || !dec.ExpectModSequenceValue(&modSeq) {
-						return dec.Err()
-					}
-					// uidvalidity = nz-number (RFC 7162 Section 7).
-					if uidValidity == 0 {
-						return &imapwire.DecoderExpectError{Message: "expected uidvalidity, got 0"}
-					}
-
-					qresyncData := &imap.QResyncData{
-						UIDValidity: uidValidity,
-						ModSeq:      modSeq,
-					}
-
-					// RFC 7162 §3.2.5: "[SP known-uids] [SP seq-match-data]". Either
-					// may be absent, and known-uids is a sequence set where
-					// seq-match-data is parenthesised, so tell them apart by the
-					// next byte. Attempting the sequence set and continuing on
-					// failure records a decode error, and the decoder stops
-					// reading input once one is recorded -- so a client that sent
-					// seq-match-data alone lost the rest of its command.
-					if dec.SP() {
-						seqMatch := dec.NextByteIs('(')
-						if !seqMatch {
-							var knownUIDs imap.UIDSet
-							if !dec.ExpectUIDSet(&knownUIDs) {
-								return dec.Err()
-							}
-							if err := refuseQResyncStar(knownUIDs, "known-uids"); err != nil {
-								return err
-							}
-							qresyncData.KnownUIDs = knownUIDs
-							seqMatch = dec.SP()
-						}
-
-						if seqMatch {
-							err := dec.ExpectList(func() error {
-								// seq-match-data is "known-sequence-set SP known-uid-set":
-								// the first half is sequence numbers, not UIDs.
-								var seqNums imap.SeqSet
-								var uids imap.UIDSet
-								if !dec.ExpectSeqSet(&seqNums) || !dec.ExpectSP() || !dec.ExpectUIDSet(&uids) {
-									return dec.Err()
-								}
-								if err := refuseQResyncStar(seqNums, "known-sequence-set"); err != nil {
-									return err
-								}
-								if err := refuseQResyncStar(uids, "known-uid-set"); err != nil {
-									return err
-								}
-								qresyncData.SeqMatch = &imap.QResyncSeqMatch{
-									SeqNums: seqNums,
-									UIDs:    uids,
-								}
-								return nil
-							})
-							if err != nil {
-								return err
-							}
-						}
-					}
-
-					options.QResync = qresyncData
-					return nil
-				})
+				qresyncData, err := readQResyncParam(dec)
 				if err != nil {
 					return err
 				}
+				options.QResync = qresyncData
 			default:
 				return newClientBugError(fmt.Sprintf("unknown SELECT parameter: %v", param))
 			}
@@ -136,6 +73,7 @@ func (c *Conn) handleSelect(tag string, dec *imapwire.Decoder, readOnly bool) er
 	if err := c.checkState(imap.ConnStateAuthenticated); err != nil {
 		return err
 	}
+	c.commitCondStore()
 
 	// The selected mailbox is about to change: no NotifyPoll delivery may be in
 	// flight across the switch, or an update queued for the old mailbox would
@@ -148,6 +86,9 @@ func (c *Conn) handleSelect(tag string, dec *imapwire.Decoder, readOnly bool) er
 	defer c.restartNotifyPump(c.fenceNotifyPump())
 
 	if c.state == imap.ConnStateSelected {
+		if err := c.flushClosingCondStore(); err != nil {
+			return err
+		}
 		if err := c.session.Unselect(c.ctx); err != nil {
 			return err
 		}
@@ -251,6 +192,81 @@ func (c *Conn) handleSelect(tag string, dec *imapwire.Decoder, readOnly bool) er
 	})
 }
 
+// readQResyncParam reads the value of the QRESYNC select parameter (RFC 7162
+// §7):
+//
+//	select-param        =/  "QRESYNC" SP "(" uidvalidity SP
+//	                    mod-sequence-value [SP known-uids]
+//	                    [SP seq-match-data] ")"
+//	seq-match-data      =  "(" known-sequence-set SP known-uid-set ")"
+//
+// Both parenthesized groups hold their fields exactly once: they are not
+// lists. Read as lists, "()" was taken for no parameter at all, so "(QRESYNC
+// ())" selected the mailbox without resynchronization, and a repeated group
+// replaced the first.
+func readQResyncParam(dec *imapwire.Decoder) (*imap.QResyncData, error) {
+	var uidValidity uint32
+	var modSeq uint64
+	if !dec.ExpectSpecial('(') || !dec.ExpectNumber(&uidValidity) || !dec.ExpectSP() || !dec.ExpectModSequenceValue(&modSeq) {
+		return nil, dec.Err()
+	}
+	// uidvalidity = nz-number (RFC 7162 Section 7).
+	if uidValidity == 0 {
+		return nil, &imapwire.DecoderExpectError{Message: "expected uidvalidity, got 0"}
+	}
+
+	qresyncData := &imap.QResyncData{
+		UIDValidity: uidValidity,
+		ModSeq:      modSeq,
+	}
+
+	// RFC 7162 §3.2.5: "[SP known-uids] [SP seq-match-data]". Either may be
+	// absent, and known-uids is a sequence set where seq-match-data is
+	// parenthesised, so tell them apart by the next byte. Attempting the
+	// sequence set and continuing on failure records a decode error, and the
+	// decoder stops reading input once one is recorded -- so a client that
+	// sent seq-match-data alone lost the rest of its command.
+	if dec.SP() {
+		seqMatch := dec.NextByteIs('(')
+		if !seqMatch {
+			var knownUIDs imap.UIDSet
+			if !dec.ExpectUIDSet(&knownUIDs) {
+				return nil, dec.Err()
+			}
+			if err := refuseQResyncStar(knownUIDs, "known-uids"); err != nil {
+				return nil, err
+			}
+			qresyncData.KnownUIDs = knownUIDs
+			seqMatch = dec.SP()
+		}
+
+		if seqMatch {
+			// seq-match-data is "known-sequence-set SP known-uid-set": the
+			// first half is sequence numbers, not UIDs.
+			var seqNums imap.SeqSet
+			var uids imap.UIDSet
+			if !dec.ExpectSpecial('(') || !dec.ExpectSeqSet(&seqNums) || !dec.ExpectSP() || !dec.ExpectUIDSet(&uids) || !dec.ExpectSpecial(')') {
+				return nil, dec.Err()
+			}
+			if err := refuseQResyncStar(seqNums, "known-sequence-set"); err != nil {
+				return nil, err
+			}
+			if err := refuseQResyncStar(uids, "known-uid-set"); err != nil {
+				return nil, err
+			}
+			qresyncData.SeqMatch = &imap.QResyncSeqMatch{
+				SeqNums: seqNums,
+				UIDs:    uids,
+			}
+		}
+	}
+
+	if !dec.ExpectSpecial(')') {
+		return nil, dec.Err()
+	}
+	return qresyncData, nil
+}
+
 // refuseQResyncStar refuses a set naming "*" ("*" or "n:*"): known-uids,
 // known-sequence-set and known-uid-set are sequence-sets in which "*" is not
 // allowed (RFC 7162 Section 7). The backend would get "*" as 0, and a known-uids
@@ -274,6 +290,10 @@ func (c *Conn) handleUnselect(dec *imapwire.Decoder, expunge bool) error {
 	// Same fence as SELECT: nothing may be delivered for the mailbox being
 	// closed while it is being closed.
 	defer c.restartNotifyPump(c.fenceNotifyPump())
+
+	if err := c.flushClosingCondStore(); err != nil {
+		return err
+	}
 
 	// RFC 3501 §6.4.2: "No messages are removed, and no error is given, if the
 	// mailbox is selected by an EXAMINE command or is otherwise selected

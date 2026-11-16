@@ -75,6 +75,7 @@ func (c *Conn) handleThread(dec *imapwire.Decoder, numKind NumKind) error {
 			Text: "THREAD not supported by server",
 		}
 	}
+	c.commitCondStore()
 
 	data, err := sessionThread.Thread(c.ctx, numKind, algorithm, charset, &criteria)
 	if err != nil {

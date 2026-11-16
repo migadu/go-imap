@@ -189,6 +189,7 @@ func (c *Conn) handleFetch(dec *imapwire.Decoder, numKind NumKind) error {
 	if err := c.checkState(imap.ConnStateSelected); err != nil {
 		return err
 	}
+	c.commitCondStore()
 
 	if numKind == NumKindUID {
 		options.UID = true
@@ -595,9 +596,17 @@ func (w *FetchResponseWriter) WriteUID(uid imap.UID) {
 // WriteFlags writes the message's flags.
 func (w *FetchResponseWriter) WriteFlags(flags []imap.Flag) {
 	w.writeItemSep()
-	w.enc.Atom("FLAGS").SP().List(len(flags), func(i int) {
-		w.enc.Flag(flags[i])
-	})
+	// Flags can be queued before ENABLE IMAP4rev2. Check the revision under
+	// the encoder lock so queued \Recent flags cannot follow ENABLED.
+	rev2 := w.enc.conn.isIMAP4rev2()
+	list := w.enc.Atom("FLAGS").SP().BeginList()
+	for _, flag := range flags {
+		if rev2 && imapwire.EqualFoldASCII(string(flag), string(internal.FlagRecent)) {
+			continue
+		}
+		list.Item().Flag(flag)
+	}
+	list.End()
 }
 
 // WriteRFC822Size writes the message's full size.
@@ -744,8 +753,10 @@ func (w *FetchResponseWriter) WriteEnvelope(envelope *imap.Envelope) {
 // capability filter can suppress the item mid-connection.
 func (w *FetchResponseWriter) WriteModSeq(modSeq uint64) {
 	conn := w.enc.conn
-	if conn != nil && !(conn.supportsCondStore() && conn.CondStoreEnabled()) {
-		return
+	if conn != nil {
+		if !(conn.supportsCondStore() && conn.CondStoreEnabled()) {
+			return
+		}
 	}
 	w.writeItemSep()
 	w.enc.Atom("MODSEQ").SP().Special('(').ModSeq(modSeq).Special(')')

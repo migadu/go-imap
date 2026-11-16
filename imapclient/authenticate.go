@@ -2,7 +2,6 @@ package imapclient
 
 import (
 	"encoding/base64"
-	"fmt"
 
 	"github.com/emersion/go-sasl"
 
@@ -36,6 +35,9 @@ func (c *Client) Authenticate(saslClient sasl.Client) error {
 		initialResp = nil
 	}
 	enc.flush()
+	if enc.locked {
+		c.setWriteTimeout(0)
+	}
 	defer enc.end()
 
 	for {
@@ -44,11 +46,7 @@ func (c *Client) Authenticate(saslClient sasl.Client) error {
 			return cmd.wait()
 		}
 
-		if challengeStr == "" {
-			if initialResp == nil {
-				return fmt.Errorf("imapclient: server requested SASL initial response, but we don't have one")
-			}
-
+		if challengeStr == "" && initialResp != nil {
 			contReq = c.registerContReq(cmd)
 			if err := c.writeSASLResp(initialResp); err != nil {
 				return err
@@ -59,12 +57,12 @@ func (c *Client) Authenticate(saslClient sasl.Client) error {
 
 		challenge, err := internal.DecodeSASL(challengeStr)
 		if err != nil {
-			return err
+			return c.cancelAuthenticate(cmd, err)
 		}
 
 		resp, err := saslClient.Next(challenge)
 		if err != nil {
-			return err
+			return c.cancelAuthenticate(cmd, err)
 		}
 
 		contReq = c.registerContReq(cmd)
@@ -81,6 +79,15 @@ type authenticateCommand struct {
 	caps imap.CapSet
 }
 
+func (c *Client) cancelAuthenticate(cmd *authenticateCommand, cause error) error {
+	if _, completed := cmd.poll(); !completed {
+		if err := c.writeSASLLine("*"); err == nil {
+			_ = cmd.wait()
+		}
+	}
+	return cause
+}
+
 func (c *Client) writeSASLResp(resp []byte) error {
 	// A continuation response is plain base64, so a zero-length response is an
 	// empty line. The "=" zero-length marker of RFC 4959 Section 3 is valid only
@@ -88,11 +95,18 @@ func (c *Client) writeSASLResp(resp []byte) error {
 	// not valid base64, and strict servers (e.g. Dovecot) reject it. Multi-step
 	// mechanisms hit this — SASL GSSAPI (RFC 4752) acknowledges the server's
 	// AP-REP with an empty token.
-	respStr := base64.StdEncoding.EncodeToString(resp)
-	if _, err := c.bw.WriteString(respStr + "\r\n"); err != nil {
+	return c.writeSASLLine(base64.StdEncoding.EncodeToString(resp))
+}
+
+func (c *Client) writeSASLLine(line string) error {
+	c.setWriteTimeout(cmdWriteTimeout)
+	defer c.setWriteTimeout(0)
+	if _, err := c.bw.WriteString(line + "\r\n"); err != nil {
+		c.closeWithError(err)
 		return err
 	}
 	if err := c.bw.Flush(); err != nil {
+		c.closeWithError(err)
 		return err
 	}
 	return nil

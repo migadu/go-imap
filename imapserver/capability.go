@@ -13,10 +13,11 @@ func (c *Conn) handleCapability(dec *imapwire.Decoder) error {
 		return dec.Err()
 	}
 
+	caps := c.availableCaps()
 	enc := newResponseEncoder(c)
 	defer enc.end()
 	enc.Atom("*").SP().Atom("CAPABILITY")
-	for _, c := range c.availableCaps() {
+	for _, c := range caps {
 		enc.SP().Atom(string(c))
 	}
 	return enc.CRLF()
@@ -147,9 +148,12 @@ func (c *Conn) availableCaps() []imap.Cap {
 			caps = append(caps, imap.CapNotify)
 		}
 
-		// METADATA capability
-		if _, ok := c.session.(SessionMetadata); ok && available.Has(imap.CapMetadata) {
-			caps = append(caps, imap.CapMetadata)
+		// METADATA and LIST-METADATA capabilities
+		if _, ok := c.session.(SessionMetadata); ok {
+			addAvailableCaps(&caps, available, []imap.Cap{
+				imap.CapMetadata,
+				imap.CapListMetadata,
+			})
 		}
 
 		// MULTISEARCH capability

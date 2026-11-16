@@ -212,9 +212,10 @@ type SessionHighestModSeq interface {
 	// which every change has been reported to the client. The client adopts
 	// it "even if it has seen higher mod-sequences" (RFC 7162 §6), so it must
 	// not cover a change that is still queued, such as an EXPUNGE held back
-	// by a FETCH, STORE or SEARCH. It is called once the command's own
-	// responses and its post-command Poll have been written, so a change those
-	// delivered may be covered. 0 sends nothing. The response encoder is held
+	// by a FETCH, STORE or SEARCH. At command completion it is called after
+	// the command's responses and post-command Poll, so a change those delivered
+	// may be covered. It is also called before closing the selected mailbox,
+	// after stopping its NOTIFY pump. 0 sends nothing. The response encoder is held
 	// while this is queried. It must return promptly without writing protocol
 	// responses or waiting for response writers (including NotifyPoll), or for
 	// locks those writers hold. A cached or atomic snapshot avoids this lock
@@ -345,6 +346,10 @@ type SessionMetadata interface {
 // RFC 5464 §4.3. Without this interface the limit is 4096 octets, the bound of
 // other buffered literals. A value sent as a quoted string is not checked: it
 // is bounded by the command size, and the session checks it as it sees fit.
+//
+// The literal values of one command together are limited to 4 MiB, or to one
+// value at this limit if that is more; a literal past that is refused with
+// NO [LIMIT].
 type SessionMetadataMaxSize interface {
 	SessionMetadata
 

@@ -69,7 +69,9 @@ func (c *Conn) handleSort(tag string, dec *imapwire.Decoder, numKind NumKind) er
 		case "TO":
 			criterion.Key = imap.SortKeyTo
 		default:
-			return fmt.Errorf("unknown sort key: %s", atom)
+			// Outside sort-key (RFC 5256 §5, RFC 5957 §5): invalid
+			// arguments, BAD (RFC 5256 §3).
+			return newClientBugError(fmt.Sprintf("Unknown SORT key: %q", atom))
 		}
 
 		sortCriteria = append(sortCriteria, criterion)
@@ -131,6 +133,7 @@ func (c *Conn) handleSort(tag string, dec *imapwire.Decoder, numKind NumKind) er
 	if extended && !c.supportsESort() {
 		return newClientBugError("SORT RETURN requires ESORT")
 	}
+	c.commitCondStore()
 
 	// If no return option is specified, ALL is assumed
 	if !options.ReturnMin && !options.ReturnMax && !options.ReturnAll && !options.ReturnCount {

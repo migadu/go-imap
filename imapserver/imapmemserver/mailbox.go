@@ -426,6 +426,12 @@ func (mbox *MailboxView) Fetch(ctx context.Context, w *imapserver.FetchWriter, n
 			return
 		}
 
+		binarySizes, decodeErr := msg.prepareBinary(options)
+		if decodeErr != nil {
+			err = decodeErr
+			return
+		}
+
 		if markSeen {
 			msg.flags[canonicalFlag(imap.FlagSeen)] = struct{}{}
 			flagsChanged = true
@@ -433,7 +439,7 @@ func (mbox *MailboxView) Fetch(ctx context.Context, w *imapserver.FetchWriter, n
 		}
 
 		respWriter := w.CreateMessage(mbox.tracker.EncodeSeqNum(seqNum))
-		err = msg.fetch(ctx, respWriter, options)
+		err = msg.fetch(ctx, respWriter, options, binarySizes)
 	})
 	if flagsChanged {
 		mbox.Mailbox.notifyEvent(evFlagChange)

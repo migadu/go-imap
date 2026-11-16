@@ -2,6 +2,7 @@ package imapmemserver
 
 import (
 	"context"
+	"errors"
 	"sort"
 	"strings"
 	"sync"
@@ -521,8 +522,14 @@ func (sess *UserSession) writeNotifyNewMessages(ctx context.Context, watch *noti
 		if sess.takeOwnMessage(nm.msg.uid) {
 			continue
 		}
+		binarySizes, err := nm.msg.prepareBinary(watch.selected.MessageNewFetch)
+		if errors.Is(err, imapserver.ErrUnknownCTE) {
+			continue
+		} else if err != nil {
+			return err
+		}
 		respWriter := fetchWriter.CreateMessage(nm.seqNum)
-		if err := nm.msg.fetch(ctx, respWriter, watch.selected.MessageNewFetch); err != nil {
+		if err := nm.msg.fetch(ctx, respWriter, watch.selected.MessageNewFetch, binarySizes); err != nil {
 			return err
 		}
 	}

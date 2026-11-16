@@ -25,12 +25,12 @@ func (c *Conn) handleList(dec *imapwire.Decoder) error {
 	// reaches it as LIST (SUBSCRIBED RECURSIVEMATCH), and "()" or a one-pattern
 	// list as a plain LIST.
 	if syntax.extended {
-		caps := c.availableCapsSet()
-		if !caps.Has(imap.CapListExtended) && !syntax.supportedByOptionCaps(options, caps) {
-			return newClientBugError("LIST-EXTENDED is not supported")
+		if err := syntax.checkCaps(options, c.availableCapsSet()); err != nil {
+			return err
 		}
 	}
 
+	c.commitCondStore()
 	w := &ListWriter{
 		conn:    c,
 		options: options,
@@ -225,22 +225,31 @@ type listCommandSyntax struct {
 	patternList bool
 }
 
-// supportedByOptionCaps preserves independently advertised LIST options without
-// enabling unrelated LIST-EXTENDED syntax. Each requested option needs its own
-// capability; an allowed option cannot authorize a different one alongside it.
-func (syntax listCommandSyntax) supportedByOptionCaps(options *imap.ListOptions, caps imap.CapSet) bool {
-	if syntax.patternList || options.SelectSubscribed || options.SelectRemote ||
-		options.SelectRecursiveMatch || options.ReturnSubscribed || options.ReturnChildren {
-		return false
-	}
-
+// checkCaps verifies that the connection advertises every capability required
+// by the extended LIST syntax and options used on the command (RFC 5258 §3,
+// RFC 6154 §2, RFC 5819 §2, RFC 9590 §3).
+func (syntax listCommandSyntax) checkCaps(options *imap.ListOptions, caps imap.CapSet) error {
 	specialUse := options.SelectSpecialUse || options.ReturnSpecialUse
 	status := options.ReturnStatus != nil
 	metadata := options.ReturnMetadata != nil
-	return (specialUse || status || metadata) &&
-		(!specialUse || caps.Has(imap.CapSpecialUse)) &&
-		(!status || caps.Has(imap.CapListStatus)) &&
-		(!metadata || caps.Has(imap.CapListMetadata))
+
+	if specialUse && !caps.Has(imap.CapSpecialUse) {
+		return newClientBugError("SPECIAL-USE is not supported")
+	}
+	if status && !caps.Has(imap.CapListStatus) {
+		return newClientBugError("LIST-STATUS is not supported")
+	}
+	if metadata && !caps.Has(imap.CapListMetadata) {
+		return newClientBugError("LIST-METADATA is not supported")
+	}
+
+	genericExtended := syntax.patternList || options.SelectSubscribed || options.SelectRemote ||
+		options.SelectRecursiveMatch || options.ReturnSubscribed || options.ReturnChildren ||
+		(syntax.extended && !specialUse && !status && !metadata)
+	if genericExtended && !caps.Has(imap.CapListExtended) {
+		return newClientBugError("LIST-EXTENDED is not supported")
+	}
+	return nil
 }
 
 // readListCmd reads the arguments of LIST, retaining syntax that cannot be
@@ -303,6 +312,7 @@ func readListCmd(c *Conn, dec *imapwire.Decoder) (ref string, patterns []string,
 		}
 	}
 
+	var metadataEntryErr error
 	hasReturnOpts := dec.SP()
 	if hasReturnOpts { // list-return-opts
 		var atom string
@@ -311,7 +321,7 @@ func readListCmd(c *Conn, dec *imapwire.Decoder) (ref string, patterns []string,
 		}
 
 		err := dec.ExpectList(func() error {
-			return readReturnOption(c, dec, options)
+			return readReturnOption(c, dec, options, &metadataEntryErr)
 		})
 		if err != nil {
 			return "", nil, nil, syntax, fmt.Errorf("in list-return-opts: %w", err)
@@ -320,6 +330,13 @@ func readListCmd(c *Conn, dec *imapwire.Decoder) (ref string, patterns []string,
 
 	if !dec.ExpectCRLF() {
 		return "", nil, nil, syntax, dec.Err()
+	}
+
+	if metadataEntryErr != nil {
+		return "", nil, nil, syntax, fmt.Errorf("in list-return-opts: %w", &imap.Error{
+			Type: imap.StatusResponseTypeBad,
+			Text: metadataEntryErr.Error(),
+		})
 	}
 
 	if options.SelectRecursiveMatch && !options.SelectSubscribed {
@@ -366,7 +383,7 @@ func isListChar(ch byte) bool {
 	}
 }
 
-func readReturnOption(c *Conn, dec *imapwire.Decoder, options *imap.ListOptions) error {
+func readReturnOption(c *Conn, dec *imapwire.Decoder, options *imap.ListOptions, metadataEntryErr *error) error {
 	var name string
 	if !dec.ExpectAtom(&name) {
 		return dec.Err()
@@ -400,11 +417,11 @@ func readReturnOption(c *Conn, dec *imapwire.Decoder, options *imap.ListOptions)
 			if !dec.ExpectAString(&entry) {
 				return dec.Err()
 			}
-			if err := imap.ValidateMetadataEntry(entry); err != nil {
-				return &imap.Error{
-					Type: imap.StatusResponseTypeBad,
-					Text: err.Error(),
-				}
+			// Remember invalid names even if a later METADATA option replaces
+			// this entry list. Report the error only after consuming CRLF and
+			// any non-synchronizing literal data in the command.
+			if *metadataEntryErr == nil {
+				*metadataEntryErr = imap.ValidateMetadataEntry(entry)
 			}
 			options.ReturnMetadata = append(options.ReturnMetadata, entry)
 			return nil
