@@ -98,14 +98,16 @@ func (c *Client) MultiSearch(source *imap.SearchSource, criteria *imap.SearchCri
 		charset = "UTF-8"
 	}
 
+	requiresSelected := source == nil || source.IsZero() || source.Selected
 	cmd := &MultiSearchCommand{
 		// Namespace membership, subscriptions and hierarchy delimiters are
 		// server-defined and not cached here. These scopes may include the
 		// selected mailbox, so keep their updates ahead of a queued SELECT.
-		usesSelected: source == nil || source.IsZero() || source.Selected ||
+		usesSelected: requiresSelected ||
 			source.Inboxes || source.Personal || source.Subscribed ||
 			len(source.Subtree) > 0 || len(source.SubtreeOne) > 0 ||
 			(condStore && searchCriteriaHasModSeq(criteria)),
+		requiresSelected: requiresSelected,
 	}
 	if source != nil {
 		// The caller may reuse source after this method returns. Attribution
@@ -271,7 +273,7 @@ func (c *Client) handleESearch() error {
 				}
 				return false
 			case *MultiSearchCommand:
-				return !crossedAuth && (!cmd.usesSelected || !crossedSelection) && cmd.base().tag == tag
+				return !crossedAuth && (!cmd.requiresSelected || !crossedSelection) && cmd.base().tag == tag
 			default:
 				return false
 			}
@@ -313,9 +315,10 @@ func (cmd *SearchCommand) Wait() (*imap.SearchData, error) {
 // MultiSearchCommand is a MULTISEARCH command.
 type MultiSearchCommand struct {
 	commandBase
-	usesSelected bool
-	mailboxes    []string
-	data         []*imap.SearchData
+	usesSelected     bool // conservative dependency for selected-mailbox updates
+	requiresSelected bool // source includes or defaults to "selected"
+	mailboxes        []string
+	data             []*imap.SearchData
 }
 
 func searchCriteriaHasModSeq(criteria *imap.SearchCriteria) bool {
