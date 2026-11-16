@@ -279,3 +279,61 @@ func TestAuthenticateLonePadOnlyInInitialResponse(t *testing.T) {
 		})
 	}
 }
+
+// Go's base64.StdEncoding.DecodeString silently strips '\r' and '\n'. Because
+// readSASLResponse removes only the single trailing CRLF, a bare CR earlier on
+// a continuation line must be rejected with tagged BAD as outside the RFC 9051
+// §9 base64 alphabet rather than stripped and passed to the SASL mechanism.
+func TestAuthenticateContinuationRefusesBareCR(t *testing.T) {
+	validB64 := base64.StdEncoding.EncodeToString([]byte("\x00user\x00pass"))
+	for _, tc := range []struct {
+		name  string
+		reply string
+	}{
+		{name: "bare CR only", reply: "\r"},
+		{name: "embedded bare CR", reply: validB64[:4] + "\r" + validB64[4:]},
+		{name: "trailing bare CR", reply: validB64 + "\r"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := make(chan []byte, 1)
+			mem := imapmemserver.New()
+			server := imapserver.New(&imapserver.Options{
+				NewSession: func(*imapserver.Conn) (imapserver.Session, *imapserver.GreetingData, error) {
+					return &recordingSASLSession{Session: mem.NewSession(), got: got}, nil, nil
+				},
+				InsecureAuth: true,
+				Caps:         imap.CapSet{imap.CapIMAP4rev1: {}},
+				Logger:       log.New(io.Discard, "", 0),
+			})
+			ln, err := net.Listen("tcp", "localhost:0")
+			if err != nil {
+				t.Fatalf("net.Listen() = %v", err)
+			}
+			go server.Serve(ln)
+			t.Cleanup(func() { server.Close() })
+			wc := dialWire(t, ln.Addr().String())
+
+			tag := wc.send(t, "AUTHENTICATE PLAIN")
+			if line, err := wc.readLine(); err != nil || line != "+ " {
+				t.Fatalf("continuation request = %q, %v, want %q", line, err, "+ ")
+			}
+			if _, err := io.WriteString(wc.conn, tc.reply+"\r\n"); err != nil {
+				t.Fatal(err)
+			}
+			lines, err := wc.waitTagged(tag)
+			if err != nil {
+				t.Fatal(err)
+			}
+			last := lines[len(lines)-1]
+			if !strings.HasPrefix(last, tag+" BAD") {
+				t.Fatalf("%s = %q, want %s BAD", tc.name, last, tag)
+			}
+			select {
+			case resp := <-got:
+				t.Fatalf("mechanism was given %q, want reply rejected before it", resp)
+			default:
+			}
+			wc.mustOK(t, "NOOP")
+		})
+	}
+}
