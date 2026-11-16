@@ -133,6 +133,7 @@ func (c *Client) handleList() error {
 		return fmt.Errorf("in LIST: %w", err)
 	}
 
+	activeSelect := c.activeSelectCmd()
 	cmd := c.findPendingCmdFunc(func(cmd command) bool {
 		switch cmd := cmd.(type) {
 		case *ListCommand:
@@ -141,7 +142,8 @@ func (c *Client) handleList() error {
 			// nothing about subscriptions.
 			return !cmd.lsub && cmd.matches(data)
 		case *SelectCommand:
-			return cmd.mailbox == data.Mailbox && cmd.data.List == nil
+			return cmd == activeSelect && data.OldName == "" &&
+				canonicalMailbox(cmd.mailbox) == canonicalMailbox(data.Mailbox) && cmd.data.List == nil
 		default:
 			return false
 		}
@@ -162,6 +164,12 @@ func (c *Client) handleList() error {
 		}
 	case *SelectCommand:
 		cmd.data.List = data
+		return c.deferSelectUpdate(cmd, true, func() error {
+			if handler := c.options.unilateralDataHandler().List; handler != nil {
+				return c.runUnilateralHandler(func() { handler(data) })
+			}
+			return nil
+		}, nil)
 	}
 
 	if cmd == nil && !c.ignoresUnsolicitedData() {

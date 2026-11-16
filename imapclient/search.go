@@ -99,7 +99,20 @@ func (c *Client) MultiSearch(source *imap.SearchSource, criteria *imap.SearchCri
 	}
 
 	cmd := &MultiSearchCommand{
-		usesSelected: source == nil || source.IsZero() || source.Selected || (condStore && searchCriteriaHasModSeq(criteria)),
+		// Namespace membership, subscriptions and hierarchy delimiters are
+		// server-defined and not cached here. These scopes may include the
+		// selected mailbox, so keep their updates ahead of a queued SELECT.
+		usesSelected: source == nil || source.IsZero() || source.Selected ||
+			source.Inboxes || source.Personal || source.Subscribed ||
+			len(source.Subtree) > 0 || len(source.SubtreeOne) > 0 ||
+			(condStore && searchCriteriaHasModSeq(criteria)),
+	}
+	if source != nil {
+		// The caller may reuse source after this method returns. Attribution
+		// must follow the command already sent, rather than that mutable input.
+		for _, mailbox := range source.Mailboxes {
+			cmd.mailboxes = append(cmd.mailboxes, canonicalMailbox(mailbox))
+		}
 	}
 	// Since we aggregate one ESEARCH response per mailbox, we don't prepopulate
 	// cmd.data here.
@@ -275,6 +288,7 @@ func (cmd *SearchCommand) Wait() (*imap.SearchData, error) {
 type MultiSearchCommand struct {
 	commandBase
 	usesSelected bool
+	mailboxes    []string
 	data         []*imap.SearchData
 }
 

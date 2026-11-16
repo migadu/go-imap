@@ -786,9 +786,12 @@ func (c *Client) handleFetch(seqNum uint32) (err error) {
 	// until then it is returned here.
 	var bufferedBytes int64
 	released := false
+	owned := false
 	var msg *FetchMessageData
 	defer func() {
-		msg.err = err
+		if !owned {
+			msg.err = err
+		}
 		close(items)
 		if !released && bufferedBytes > 0 {
 			c.releaseFetchBuffer(bufferedBytes)
@@ -833,11 +836,15 @@ func (c *Client) handleFetch(seqNum uint32) (err error) {
 	var flags []imap.Flag
 	var modSeq uint64
 	selectCmd := c.activeSelectCmd()
+	var provisionalCmd *SelectCommand
+	if selectCmd != nil && c.State() == imap.ConnStateSelected {
+		provisionalCmd = selectCmd
+	}
 	if selectCmd != nil && !selectCmd.qresync {
 		selectCmd = nil
 	}
 	handled := false
-	shouldBuffer := func() bool { return needsUID && !handled && uid == 0 }
+	shouldBuffer := func() bool { return !handled && (provisionalCmd != nil || (needsUID && uid == 0)) }
 	shouldBufferMetadata := func() bool { return shouldBuffer() || (!handled && selectCmd != nil) }
 	reserve := func(size int64) error {
 		// One response can never hold more than the whole budget.
@@ -847,7 +854,15 @@ func (c *Client) handleFetch(seqNum uint32) (err error) {
 		// Messages still holding buffered data, unconsumed, may leave too
 		// little of it: wait for them, as a streamed literal waits for its
 		// reader. A message whose data fits does not hold the reader up.
-		if err := c.acquireFetchBuffer(size); err != nil {
+		var err error
+		if provisionalCmd != nil {
+			// These bytes cannot be released before a later response resolves
+			// the selection. Waiting on our own journal would deadlock.
+			err = c.tryAcquireFetchBuffer(size)
+		} else {
+			err = c.acquireFetchBuffer(size)
+		}
+		if err != nil {
 			return err
 		}
 		bufferedBytes += size
@@ -988,6 +1003,50 @@ func (c *Client) handleFetch(seqNum uint32) (err error) {
 		return nil
 	}
 	finish := func() error {
+		if provisionalCmd != nil {
+			modified := selectCmd != nil && uid != 0 && modSeq != 0
+			if modified {
+				selectCmd.data.Modified = append(selectCmd.data.Modified, imap.SelectModifiedData{
+					SeqNum: seqNum, UID: uid, Flags: flags, ModSeq: modSeq,
+				})
+			}
+			handler := c.options.unilateralDataHandler().Fetch
+			if handler == nil {
+				// No callback can use this message: only SelectData is retained.
+				return nil
+			}
+			// Every literal has already been consumed. A closed, sufficiently
+			// sized channel preserves item order and duplicate attributes, and
+			// can be drained without needing the network reader again.
+			ownedItems := make(chan FetchItemData, len(buffered))
+			for _, item := range buffered {
+				ownedItems <- item.data
+			}
+			close(ownedItems)
+			msg.items = ownedItems
+			if n := bufferedBytes; n > 0 {
+				msg.release = func() { c.releaseFetchBuffer(n) }
+			}
+			owned, released = true, true
+			transferred := false
+			syntax, _ := c.dec.ReadCount() // literals are already in bufferedBytes
+			return c.deferSelectUpdateSize(provisionalCmd, modified, func() error {
+				err := c.runUnilateralHandler(func() {
+					defer msg.releaseAfterCallback()
+					handler(msg)
+				})
+				if err != nil {
+					// Cancellation may have prevented the callback from starting.
+					msg.releaseAfterCallback()
+				}
+				transferred = true
+				return err
+			}, func() {
+				if !transferred {
+					msg.releaseAfterCallback()
+				}
+			}, syntax+64)
+		}
 		if err := handleMsg(); err != nil {
 			return err
 		}
@@ -1118,6 +1177,15 @@ func (c *Client) handleFetch(seqNum uint32) (err error) {
 						return err
 					}
 					fetchLit = &fetchLiteralReader{LiteralReader: lit, msg: msg}
+				} else if lit != nil && provisionalCmd != nil && c.options.unilateralDataHandler().Fetch == nil {
+					// Without a callback, a provisional SELECT needs only the
+					// UID/FLAGS/MODSEQ summary, not a retained body.
+					c.setReadTimeout(c.options.literalTimeout())
+					_, err := io.Copy(io.Discard, lit)
+					c.setReadTimeout(c.options.responseTimeout())
+					if err != nil {
+						return err
+					}
 				} else if lit != nil && shouldBuffer() {
 					if err := reserve(lit.Size()); err != nil {
 						return err
@@ -1228,6 +1296,12 @@ func (c *Client) handleFetch(seqNum uint32) (err error) {
 		}
 
 		numAtts++
+		if provisionalCmd != nil {
+			// Account for item/channel storage as well as literal payloads.
+			if err := reserve(64); err != nil {
+				return err
+			}
+		}
 		entry := pendingItem{data: item, done: done}
 		// A later pipelined UID FETCH must not claim a SELECT's QRESYNC
 		// update before all of its UID, MODSEQ and FLAGS have been parsed.
@@ -1283,6 +1357,18 @@ func (c *Client) handleFetch(seqNum uint32) (err error) {
 			return dec.Err()
 		}
 	}
+}
+
+// tryAcquireFetchBuffer never waits: provisional SELECT data is held until a
+// later response, so a full journal must fail rather than block its decoder.
+func (c *Client) tryAcquireFetchBuffer(size int64) error {
+	c.fetchBufMutex.Lock()
+	defer c.fetchBufMutex.Unlock()
+	if size > c.options.maxFetchBufferSize()-c.fetchBufInUse {
+		return errFetchBufferTooLarge
+	}
+	c.fetchBufInUse += size
+	return nil
 }
 
 // acquireFetchBuffer takes size bytes of the budget shared by every message

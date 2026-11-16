@@ -104,9 +104,10 @@ type Decoder struct {
 	// announcement sits there -- is unknown; see DiscardLine.
 	readFailed bool
 
-	crlf      bool
-	listDepth int
-	readBytes int64
+	crlf         bool
+	listDepth    int
+	readBytes    int64
+	literalBytes int64
 }
 
 // NewDecoder creates a new decoder.
@@ -135,6 +136,13 @@ func (dec *Decoder) Err() error {
 // this does not affect large streamed payloads.
 func (dec *Decoder) ResetCount() {
 	dec.readBytes = 0
+	dec.literalBytes = 0
+}
+
+// ReadCount returns syntax bytes read and literal payload bytes announced
+// since ResetCount. Only syntax bytes count towards MaxSize.
+func (dec *Decoder) ReadCount() (syntax, literals int64) {
+	return dec.readBytes, dec.literalBytes
 }
 
 func (dec *Decoder) returnErr(err error) bool {
@@ -1151,6 +1159,7 @@ func (dec *Decoder) LiteralReader() (lit *LiteralReader, nonSync, ok bool) {
 	}
 
 	dec.literal = true
+	dec.literalBytes += size
 	lit = &LiteralReader{
 		dec:     dec,
 		size:    size,

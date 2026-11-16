@@ -29,22 +29,44 @@ func (c *Client) handleExpunge(seqNum uint32) error {
 		return nil
 	}
 
-	c.mutex.Lock()
-	if c.state == imap.ConnStateSelected && c.mailbox.NumMessages > 0 {
-		c.mailbox = c.mailbox.copy()
-		c.mailbox.NumMessages--
+	activeSelect := c.activeSelectCmd()
+	if activeSelect != nil && activeSelect.data.NumMessages > 0 {
+		activeSelect.data.NumMessages--
 	}
-	c.mutex.Unlock()
-
-	cmd := findPendingCmdByType[*ExpungeCommand](c)
-	if cmd != nil {
-		select {
-		case cmd.seqNums <- seqNum:
-		case <-c.closeCh:
-			return c.cancellationErr()
+	// An EXPUNGE command sent after SELECT cannot own an update from before
+	// that selection's boundary. Stop at SELECT instead of skipping over it.
+	pending := c.findPendingCmdFunc(func(cmd command) bool {
+		switch cmd.(type) {
+		case *SelectCommand, *ExpungeCommand:
+			return true
 		}
-	} else if handler := c.options.unilateralDataHandler().Expunge; handler != nil {
-		return c.runUnilateralHandler(func() { handler(seqNum) })
+		return false
+	})
+	cmd, _ := pending.(*ExpungeCommand)
+	apply := func() error {
+		c.mutex.Lock()
+		if c.state == imap.ConnStateSelected && c.mailbox.NumMessages > 0 {
+			c.mailbox = c.mailbox.copy()
+			c.mailbox.NumMessages--
+		}
+		c.mutex.Unlock()
+		if cmd == nil {
+			if handler := c.options.unilateralDataHandler().Expunge; handler != nil {
+				return c.runUnilateralHandler(func() { handler(seqNum) })
+			}
+		}
+		return nil
+	}
+	if cmd == nil {
+		return c.deferSelectUpdate(activeSelect, false, apply, nil)
+	}
+	if err := apply(); err != nil {
+		return err
+	}
+	select {
+	case cmd.seqNums <- seqNum:
+	case <-c.closeCh:
+		return c.cancellationErr()
 	}
 
 	return nil

@@ -90,10 +90,11 @@ func (c *Client) AppendCatenate(mailbox string, options *imap.AppendOptions) *Ap
 // Callers must add the parts of the message, then call Close.
 type AppendCatenateCommand struct {
 	commandBase
-	mailbox  string
-	enc      *commandEncoder
-	numParts int
-	data     imap.AppendData
+	mailbox      string
+	usesSelected bool // URL parts may resolve relative to the selection; guarded by Client.mutex
+	enc          *commandEncoder
+	numParts     int
+	data         imap.AppendData
 }
 
 func (cmd *AppendCatenateCommand) part() *commandEncoder {
@@ -108,6 +109,12 @@ func (cmd *AppendCatenateCommand) part() *commandEncoder {
 // only provides for a relative URL of a message or message part on this
 // server, such as "/Drafts;UIDVALIDITY=385759045/;UID=20/;section=1.MIME".
 func (cmd *AppendCatenateCommand) URL(url string) {
+	// RFC 4469 section 3 uses the selected mailbox as the URL base. Treat
+	// URL parts conservatively without trying to resolve server-side names.
+	// The command is already pending while its parts are being written.
+	cmd.enc.client.mutex.Lock()
+	cmd.usesSelected = true
+	cmd.enc.client.mutex.Unlock()
 	cmd.part().Atom("URL").SP().String(url)
 }
 
