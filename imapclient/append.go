@@ -13,7 +13,7 @@ import (
 //
 // The options are optional.
 func (c *Client) Append(mailbox string, size int64, options *imap.AppendOptions) *AppendCommand {
-	cmd := &AppendCommand{}
+	cmd := &AppendCommand{mailbox: canonicalMailbox(mailbox)}
 	cmd.enc = c.beginCommand("APPEND", cmd)
 	writeAppendArgs(cmd.enc, mailbox, options)
 	// TODO: UTF8 data ext for UTF8=ACCEPT, with literal8
@@ -30,9 +30,10 @@ func (c *Client) Append(mailbox string, size int64, options *imap.AppendOptions)
 // Callers must write the message contents, then call Close.
 type AppendCommand struct {
 	commandBase
-	enc  *commandEncoder
-	wc   io.WriteCloser
-	data imap.AppendData
+	mailbox string
+	enc     *commandEncoder
+	wc      io.WriteCloser
+	data    imap.AppendData
 }
 
 func (cmd *AppendCommand) Write(b []byte) (int, error) {
@@ -77,7 +78,7 @@ func writeAppendArgs(enc *commandEncoder, mailbox string, options *imap.AppendOp
 //
 // This command requires support for the CATENATE extension (RFC 4469).
 func (c *Client) AppendCatenate(mailbox string, options *imap.AppendOptions) *AppendCatenateCommand {
-	cmd := &AppendCatenateCommand{}
+	cmd := &AppendCatenateCommand{mailbox: canonicalMailbox(mailbox)}
 	cmd.enc = c.beginCommand("APPEND", cmd)
 	writeAppendArgs(cmd.enc, mailbox, options)
 	cmd.enc.Atom("CATENATE").SP().Special('(')
@@ -89,6 +90,7 @@ func (c *Client) AppendCatenate(mailbox string, options *imap.AppendOptions) *Ap
 // Callers must add the parts of the message, then call Close.
 type AppendCatenateCommand struct {
 	commandBase
+	mailbox  string
 	enc      *commandEncoder
 	numParts int
 	data     imap.AppendData

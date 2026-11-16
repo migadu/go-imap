@@ -98,7 +98,9 @@ func (c *Client) MultiSearch(source *imap.SearchSource, criteria *imap.SearchCri
 		charset = "UTF-8"
 	}
 
-	cmd := &MultiSearchCommand{}
+	cmd := &MultiSearchCommand{
+		usesSelected: source == nil || source.IsZero() || source.Selected || (condStore && searchCriteriaHasModSeq(criteria)),
+	}
 	// Since we aggregate one ESEARCH response per mailbox, we don't prepopulate
 	// cmd.data here.
 	enc := c.beginCommand("ESEARCH", cmd)
@@ -272,7 +274,28 @@ func (cmd *SearchCommand) Wait() (*imap.SearchData, error) {
 // MultiSearchCommand is a MULTISEARCH command.
 type MultiSearchCommand struct {
 	commandBase
-	data []*imap.SearchData
+	usesSelected bool
+	data         []*imap.SearchData
+}
+
+func searchCriteriaHasModSeq(criteria *imap.SearchCriteria) bool {
+	if criteria == nil {
+		return false
+	}
+	if criteria.ModSeq != nil {
+		return true
+	}
+	for i := range criteria.Not {
+		if searchCriteriaHasModSeq(&criteria.Not[i]) {
+			return true
+		}
+	}
+	for i := range criteria.Or {
+		if searchCriteriaHasModSeq(&criteria.Or[i][0]) || searchCriteriaHasModSeq(&criteria.Or[i][1]) {
+			return true
+		}
+	}
+	return false
 }
 
 func (cmd *MultiSearchCommand) Wait() ([]*imap.SearchData, error) {
