@@ -1620,7 +1620,9 @@ func (c *Client) readResponseData(typ string) error {
 					case *SelectCommand, *unselectCommand, *unauthenticateCommand:
 						return true
 					case *MoveCommand:
-						return cmd.store == nil
+						// The fallback is published as COPY before its STORE is
+						// assigned. Use the immutable command name to identify MOVE.
+						return cmd.name == "MOVE" || cmd.name == "UID MOVE"
 					}
 					return false
 				})
