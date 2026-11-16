@@ -48,7 +48,7 @@ func (c *Client) Authenticate(saslClient sasl.Client) error {
 
 		if challengeStr == "" && initialResp != nil {
 			contReq = c.registerContReq(cmd)
-			if err := c.writeSASLResp(initialResp); err != nil {
+			if err := c.writeSASLResp(cmd, initialResp); err != nil {
 				return err
 			}
 			initialResp = nil
@@ -66,7 +66,7 @@ func (c *Client) Authenticate(saslClient sasl.Client) error {
 		}
 
 		contReq = c.registerContReq(cmd)
-		if err := c.writeSASLResp(resp); err != nil {
+		if err := c.writeSASLResp(cmd, resp); err != nil {
 			return err
 		}
 	}
@@ -77,28 +77,37 @@ type authenticateCommand struct {
 	// caps holds the capabilities the server sent while the command was the
 	// oldest one in flight; see Client.handleCapability.
 	caps imap.CapSet
+	// challengeSeq and respondedSeq track SASL continuation turns under
+	// Client.mutex: while challengeSeq > respondedSeq, the server is waiting on
+	// the client's continuation line rather than owing a response.
+	challengeSeq uint64
+	respondedSeq uint64
 }
 
 func (c *Client) cancelAuthenticate(cmd *authenticateCommand, cause error) error {
 	if _, completed := cmd.poll(); !completed {
-		if err := c.writeSASLLine("*"); err == nil {
+		if err := c.writeSASLLine(cmd, "*"); err == nil {
 			_ = cmd.wait()
 		}
 	}
 	return cause
 }
 
-func (c *Client) writeSASLResp(resp []byte) error {
+func (c *Client) writeSASLResp(cmd *authenticateCommand, resp []byte) error {
 	// A continuation response is plain base64, so a zero-length response is an
 	// empty line. The "=" zero-length marker of RFC 4959 Section 3 is valid only
 	// in the initial-response slot of the AUTHENTICATE command line: here it is
 	// not valid base64, and strict servers (e.g. Dovecot) reject it. Multi-step
 	// mechanisms hit this — SASL GSSAPI (RFC 4752) acknowledges the server's
 	// AP-REP with an empty token.
-	return c.writeSASLLine(base64.StdEncoding.EncodeToString(resp))
+	return c.writeSASLLine(cmd, base64.StdEncoding.EncodeToString(resp))
 }
 
-func (c *Client) writeSASLLine(line string) error {
+func (c *Client) writeSASLLine(cmd *authenticateCommand, line string) error {
+	c.mutex.Lock()
+	seq := cmd.challengeSeq
+	c.mutex.Unlock()
+
 	c.setWriteTimeout(cmdWriteTimeout)
 	defer c.setWriteTimeout(0)
 	if _, err := c.bw.WriteString(line + "\r\n"); err != nil {
@@ -109,6 +118,15 @@ func (c *Client) writeSASLLine(line string) error {
 		c.closeWithError(err)
 		return err
 	}
+
+	c.mutex.Lock()
+	if cmd.respondedSeq < seq {
+		cmd.respondedSeq = seq
+	}
+	if c.awaitingResp {
+		c.setReadTimeout(c.readTimeoutLocked())
+	}
+	c.mutex.Unlock()
 	return nil
 }
 

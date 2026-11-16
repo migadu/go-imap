@@ -426,6 +426,9 @@ func (c *Client) readTimeoutLocked() time.Duration {
 		if idle, ok := cmd.(*idleCommand); ok && idle.acknowledged && !idle.doneSent {
 			return idleReadTimeout
 		}
+		if auth, ok := cmd.(*authenticateCommand); ok && auth.challengeSeq > auth.respondedSeq {
+			continue
+		}
 		pending = true
 	}
 	if pending {
@@ -1188,8 +1191,15 @@ func (c *Client) readContinueReq() error {
 	var contReq *imapwire.ContinuationRequest
 	c.mutex.Lock()
 	if len(c.contReqs) > 0 {
-		contReq = c.contReqs[0].ContinuationRequest
+		entry := c.contReqs[0]
+		contReq = entry.ContinuationRequest
 		c.contReqs = append(c.contReqs[:0], c.contReqs[1:]...)
+		for _, pending := range c.pendingCmds {
+			if auth, ok := pending.(*authenticateCommand); ok && auth.base() == entry.cmd {
+				auth.challengeSeq++
+				break
+			}
+		}
 	}
 	c.mutex.Unlock()
 
