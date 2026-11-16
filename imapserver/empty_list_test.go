@@ -27,13 +27,14 @@ import (
 // the whole header as BODY[HEADER].
 func TestEmptyRequiredListIsBAD(t *testing.T) {
 	rc := newSearchRev2Conn(t, imap.CapSet{
-		imap.CapIMAP4rev1:    {},
-		imap.CapSort:         {},
-		imap.CapESort:        {},
-		imap.CapESearch:      {},
-		imap.CapListExtended: {},
-		imap.CapListStatus:   {},
-		imap.CapListMetadata: {},
+		imap.CapIMAP4rev1:             {},
+		imap.CapSort:                  {},
+		imap.CapESort:                 {},
+		imap.CapESearch:               {},
+		imap.Cap("THREAD=REFERENCES"): {},
+		imap.CapListExtended:          {},
+		imap.CapListStatus:            {},
+		imap.CapListMetadata:          {},
 	})
 	rc.appendOne("empty lists")
 	rc.do("SELECT INBOX")
