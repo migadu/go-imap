@@ -112,13 +112,7 @@ func (c *Conn) handleAuthenticate(tag string, dec *imapwire.Decoder) error {
 	}
 
 	c.state = imap.ConnStateAuthenticated
-	text := fmt.Sprintf("%v authentication successful", mech)
-	// Capability lookup can also call the backend, so finish it before writing.
-	caps := c.availableCaps()
-	enc := newResponseEncoder(c)
-	defer enc.end()
-	enc.tagged = tag != ""
-	return writeCapabilityStatus(enc.Encoder, tag, imap.StatusResponseTypeOK, caps, text)
+	return c.writeCapabilityStatus(tag, imap.StatusResponseTypeOK, fmt.Sprintf("%v authentication successful", mech))
 }
 
 // readSASLResponse reads the client's response to a continuation request,
@@ -129,6 +123,7 @@ func (c *Conn) handleAuthenticate(tag string, dec *imapwire.Decoder) error {
 // a nil error, so a response cut off by a timeout or a close would be taken for
 // a whole one.
 func (c *Conn) readSASLResponse() ([]byte, error) {
+	c.setReadTimeout(cmdReadTimeout)
 	line, err := c.br.ReadSlice('\n')
 	if err == bufio.ErrBufferFull {
 		// The response does not fit the read buffer. That is the client's
