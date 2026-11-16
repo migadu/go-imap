@@ -96,7 +96,14 @@ type Decoder struct {
 	// desynced records that the command stream could not be resynchronised:
 	// octets of the current command remain in the stream and cannot safely be
 	// skipped. The connection has to be torn down; see Desynchronized.
-	desynced  bool
+	desynced bool
+
+	// readFailed records that a read from the underlying reader failed (a
+	// timeout, a closed connection) while decoding. The line being read was
+	// cut short, so its end -- and whether a non-synchronizing literal
+	// announcement sits there -- is unknown; see DiscardLine.
+	readFailed bool
+
 	crlf      bool
 	listDepth int
 	readBytes int64
@@ -158,6 +165,7 @@ func (dec *Decoder) readByte() (byte, bool) {
 	}
 	b, err := dec.r.ReadByte()
 	if err != nil {
+		dec.readFailed = true
 		if err == io.EOF {
 			err = io.ErrUnexpectedEOF
 		}
@@ -226,6 +234,7 @@ func (dec *Decoder) NextBytesFold(s string) bool {
 	for i := 1; i <= len(s); i++ {
 		b, err := dec.r.Peek(i)
 		if err != nil {
+			dec.readFailed = true
 			if err == io.EOF {
 				err = io.ErrUnexpectedEOF
 			}
@@ -438,8 +447,19 @@ const MaxDiscardLiteralSize = 64 << 10
 // client-supplied data. When they cannot be skipped — too many to read, or a
 // literal whose announcement was never parsed — the stream is marked
 // desynchronised instead of guessing; see Desynchronized.
+//
+// So is a server-side stream on which a read failed before the end of the
+// line, whether while decoding the command or while skipping here. The line
+// was cut short: what the client sends next continues it, and if it ends in a
+// non-synchronizing literal announcement (RFC 7888 §3) that continuation is
+// followed by client data. A read deadline that is renewed for the next
+// command must not turn either into commands.
 func (dec *Decoder) DiscardLine() {
 	if dec.desynced {
+		return
+	}
+	if dec.side == ConnSideServer && dec.readFailed {
+		dec.desynced = true
 		return
 	}
 	dec.discarding = true
@@ -466,12 +486,15 @@ func (dec *Decoder) DiscardLine() {
 
 	var text string
 	dec.Text(&text)
-	dec.CRLF()
+	if !dec.readFailed {
+		dec.CRLF()
+	}
 
 	// A line ending in a non-synchronizing literal announcement that the parser
 	// never reached: its octets follow, but their count was never validated by
 	// this decoder, so skipping them would be a guess. Refuse to resynchronise.
-	if dec.side == ConnSideServer && endsWithNonSyncLiteral(text) {
+	// Likewise when the end of the line was never reached.
+	if dec.side == ConnSideServer && (dec.readFailed || endsWithNonSyncLiteral(text)) {
 		dec.desynced = true
 	}
 }
@@ -1086,7 +1109,8 @@ func (dec *Decoder) LiteralReader() (lit *LiteralReader, nonSync, ok bool) {
 	// A line only announces a non-synchronizing literal when "{" 1*DIGIT "+}"
 	// immediately precedes the CRLF (RFC 7888 §3). Anything that fails before
 	// then does not announce a literal on this token; DiscardLine still checks
-	// the unread remainder of the line in case a later "{N+}" ends it.
+	// the unread remainder of the line in case a later "{N+}" ends it, and
+	// gives up on a line that a failed read cut short inside the announcement.
 	v, numberOK, numberErr := dec.number(63)
 	if !numberOK && numberErr == nil {
 		dec.Expect(false, "number64")
