@@ -2,7 +2,6 @@ package imapclient
 
 import (
 	"fmt"
-	"strings"
 
 	"github.com/migadu/go-imap"
 	"github.com/migadu/go-imap/internal/imapwire"
@@ -174,7 +173,7 @@ func readStatusAttVal(dec *imapwire.Decoder, data *imap.StatusData) error {
 	}
 
 	var ok bool
-	switch strings.ToUpper(name) {
+	switch imapwire.ToUpperASCII(name) {
 	case "MESSAGES":
 		var num uint32
 		ok = dec.ExpectNumber(&num)

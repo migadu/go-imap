@@ -294,18 +294,26 @@ func writeBinarySection(w io.Writer, r io.Reader, part []int, lenient bool) erro
 	// the encoding alone. Like New, ignore the encoding of a multipart, which
 	// RFC 2045 §6.4 restricts to the identity encodings.
 	if !strings.HasPrefix(mediaType, "multipart/") {
-		var cte gomessage.Header
-		cte.Set("Content-Transfer-Encoding", cteMechanism(header.Get("Content-Transfer-Encoding")))
-		// New returns a usable *Entity even alongside an UnknownEncoding error,
-		// with the body left as stored.
-		entity, err := gomessage.New(cte, body)
-		if gomessage.IsUnknownEncoding(err) {
+		mech := cteMechanism(header.Get("Content-Transfer-Encoding"))
+		if !isASCIIToken(mech) {
 			if !lenient {
 				return ErrUnknownCTE
 			}
 			textual = false
+		} else {
+			var cte gomessage.Header
+			cte.Set("Content-Transfer-Encoding", mech)
+			// New returns a usable *Entity even alongside an UnknownEncoding error,
+			// with the body left as stored.
+			entity, err := gomessage.New(cte, body)
+			if gomessage.IsUnknownEncoding(err) {
+				if !lenient {
+					return ErrUnknownCTE
+				}
+				textual = false
+			}
+			body = entity.Body
 		}
-		body = entity.Body
 	}
 
 	if len(part) == 0 {
@@ -327,6 +335,15 @@ func writeBinarySection(w io.Writer, r io.Reader, part []int, lenient bool) erro
 // processing" (RFC 2045 §1). It is what BODYSTRUCTURE reports as body-fld-enc,
 // and what FETCH BINARY decodes: gomessage.New takes the whole value for the
 // mechanism, so "base64 (comment)" would otherwise be an unknown encoding.
+func isASCIIToken(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 0x80 {
+			return false
+		}
+	}
+	return true
+}
+
 func cteMechanism(v string) string {
 	if !strings.ContainsRune(v, '(') {
 		return v

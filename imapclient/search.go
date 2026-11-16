@@ -187,7 +187,7 @@ func (c *Client) handleSearch() error {
 			var name string
 			if !c.dec.ExpectAtom(&name) || !c.dec.ExpectSP() {
 				return c.dec.Err()
-			} else if strings.ToUpper(name) != "MODSEQ" {
+			} else if !imapwire.EqualFoldASCII(name, "MODSEQ") {
 				return fmt.Errorf("in search-sort-mod-seq: expected %q, got %q", "MODSEQ", name)
 			}
 			var modSeq uint64
@@ -478,7 +478,7 @@ func readSearchCorrelator(dec *imapwire.Decoder, data *imap.SearchData) (tag str
 			if !dec.ExpectAtom(&itemName) || !dec.ExpectSP() {
 				return "", dec.Err()
 			}
-			switch strings.ToUpper(itemName) {
+			switch imapwire.ToUpperASCII(itemName) {
 			case "TAG":
 				if !dec.ExpectAString(&tag) {
 					return "", dec.Err()
@@ -531,7 +531,7 @@ func readESearchReturnData(dec *imapwire.Decoder, data *imap.SearchData, spRead 
 			return dec.Err()
 		}
 
-		switch strings.ToUpper(name) {
+		switch imapwire.ToUpperASCII(name) {
 		case "MAILBOX":
 			var mbox string
 			if !dec.ExpectMailbox(&mbox) {
@@ -604,7 +604,7 @@ func readESearchReturnData(dec *imapwire.Decoder, data *imap.SearchData, spRead 
 			if !dec.ExpectAtom(&atomName) {
 				return dec.Err()
 			}
-			if strings.ToUpper(atomName) == "MODSEQ" {
+			if imapwire.EqualFoldASCII(atomName, "MODSEQ") {
 				var modSeq uint64
 				if !dec.ExpectSP() || !dec.ExpectModSeq(&modSeq) || !dec.ExpectSpecial(')') {
 					return dec.Err()

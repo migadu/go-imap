@@ -206,7 +206,7 @@ func (enc *Encoder) stringLiteral(s string) {
 }
 
 func (enc *Encoder) Mailbox(name string) *Encoder {
-	if strings.EqualFold(name, "INBOX") {
+	if EqualFoldASCII(name, "INBOX") {
 		return enc.Atom("INBOX")
 	}
 	// In UTF-8 mode the name goes out verbatim, with no modified UTF-7.

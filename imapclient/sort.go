@@ -86,7 +86,7 @@ func (c *Client) handleSort() error {
 			var name string
 			if !c.dec.ExpectAtom(&name) || !c.dec.ExpectSP() {
 				return c.dec.Err()
-			} else if strings.ToUpper(name) != "MODSEQ" {
+			} else if !imapwire.EqualFoldASCII(name, "MODSEQ") {
 				return fmt.Errorf("in search-sort-mod-seq: expected %q, got %q", "MODSEQ", name)
 			}
 			var modSeq uint64
@@ -148,7 +148,7 @@ func (c *Client) readESortData(cmd *SortCommand, spRead bool) error {
 			if !c.dec.ExpectAtom(&key) {
 				return c.dec.Err()
 			}
-			switch strings.ToUpper(key) {
+			switch imapwire.ToUpperASCII(key) {
 			case "TAG":
 				var tag string
 				if !c.dec.ExpectSP() || !c.dec.ExpectAString(&tag) {
@@ -173,7 +173,7 @@ func (c *Client) readESortData(cmd *SortCommand, spRead bool) error {
 			return c.dec.Err()
 		}
 
-		switch strings.ToUpper(s) {
+		switch imapwire.ToUpperASCII(s) {
 		case "UID":
 			isUID = true
 		case "MIN":

@@ -1068,7 +1068,7 @@ func (c *Client) handleFetch(seqNum uint32) (err error) {
 		if !dec.Expect(dec.Func(&attName, isMsgAttNameChar), "msg-att name") {
 			return dec.Err()
 		}
-		attName = strings.ToUpper(attName)
+		attName = imapwire.ToUpperASCII(attName)
 
 		var (
 			item FetchItemData
@@ -1285,7 +1285,7 @@ func (c *Client) handleFetch(seqNum uint32) (err error) {
 			var s string
 			var preview *string
 			if dec.Atom(&s) {
-				if !dec.Expect(strings.EqualFold(s, "NIL"), "nstring") {
+				if !dec.Expect(imapwire.EqualFoldASCII(s, "NIL"), "nstring") {
 					return dec.Err()
 				}
 			} else {
@@ -1579,7 +1579,7 @@ func readBodyDepth(dec *imapwire.Decoder, options *Options, depth int) (imap.Bod
 		// record one, and the decoder reads nothing more after an error.
 		token = "body-type-1part"
 		var subtype string
-		if !dec.Expect(strings.EqualFold(atom, "NIL"), "media type") || !dec.ExpectSP() || !dec.ExpectNString(&subtype) {
+		if !dec.Expect(imapwire.EqualFoldASCII(atom, "NIL"), "media type") || !dec.ExpectSP() || !dec.ExpectNString(&subtype) {
 			err = dec.Err()
 		} else {
 			bs, err = readBodyType1part(dec, "", subtype, options, depth)
@@ -1648,7 +1648,7 @@ func readBodyType1part(dec *imapwire.Decoder, typ, subtype string, options *Opti
 	// by what actually follows -- an envelope is a parenthesized list, so a '('
 	// means the fields are there and anything else means they are not.
 	// See https://github.com/emersion/go-imap/issues/741
-	if strings.EqualFold(bs.Type, "message") && (strings.EqualFold(bs.Subtype, "rfc822") || strings.EqualFold(bs.Subtype, "global") && dec.NextByteIs('(')) {
+	if imapwire.EqualFoldASCII(bs.Type, "message") && (imapwire.EqualFoldASCII(bs.Subtype, "rfc822") || imapwire.EqualFoldASCII(bs.Subtype, "global") && dec.NextByteIs('(')) {
 		var msg imap.BodyStructureMessageRFC822
 
 		msg.Envelope, err = readEnvelope(dec, options)
@@ -1671,7 +1671,7 @@ func readBodyType1part(dec *imapwire.Decoder, typ, subtype string, options *Opti
 
 		bs.MessageRFC822 = &msg
 		hasSP = false
-	} else if strings.EqualFold(bs.Type, "text") {
+	} else if imapwire.EqualFoldASCII(bs.Type, "text") {
 		var text imap.BodyStructureText
 
 		if !dec.ExpectBodyFldLines(&text.NumLines) {
@@ -1859,7 +1859,7 @@ func readBodyFldParam(dec *imapwire.Decoder, options *Options) (map[string]strin
 			decoded, _ := options.decodeText(s)
 			// TODO: handle error
 
-			params[strings.ToLower(k)] = decoded
+			params[imapwire.ToLowerASCII(k)] = decoded
 			k = ""
 		}
 
@@ -1918,7 +1918,7 @@ func readSectionSpec(dec *imapwire.Decoder) (*imap.FetchItemBodySection, error) 
 		} else {
 			dec.Atom(&specifier)
 		}
-		specifier = strings.ToUpper(specifier)
+		specifier = imapwire.ToUpperASCII(specifier)
 		section.Specifier = imap.PartSpecifier(specifier)
 
 		if specifier == "HEADER.FIELDS" || specifier == "HEADER.FIELDS.NOT" {

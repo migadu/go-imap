@@ -1325,7 +1325,7 @@ func (c *Client) readResponse() error {
 	}
 
 	// Change typ to uppercase, as it's case-insensitive
-	typ = strings.ToUpper(typ)
+	typ = imapwire.ToUpperASCII(typ)
 
 	var (
 		token    string
@@ -1437,7 +1437,7 @@ func (c *Client) readResponseTagged(tag, typ string) (startTLS *startTLSCommand,
 			if !c.dec.ExpectSP() || !c.dec.ExpectAtom(&subCode) {
 				return nil, fmt.Errorf("in resp-code-metadata: %v", c.dec.Err())
 			}
-			switch strings.ToUpper(subCode) {
+			switch imapwire.ToUpperASCII(subCode) {
 			case "LONGENTRIES", "MAXSIZE":
 				var size uint32
 				if !c.dec.ExpectSP() || !c.dec.ExpectNumber(&size) {
@@ -1598,7 +1598,7 @@ func (c *Client) readResponseData(typ string) error {
 	}
 
 	// All response type are case insensitive
-	switch strings.ToUpper(typ) {
+	switch imapwire.ToUpperASCII(typ) {
 	case "OK", "PREAUTH", "NO", "BAD", "BYE": // resp-cond-state / resp-cond-bye / resp-cond-auth
 		// Some servers don't provide a text even if the RFC requires it,
 		// see #500 and #502
@@ -1895,7 +1895,7 @@ func (c *Client) handleVanished() error {
 		if !c.dec.ExpectAtom(&tag) || !c.dec.ExpectSpecial(')') {
 			return c.dec.Err()
 		}
-		data.Earlier = strings.ToUpper(tag) == "EARLIER"
+		data.Earlier = imapwire.EqualFoldASCII(tag, "EARLIER")
 		// A SP separates the "(EARLIER)" group from the UID set. The SP after
 		// the VANISHED atom itself was already consumed by the response
 		// dispatcher, so only expect this one when the paren group is present.

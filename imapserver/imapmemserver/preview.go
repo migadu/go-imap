@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	gomessage "github.com/emersion/go-message"
+	"github.com/migadu/go-imap/internal/imapwire"
 )
 
 // Preview generation is best-effort (RFC 8970 section 8). Limit the entire
@@ -82,6 +83,15 @@ func isUnknownBodyCoding(err error) bool {
 	return gomessage.IsUnknownCharset(err) || gomessage.IsUnknownEncoding(err)
 }
 
+func isASCIIPreviewToken(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 0x80 {
+			return false
+		}
+	}
+	return true
+}
+
 func (g *previewGenerator) walk(entity *gomessage.Entity, depth int, parentMediaType string, partErr error) (string, bool, error) {
 	if err := g.readError(); err != nil {
 		return "", false, err
@@ -90,17 +100,23 @@ func (g *previewGenerator) walk(entity *gomessage.Entity, depth int, parentMedia
 		return "", false, errPreviewBudget
 	}
 	g.parts++
+	rawDisp := entity.Header.Get("Content-Disposition")
 	disposition, _, dispErr := entity.Header.ContentDisposition()
 	if dispErr != nil {
 		disposition, _, _ = strings.Cut(disposition, ";")
-		disposition = strings.ToLower(strings.TrimSpace(disposition))
+		disposition = imapwire.ToLowerASCII(strings.TrimSpace(disposition))
+	} else if rawDispType, _, _ := strings.Cut(rawDisp, ";"); !isASCIIPreviewToken(rawDispType) {
+		disposition = ""
 	}
 	// A multipart disposition applies to its entire subtree (RFC 2183
 	// section 2.9). Unknown dispositions are attachments too (section 2.8).
-	if entity.Header.Get("Content-Disposition") != "" && disposition != "inline" {
+	if rawDisp != "" && disposition != "inline" {
 		return "", false, nil
 	}
 	mediaType, _, _ := entity.Header.ContentType()
+	if rawCTType, _, _ := strings.Cut(entity.Header.Get("Content-Type"), ";"); !isASCIIPreviewToken(rawCTType) {
+		mediaType = ""
+	}
 	if parentMediaType == "multipart/digest" && entity.Header.Get("Content-Type") == "" {
 		// go-message defaults every absent type to text/plain. Digest children
 		// instead default to message/rfc822 (RFC 2046 section 5.1.5), which this
