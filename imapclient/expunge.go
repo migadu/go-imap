@@ -37,7 +37,7 @@ func (c *Client) handleExpunge(seqNum uint32) error {
 	// that selection's boundary. Stop at SELECT instead of skipping over it.
 	pending := c.findPendingCmdFunc(func(cmd command) bool {
 		switch cmd.(type) {
-		case *SelectCommand, *ExpungeCommand:
+		case *SelectCommand, *unselectCommand, *unauthenticateCommand, *ExpungeCommand:
 			return true
 		}
 		return false
