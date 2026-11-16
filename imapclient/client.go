@@ -729,6 +729,7 @@ func (c *Client) beginCommand(name string, cmd command) *commandEncoder {
 	baseCmd := cmd.base()
 	*baseCmd = commandBase{
 		tag:  tag,
+		name: name,
 		seq:  c.cmdTag,
 		done: make(chan struct{}),
 	}
@@ -821,6 +822,52 @@ func findPendingCmdByType[T command](c *Client) T {
 	return cmd
 }
 
+func usesSelectedMailbox(name string) bool {
+	switch name {
+	case "NOOP", "CHECK", "IDLE", "CLOSE", "UNSELECT", "UNAUTHENTICATE", "LOGOUT",
+		"ENABLE", "NOTIFY", "SELECT", "EXAMINE",
+		"EXPUNGE", "UID EXPUNGE",
+		"FETCH", "UID FETCH",
+		"STORE", "UID STORE",
+		"SEARCH", "UID SEARCH",
+		"SORT", "UID SORT",
+		"THREAD", "UID THREAD",
+		"COPY", "UID COPY",
+		"MOVE", "UID MOVE":
+		return true
+	default:
+		return false
+	}
+}
+
+func (c *Client) activeSelectCmd() *SelectCommand {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+
+	for _, cmd := range c.pendingCmds {
+		if sel, ok := cmd.(*SelectCommand); ok {
+			return sel
+		}
+		if c.state == imap.ConnStateSelected && usesSelectedMailbox(cmd.base().name) {
+			return nil
+		}
+		switch cmd.(type) {
+		case *authenticateCommand, *loginCommand, *unauthenticateCommand, *logoutCommand:
+			return nil
+		}
+	}
+	return nil
+}
+
+func (c *Client) resetPendingSelectDataLocked() {
+	for _, pending := range c.pendingCmds {
+		if sel, ok := pending.(*SelectCommand); ok {
+			sel.data = imap.SelectData{}
+			break
+		}
+	}
+}
+
 func (c *Client) completeCommand(cmd command, err error) {
 	// Only the reader completes registered commands. A rejected command has
 	// never been exposed to it and can be completed by its creating goroutine.
@@ -853,6 +900,7 @@ func (c *Client) completeCommand(cmd command, err error) {
 				c.enabled = make(imap.CapSet)
 				// What ENABLE allowed the server to send ends with it.
 				c.dec.QuotedUTF8 = c.useQuotedUTF8Locked()
+				c.resetPendingSelectDataLocked()
 			}
 			c.mutex.Unlock()
 		}
@@ -881,12 +929,19 @@ func (c *Client) completeCommand(cmd command, err error) {
 			if c.state == imap.ConnStateSelected {
 				c.state = imap.ConnStateAuthenticated
 				c.mailbox = nil
+				c.resetPendingSelectDataLocked()
 			}
 			c.mutex.Unlock()
 		}
 	case *unselectCommand:
 		if err == nil {
-			c.setState(imap.ConnStateAuthenticated)
+			c.mutex.Lock()
+			if !c.closed {
+				c.state = imap.ConnStateAuthenticated
+				c.mailbox = nil
+				c.resetPendingSelectDataLocked()
+			}
+			c.mutex.Unlock()
 		}
 	case *logoutCommand:
 		if err == nil {
@@ -1394,7 +1449,7 @@ func (c *Client) readResponseData(typ string) error {
 				}
 				c.mutex.Unlock()
 
-				if cmd := findPendingCmdByType[*SelectCommand](c); cmd != nil {
+				if cmd := c.activeSelectCmd(); cmd != nil {
 					cmd.data.PermanentFlags = flags
 				} else if handler := c.options.unilateralDataHandler().Mailbox; handler != nil {
 					if err := c.runUnilateralHandler(func() { handler(&UnilateralDataMailbox{PermanentFlags: flags}) }); err != nil {
@@ -1408,7 +1463,7 @@ func (c *Client) readResponseData(typ string) error {
 
 				c.setMailboxReadOnly(readOnly)
 
-				if cmd := findPendingCmdByType[*SelectCommand](c); cmd != nil {
+				if cmd := c.activeSelectCmd(); cmd != nil {
 					cmd.data.ReadOnly = readOnly
 				}
 			case "UIDNEXT":
@@ -1417,7 +1472,7 @@ func (c *Client) readResponseData(typ string) error {
 					malformedCode = true
 					break
 				}
-				if cmd := findPendingCmdByType[*SelectCommand](c); cmd != nil {
+				if cmd := c.activeSelectCmd(); cmd != nil {
 					cmd.data.UIDNext = imap.UID(num)
 				}
 			case "UIDVALIDITY":
@@ -1426,7 +1481,7 @@ func (c *Client) readResponseData(typ string) error {
 					malformedCode = true
 					break
 				}
-				if cmd := findPendingCmdByType[*SelectCommand](c); cmd != nil {
+				if cmd := c.activeSelectCmd(); cmd != nil {
 					cmd.data.UIDValidity = uidValidity
 				}
 			case "COPYUID":
@@ -1446,11 +1501,11 @@ func (c *Client) readResponseData(typ string) error {
 				// Independent commands may complete out of order, so SELECT
 				// need not be the oldest pending command. CLOSED below clears
 				// provisional data that belonged to the previous mailbox.
-				if cmd := findPendingCmdByType[*SelectCommand](c); cmd != nil {
+				if cmd := c.activeSelectCmd(); cmd != nil {
 					cmd.data.HighestModSeq = modSeq
 				}
 			case "NOMODSEQ":
-				if cmd := findPendingCmdByType[*SelectCommand](c); cmd != nil {
+				if cmd := c.activeSelectCmd(); cmd != nil {
 					cmd.data.HighestModSeq = 0
 				}
 			case "NOTIFICATIONOVERFLOW":
@@ -1486,10 +1541,13 @@ func (c *Client) readResponseData(typ string) error {
 		// responses before CLOSED belong to the closing mailbox (RFC 7162
 		// §3.2.11), so discard any provisional SelectData recorded before it.
 		if code == "CLOSED" && c.State() == imap.ConnStateSelected {
-			c.setState(imap.ConnStateAuthenticated)
-			if cmd := findPendingCmdByType[*SelectCommand](c); cmd != nil {
-				cmd.data = imap.SelectData{}
+			c.mutex.Lock()
+			if !c.closed {
+				c.state = imap.ConnStateAuthenticated
+				c.mailbox = nil
+				c.resetPendingSelectDataLocked()
 			}
+			c.mutex.Unlock()
 		}
 
 		if !c.greetingRecv {
@@ -1632,7 +1690,7 @@ func (c *Client) handleVanished() error {
 		return nil
 	}
 
-	cmd := findPendingCmdByType[*SelectCommand](c)
+	cmd := c.activeSelectCmd()
 
 	// RFC 7162 §3.2.10.2: unlike VANISHED (EARLIER), a VANISHED response
 	// removes its messages from the selected mailbox, one per UID, as EXPUNGE
@@ -1656,7 +1714,7 @@ func (c *Client) handleVanished() error {
 		c.mutex.Unlock()
 	}
 
-	if cmd != nil && data.Earlier {
+	if cmd != nil && cmd.qresync && data.Earlier {
 		// VANISHED (EARLIER) during SELECT should populate SelectData.
 		// Accumulate: a resynchronization can arrive in more than one
 		// response, and each carries its own part of the expunged set.
@@ -1952,7 +2010,8 @@ type command interface {
 }
 
 type commandBase struct {
-	tag string
+	tag  string
+	name string
 	// seq orders the commands by when they were sent.
 	seq  uint64
 	done chan struct{}
