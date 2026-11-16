@@ -282,18 +282,26 @@ func TestEnableStopsAtPendingAuthBarriers(t *testing.T) {
 	})
 }
 
-// handleID and handleCapability must also stop at pending authentication and
-// session barriers so pre-barrier * ID and * CAPABILITY responses cannot leak
-// into post-barrier IDCommand or CapabilityCommand results.
-func TestIDAndCapabilityStopAtPendingAuthBarriers(t *testing.T) {
+// ID and CAPABILITY are valid in either authentication state. Replies to
+// commands preceding an authentication transition retain their owner, while
+// later commands receive their own replies. CAPABILITY requires an untagged
+// response before its tagged OK (RFC 9051 section 6.1.1); ID may answer NIL
+// (RFC 2971 section 3.1). LOGOUT closes the connection, so only commands sent
+// before it are answered in that case.
+func TestIDAndCapabilityRepliesAroundAuthTransitions(t *testing.T) {
 	for _, barrier := range []string{"LOGIN", "UNAUTHENTICATE_LOGIN", "LOGOUT"} {
 		for _, kind := range []string{"ID", "Capability"} {
 			t.Run(barrier+"/"+kind, func(t *testing.T) {
 				const caps = "IMAP4rev2 ID UNAUTHENTICATE"
+				const earlierCaps = caps + " X-EARLIER"
+				const laterCaps = caps + " X-LATER"
 				serve := func(br *bufio.Reader, conn net.Conn) error {
+					earlierTag, err := readSelectIsolation307Command(br)
+					if err != nil {
+						return err
+					}
 					var unauthTag string
 					if barrier == "UNAUTHENTICATE_LOGIN" {
-						var err error
 						unauthTag, err = readSelectIsolation307Command(br)
 						if err != nil {
 							return err
@@ -303,44 +311,51 @@ func TestIDAndCapabilityStopAtPendingAuthBarriers(t *testing.T) {
 					if err != nil {
 						return err
 					}
-					cmdTag, err := readSelectIsolation307Command(br)
-					if err != nil {
+					var laterTag string
+					if barrier != "LOGOUT" {
+						laterTag, err = readSelectIsolation307Command(br)
+						if err != nil {
+							return err
+						}
+					}
+
+					var earlierData string
+					if kind == "ID" {
+						earlierData = "* ID (\"name\" \"EarlierServer\" \"version\" \"1.0\")\r\n"
+					} else {
+						earlierData = "* CAPABILITY " + earlierCaps + "\r\n"
+					}
+					if _, err := fmt.Fprintf(conn, "%s%s OK earlier command completed\r\n", earlierData, earlierTag); err != nil {
 						return err
 					}
-
+					if barrier == "LOGOUT" {
+						_, err := fmt.Fprintf(conn, "* BYE logging out\r\n%s OK logout\r\n", barrierTag)
+						return err
+					}
+					if unauthTag != "" {
+						if _, err := fmt.Fprintf(conn, "%s OK [CAPABILITY %s] unauthenticated\r\n", unauthTag, caps); err != nil {
+							return err
+						}
+					}
+					if _, err := fmt.Fprintf(conn, "%s OK [CAPABILITY %s] logged in\r\n", barrierTag, laterCaps); err != nil {
+						return err
+					}
+					var laterData string
 					if kind == "ID" {
-						if _, err := fmt.Fprint(conn, "* ID (\"name\" \"AliceShard\" \"environment\" \"secret-tenant\")\r\n"); err != nil {
-							return err
-						}
+						laterData = "* ID NIL\r\n"
 					} else {
-						if _, err := fmt.Fprint(conn, "* CAPABILITY IMAP4rev2 ID UNAUTHENTICATE X-ALICE-ADMIN\r\n"); err != nil {
-							return err
-						}
+						laterData = "* CAPABILITY " + laterCaps + "\r\n"
 					}
-
-					switch barrier {
-					case "LOGIN":
-						if _, err := fmt.Fprintf(conn, "%s OK [CAPABILITY %s] logged in\r\n%s OK [CAPABILITY %s] completed\r\n", barrierTag, caps, cmdTag, caps); err != nil {
-							return err
-						}
-					case "UNAUTHENTICATE_LOGIN":
-						if _, err := fmt.Fprintf(conn, "%s OK [CAPABILITY %s] unauthenticated\r\n%s OK [CAPABILITY %s] logged in as bob\r\n%s OK [CAPABILITY %s] completed\r\n",
-							unauthTag, caps, barrierTag, caps, cmdTag, caps); err != nil {
-							return err
-						}
-					case "LOGOUT":
-						if _, err := fmt.Fprintf(conn, "* BYE logging out\r\n%s OK logout\r\n%s OK completed\r\n", barrierTag, cmdTag); err != nil {
-							return err
-						}
+					if _, err := fmt.Fprintf(conn, "%s%s OK later command completed\r\n", laterData, laterTag); err != nil {
+						return err
 					}
-
 					for {
 						line, err := br.ReadString('\n')
 						if err != nil {
 							return nil
 						}
-						tTag, _, _ := strings.Cut(strings.TrimSpace(line), " ")
-						if _, err := fmt.Fprintf(conn, "%s OK done\r\n", tTag); err != nil {
+						tag, _, _ := strings.Cut(strings.TrimSpace(line), " ")
+						if _, err := fmt.Fprintf(conn, "%s OK done\r\n", tag); err != nil {
 							return err
 						}
 					}
@@ -359,6 +374,13 @@ func TestIDAndCapabilityStopAtPendingAuthBarriers(t *testing.T) {
 					c, done = newSelectIsolation307Peer(t, caps, nil, serve)
 				}
 
+				var earlierID, laterID *imapclient.IDCommand
+				var earlierCapability, laterCapability *imapclient.CapabilityCommand
+				if kind == "ID" {
+					earlierID = c.ID(nil)
+				} else {
+					earlierCapability = c.Capability()
+				}
 				var unauthCmd, barrierCmd *imapclient.Command
 				switch barrier {
 				case "LOGIN":
@@ -369,49 +391,60 @@ func TestIDAndCapabilityStopAtPendingAuthBarriers(t *testing.T) {
 				case "LOGOUT":
 					barrierCmd = c.Logout()
 				}
+				if barrier != "LOGOUT" {
+					if kind == "ID" {
+						laterID = c.ID(nil)
+					} else {
+						laterCapability = c.Capability()
+					}
+				}
 
 				if kind == "ID" {
-					cmd := c.ID(&imap.IDData{Name: "go-imap"})
-					if unauthCmd != nil {
-						if err := unauthCmd.Wait(); err != nil {
-							t.Fatal(err)
-						}
-					}
-					if err := barrierCmd.Wait(); err != nil {
-						t.Fatal(err)
-					}
-					data, err := cmd.Wait()
+					data, err := earlierID.Wait()
 					if err != nil {
 						t.Fatal(err)
 					}
-					c.Close()
-					if err := <-done; err != nil {
+					if data.Name != "EarlierServer" || data.Version != "1.0" {
+						t.Errorf("earlier ID data = %+v, want EarlierServer version 1.0", data)
+					}
+				} else {
+					data, err := earlierCapability.Wait()
+					if err != nil {
+						t.Fatal(err)
+					}
+					if len(data) != 4 || !data.Has(imap.Cap("X-EARLIER")) || data.Has(imap.Cap("X-LATER")) {
+						t.Errorf("earlier CAPABILITY data = %v, want %s", data, earlierCaps)
+					}
+				}
+				if unauthCmd != nil {
+					if err := unauthCmd.Wait(); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if err := barrierCmd.Wait(); err != nil {
+					t.Fatal(err)
+				}
+				if laterID != nil {
+					data, err := laterID.Wait()
+					if err != nil {
 						t.Fatal(err)
 					}
 					if data.Name != "" || len(data.Raw) != 0 {
-						t.Fatalf("post-%s IDCommand stole pre-barrier ID data: %+v", barrier, data)
+						t.Errorf("later ID data = %+v, want NIL response", data)
 					}
-				} else {
-					cmd := c.Capability()
-					if unauthCmd != nil {
-						if err := unauthCmd.Wait(); err != nil {
-							t.Fatal(err)
-						}
-					}
-					if err := barrierCmd.Wait(); err != nil {
-						t.Fatal(err)
-					}
-					gotCaps, err := cmd.Wait()
+				}
+				if laterCapability != nil {
+					data, err := laterCapability.Wait()
 					if err != nil {
 						t.Fatal(err)
 					}
-					c.Close()
-					if err := <-done; err != nil {
-						t.Fatal(err)
+					if len(data) != 4 || !data.Has(imap.Cap("X-LATER")) || data.Has(imap.Cap("X-EARLIER")) {
+						t.Errorf("later CAPABILITY data = %v, want %s", data, laterCaps)
 					}
-					if gotCaps.Has(imap.Cap("X-ALICE-ADMIN")) {
-						t.Fatalf("post-%s CapabilityCommand stole pre-barrier capabilities: %v", barrier, gotCaps)
-					}
+				}
+				c.Close()
+				if err := <-done; err != nil {
+					t.Fatal(err)
 				}
 			})
 		}
