@@ -139,14 +139,14 @@ func (c *Conn) finishCondStore(enc *imapwire.Encoder, resp *imap.StatusResponse,
 		c.mutex.Lock()
 		c.condStore = false
 		c.mutex.Unlock()
-		return nil
 	}
-	firstEnabling := resp.Type != imap.StatusResponseTypeBad && !wasCondStore && wasSelected
+	condStoreNow := c.CondStoreEnabled()
+	firstEnabling := resp.Type != imap.StatusResponseTypeBad && !wasCondStore && wasSelected && condStoreNow
 	fetchModSeq := c.fetchModSeq.Load()
 	if !firstEnabling && fetchModSeq == 0 {
 		return nil
 	}
-	if c.state != imap.ConnStateSelected || c.selectedNoModSeq || !c.supportsCondStore() || !c.CondStoreEnabled() {
+	if c.state != imap.ConnStateSelected || c.selectedNoModSeq || !c.supportsCondStore() || (!condStoreNow && fetchModSeq == 0) {
 		return nil
 	}
 	session, ok := c.session.(SessionHighestModSeq)
@@ -178,7 +178,7 @@ func (c *Conn) flushClosingCondStore() error {
 	if fetchModSeq == 0 {
 		return nil
 	}
-	if c.state != imap.ConnStateSelected || c.selectedNoModSeq || !c.supportsCondStore() || !c.CondStoreEnabled() {
+	if c.state != imap.ConnStateSelected || c.selectedNoModSeq || !c.supportsCondStore() {
 		return nil
 	}
 	session, ok := c.session.(SessionHighestModSeq)

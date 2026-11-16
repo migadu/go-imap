@@ -570,13 +570,16 @@ func (c *Conn) shutdownBye() {
 // This is the convention NewSession's BYE already follows (see serve), and the
 // serve loop already expects a BYE-typed error to come back out of readCommand:
 // it skips the "failed to read command" log for exactly this case.
-func (c *Conn) finishBye(err error) error {
+func (c *Conn) finishBye(err error, wasCondStore bool) error {
 	var imapErr *imap.Error
 	if !errors.As(err, &imapErr) || imapErr.Type != imap.StatusResponseTypeBye {
 		return err
 	}
 	c.stopNotifyPump()
 	_ = c.flushClosingCondStore()
+	if !wasCondStore {
+		c.rollbackCondStore()
+	}
 	if writeErr := c.writeStatusResp("", (*imap.StatusResponse)(imapErr)); writeErr != nil {
 		return writeErr
 	}
@@ -786,6 +789,7 @@ func (c *Conn) readCommand(dec *imapwire.Decoder) (err error) {
 	// ErrMaxSize takes its dedicated BAD and closing BYE path instead; the
 	// defer above still terminates serving without resuming command parsing.
 	if dec.Desynchronized() && !errors.Is(dec.Err(), imapwire.ErrMaxSize) {
+		c.clearPendingCondStore()
 		c.stopNotifyPump()
 		_ = c.flushClosingCondStore()
 		_ = c.writeStatusResp("", &imap.StatusResponse{
@@ -805,7 +809,7 @@ func (c *Conn) readCommand(dec *imapwire.Decoder) (err error) {
 	)
 	if errors.As(err, &imapErr) {
 		if isByeError(err) {
-			return c.finishBye(err)
+			return c.finishBye(err, wasCondStore)
 		}
 		resp = (*imap.StatusResponse)(imapErr)
 		// An OK-typed error is a successful completion that carries a response
@@ -816,7 +820,7 @@ func (c *Conn) readCommand(dec *imapwire.Decoder) (err error) {
 		// fail its precondition.
 		if imapErr.Type == imap.StatusResponseTypeOK {
 			if err := c.poll(name); err != nil {
-				return c.finishBye(err)
+				return c.finishBye(err, wasCondStore)
 			}
 		}
 	} else if errors.As(err, &decErr) {
@@ -846,7 +850,7 @@ func (c *Conn) readCommand(dec *imapwire.Decoder) (err error) {
 		// deleted), and its error bypasses the mapping above — so route it
 		// through finishBye too, or a BYE there reaches the client as a bare EOF.
 		if err := c.poll(name); err != nil {
-			return c.finishBye(err)
+			return c.finishBye(err, wasCondStore)
 		}
 		resp = &imap.StatusResponse{
 			Type: imap.StatusResponseTypeOK,
