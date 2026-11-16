@@ -1011,10 +1011,13 @@ func (c *Conn) writeContReq(text string) error {
 }
 
 func (c *Conn) writeCapabilityStatus(tag string, typ imap.StatusResponseType, text string) error {
+	// Capability lookup can call the backend, so finish it before acquiring
+	// encMutex and arming respWriteTimeout.
+	caps := c.availableCaps()
 	enc := newResponseEncoder(c)
 	defer enc.end()
 	enc.tagged = tag != ""
-	return writeCapabilityStatus(enc.Encoder, tag, typ, c.availableCaps(), text)
+	return writeCapabilityStatus(enc.Encoder, tag, typ, caps, text)
 }
 
 func (c *Conn) checkState(state imap.ConnState) error {

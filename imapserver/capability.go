@@ -13,10 +13,11 @@ func (c *Conn) handleCapability(dec *imapwire.Decoder) error {
 		return dec.Err()
 	}
 
+	caps := c.availableCaps()
 	enc := newResponseEncoder(c)
 	defer enc.end()
 	enc.Atom("*").SP().Atom("CAPABILITY")
-	for _, c := range c.availableCaps() {
+	for _, c := range caps {
 		enc.SP().Atom(string(c))
 	}
 	return enc.CRLF()
