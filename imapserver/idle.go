@@ -181,8 +181,9 @@ func (c *Conn) handleIdle(dec *imapwire.Decoder) error {
 		switch {
 		case isConnectionClosedError(err):
 			// The client hung up mid-IDLE (EOF, RST, a proxy tearing the
-			// connection down). Ordinary, and there is nobody left to tell.
-			return nil
+			// connection down). End the read without a tagged completion:
+			// an unfinished line, even "DONE", did not complete the IDLE.
+			return &clientReadError{err}
 		case isTimeoutError(err):
 			// The read deadline expired: the client stopped re-issuing IDLE, or
 			// something outside the library (a connection guard's inactivity

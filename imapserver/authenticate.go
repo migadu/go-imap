@@ -161,15 +161,26 @@ func (c *Conn) readSASLResponse(dec *imapwire.Decoder) ([]byte, error) {
 }
 
 func retainLiteralTail(prev string, chunk []byte) string {
-	const keep = 64
-	if len(chunk) >= keep {
-		return string(chunk[len(chunk)-keep:])
+	// Keep a canonical suffix, rather than a fixed number of input bytes:
+	// literal counts can contain arbitrarily many digits (or leading zeroes).
+	// Preserve a final CR too, since CRLF can straddle ReadSlice chunks.
+	for _, b := range chunk {
+		switch {
+		case b == '{':
+			prev = "{"
+		case b >= '0' && b <= '9' && (prev == "{" || prev == "{0"):
+			prev = "{0"
+		case b == '+' && prev == "{0":
+			prev = "{0+"
+		case b == '}' && prev == "{0+":
+			prev = "{0+}"
+		case b == '\r' && prev == "{0+}":
+			prev = "{0+}\r"
+		default:
+			prev = ""
+		}
 	}
-	s := prev + string(chunk)
-	if len(s) > keep {
-		s = s[len(s)-keep:]
-	}
-	return s
+	return prev
 }
 
 // saslReadError ends the connection after a failure to read the client's SASL
