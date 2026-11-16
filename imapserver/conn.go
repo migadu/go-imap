@@ -780,7 +780,9 @@ func (c *Conn) readCommand(dec *imapwire.Decoder) (err error) {
 	// pointing into client data rather than at a command boundary: whatever
 	// follows would be executed as commands. There is no way back from that, so
 	// end the connection instead of continuing to parse (RFC 9051 §2.2.1).
-	if dec.Desynchronized() {
+	// ErrMaxSize takes its dedicated BAD and closing BYE path instead; the
+	// defer above still terminates serving without resuming command parsing.
+	if dec.Desynchronized() && !errors.Is(dec.Err(), imapwire.ErrMaxSize) {
 		c.stopNotifyPump()
 		_ = c.flushClosingCondStore()
 		_ = c.writeStatusResp("", &imap.StatusResponse{
