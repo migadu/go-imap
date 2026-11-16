@@ -923,7 +923,7 @@ func (c *Client) activeSelectCmd() *SelectCommand {
 		if sel, ok := cmd.(*SelectCommand); ok {
 			if c.state == imap.ConnStateSelected && c.mailbox != nil &&
 				canonicalMailbox(c.mailbox.Name) != canonicalMailbox(sel.mailbox) &&
-				c.expectsClosedOnSwitchLocked(sel) {
+				len(sel.updates) == 0 && c.expectsClosedOnSwitchLocked(sel) {
 				return nil
 			}
 			return sel
@@ -1475,8 +1475,7 @@ func (c *Client) readResponseTagged(tag, typ string) (startTLS *startTLSCommand,
 	// their invalidation (and the refresh to await) before completing LOGIN or
 	// AUTHENTICATE, just as completeCommand publishes the connection state.
 	if sel, ok := cmd.(*SelectCommand); ok {
-		var imapErr *imap.Error
-		replay := errors.As(cmdErr, &imapErr) && imapErr.Type == imap.StatusResponseTypeBad && c.State() == imap.ConnStateSelected
+		replay := cmdErr != nil && c.State() == imap.ConnStateSelected
 		if err := c.resolveSelectUpdates(sel, replay); err != nil {
 			return nil, err
 		}

@@ -817,6 +817,10 @@ func (c *Client) handleFetch(seqNum uint32) (err error) {
 	// command. The scan below visits commands in the order they were sent.
 	var uidPending, seqClaimed bool
 	c.findPendingCmdFunc(func(cmd command) bool {
+		switch cmd.(type) {
+		case *SelectCommand, *unselectCommand, *unauthenticateCommand:
+			return true
+		}
 		fetch, ok := cmd.(*FetchCommand)
 		if !ok {
 			return false
@@ -918,7 +922,11 @@ func (c *Client) handleFetch(seqNum uint32) (err error) {
 			return nil
 		}
 
-		cmd := c.findPendingCmdFunc(func(anyCmd command) bool {
+		pending := c.findPendingCmdFunc(func(anyCmd command) bool {
+			switch anyCmd.(type) {
+			case *SelectCommand, *unselectCommand, *unauthenticateCommand:
+				return true
+			}
 			cmd, ok := anyCmd.(*FetchCommand)
 			if !ok {
 				return false
@@ -939,8 +947,7 @@ func (c *Client) handleFetch(seqNum uint32) (err error) {
 				return seqNum != 0 && cmd.recvSeqNum(seqNum)
 			}
 		})
-		if cmd != nil {
-			cmd := cmd.(*FetchCommand)
+		if cmd, ok := pending.(*FetchCommand); ok {
 			select {
 			case cmd.msgs <- msg:
 			case <-c.closeCh:
