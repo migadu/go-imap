@@ -92,6 +92,12 @@ type FetchItemBinarySectionSize struct {
 // In-Reply-To and Message-ID values contain message identifiers without angle
 // brackets.
 type Envelope struct {
+	// Date is the Date: header field, or the zero time for NIL. The server writes
+	// it in its own zone, except a Date in UTC (time.UTC, as Time.UTC returns),
+	// which it writes with the zone "-0000": RFC 5322 section 3.3 gives that form
+	// to a date-time that "contains no information about the local time zone". A
+	// date known to be at Universal Time is given in another location of offset
+	// zero, such as time.FixedZone("", 0), and is written "+0000".
 	Date      time.Time
 	Subject   string
 	From      []Address

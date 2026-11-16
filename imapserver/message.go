@@ -371,12 +371,24 @@ type ExtractOptions struct {
 	// go-message's mail.Header.Date is used, which is net/mail.ParseDate: it
 	// reads an obsolete alphabetic zone such as "PDT" in the host's time zone
 	// rather than as RFC 5322 section 4.3 defines it.
+	//
+	// A date ParseDate returns in UTC (time.UTC) has no known zone and is
+	// written with the zone "-0000" (see imap.Envelope.Date).
 	ParseDate func(value string) (time.Time, error)
 }
+
+// utcZone is Universal Time as a zone of its own, which the server writes as
+// "+0000" (see imap.Envelope.Date).
+var utcZone = time.FixedZone("UTC", 0)
 
 func (options *ExtractOptions) date(mh mail.Header) time.Time {
 	if options == nil || options.ParseDate == nil {
 		date, _ := mh.Date()
+		// net/mail gives "UT" and "UTC" in time.UTC. They name Universal
+		// Time, written "+0000", not an unknown zone.
+		if date.Location() == time.UTC {
+			date = date.In(utcZone)
+		}
 		return date
 	}
 	v := mh.Get("Date")
