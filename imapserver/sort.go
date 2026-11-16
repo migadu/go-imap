@@ -1,6 +1,7 @@
 package imapserver
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/migadu/go-imap"
@@ -16,13 +17,16 @@ func (c *Conn) handleSort(tag string, dec *imapwire.Decoder, numKind NumKind) er
 		atom     string
 		options  imap.SortOptions
 		extended bool
+		argErr   error
 	)
 
 	// Check for RETURN options (ESORT)
 	if maybeReadSearchKeyAtom(dec, &atom) && imapwire.EqualFoldASCII(atom, "RETURN") {
-		if err := readSortReturnOpts(dec, &options); err != nil {
-			return fmt.Errorf("in sort-return-opts: %w", err)
+		optErr, err := readSortReturnOpts(dec, &options)
+		if err != nil {
+			return err
 		}
+		argErr = optErr
 		if !dec.ExpectSP() {
 			return dec.Err()
 		}
@@ -70,14 +74,19 @@ func (c *Conn) handleSort(tag string, dec *imapwire.Decoder, numKind NumKind) er
 			criterion.Key = imap.SortKeyTo
 		default:
 			// Outside sort-key (RFC 5256 §5, RFC 5957 §5): invalid
-			// arguments, BAD (RFC 5256 §3).
-			return newClientBugError(fmt.Sprintf("Unknown SORT key: %q", atom))
+			// arguments, BAD (RFC 5256 §3). Defer returning so the rest of
+			// the command line (including any non-synchronizing literals) is
+			// consumed first.
+			if argErr == nil {
+				argErr = fmt.Errorf("in sort-criteria: %w", newClientBugError(fmt.Sprintf("Unknown SORT key: %q", atom)))
+			}
+			return nil
 		}
 
 		sortCriteria = append(sortCriteria, criterion)
 		return nil
 	}); err != nil {
-		return fmt.Errorf("in sort-criteria: %w", err)
+		return preferBadError(argErr, fmt.Errorf("in sort-criteria: %w", err))
 	}
 
 	if !dec.ExpectSP() {
@@ -87,20 +96,9 @@ func (c *Conn) handleSort(tag string, dec *imapwire.Decoder, numKind NumKind) er
 	// Parse charset
 	var charset string
 	if !dec.ExpectAString(&charset) {
-		return dec.Err()
+		return preferBadError(argErr, dec.Err())
 	}
-
-	// Validate charset
-	switch imapwire.ToUpperASCII(charset) {
-	case "US-ASCII", "UTF-8":
-		// supported charsets
-	default:
-		return &imap.Error{
-			Type: imap.StatusResponseTypeNo,
-			Code: imap.ResponseCodeBadCharset,
-			Text: "Only US-ASCII and UTF-8 are supported SORT charsets",
-		}
-	}
+	badCharset := !searchCharsetSupported(charset)
 
 	if !dec.ExpectSP() {
 		return dec.Err()
@@ -110,7 +108,7 @@ func (c *Conn) handleSort(tag string, dec *imapwire.Decoder, numKind NumKind) er
 	var searchCriteria imap.SearchCriteria
 	for {
 		if err := readSearchKey(c, &searchCriteria, dec); err != nil {
-			return fmt.Errorf("in search-key: %w", err)
+			return preferBadError(argErr, fmt.Errorf("in search-key: %w", err))
 		}
 
 		if !dec.SP() {
@@ -133,7 +131,17 @@ func (c *Conn) handleSort(tag string, dec *imapwire.Decoder, numKind NumKind) er
 	if extended && !c.supportsESort() {
 		return newClientBugError("SORT RETURN requires ESORT")
 	}
+	if argErr != nil {
+		return argErr
+	}
 	c.commitCondStore()
+	if badCharset {
+		return &imap.Error{
+			Type: imap.StatusResponseTypeNo,
+			Code: imap.ResponseCodeBadCharset,
+			Text: "Only US-ASCII and UTF-8 are supported SORT charsets",
+		}
+	}
 
 	// If no return option is specified, ALL is assumed
 	if !options.ReturnMin && !options.ReturnMax && !options.ReturnAll && !options.ReturnCount {
@@ -148,6 +156,14 @@ func (c *Conn) handleSort(tag string, dec *imapwire.Decoder, numKind NumKind) er
 	data, err := c.session.Sort(c.ctx, numKind, sortCriteria, charset, &searchCriteria, &options)
 	if err != nil {
 		return err
+	}
+	if data == nil {
+		return fmt.Errorf("imapserver: backend returned nil SortData")
+	}
+	for _, num := range data.All {
+		if num == 0 {
+			return fmt.Errorf("imapserver: invalid message number 0 in SortData")
+		}
 	}
 
 	// RFC 7162 §3.1.9 and §3.1.10: the response carries the highest
@@ -251,9 +267,19 @@ func (c *Conn) writeESort(tag string, data *imap.SortData, options *imap.SortOpt
 	return enc.CRLF()
 }
 
-func readSortReturnOpts(dec *imapwire.Decoder, options *imap.SortOptions) error {
+func preferBadError(badErr, err error) error {
+	if badErr != nil {
+		var imapErr *imap.Error
+		if errors.As(err, &imapErr) && imapErr.Type == imap.StatusResponseTypeNo {
+			return badErr
+		}
+	}
+	return err
+}
+
+func readSortReturnOpts(dec *imapwire.Decoder, options *imap.SortOptions) (optErr error, err error) {
 	if !dec.ExpectSP() {
-		return dec.Err()
+		return nil, dec.Err()
 	}
 	var numRecognizedOpts int
 	if err := dec.ExpectList(func() error {
@@ -277,15 +303,17 @@ func readSortReturnOpts(dec *imapwire.Decoder, options *imap.SortOptions) error 
 		default:
 			// Extended SORT uses the result-option rules of RFC 4466 §2.6.1
 			// (RFC 5267 §3), including rejection of unsupported options.
-			return newClientBugError(fmt.Sprintf("Unknown SORT return option: %q", name))
+			if optErr == nil {
+				optErr = fmt.Errorf("in sort-return-opts: %w", newClientBugError(fmt.Sprintf("Unknown SORT return option: %q", name)))
+			}
 		}
 		return nil
 	}); err != nil {
-		return err
+		return nil, fmt.Errorf("in sort-return-opts: %w", err)
 	}
 	// RFC 5267 §3.3: an empty list requests the ALL return data item.
 	if numRecognizedOpts == 0 {
 		options.ReturnAll = true
 	}
-	return nil
+	return optErr, nil
 }

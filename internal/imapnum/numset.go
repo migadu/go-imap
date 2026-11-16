@@ -119,7 +119,12 @@ func (s *Set) AddSet(t Set) {
 
 // Dynamic returns true if the set contains "*" or "n:*" values.
 func (s Set) Dynamic() bool {
-	return len(s) > 0 && s[len(s)-1].Stop == 0
+	for _, r := range s {
+		if r.Start == 0 || r.Stop == 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // Contains returns true if the non-zero sequence number or UID q is contained
