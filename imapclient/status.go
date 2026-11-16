@@ -62,6 +62,9 @@ func (c *Client) handleStatus() error {
 	}
 
 	cmd := c.findPendingCmdFunc(func(cmd command) bool {
+		if isAuthBarrier(cmd) {
+			return true
+		}
 		switch cmd := cmd.(type) {
 		case *StatusCommand:
 			// A NOTIFY notification for this mailbox (RFC 5465 §5.1-§5.3) can
@@ -76,6 +79,9 @@ func (c *Client) handleStatus() error {
 			return false
 		}
 	})
+	if isAuthBarrier(cmd) {
+		cmd = nil
+	}
 	if cmd == nil {
 		// Unsolicited STATUS response (e.g., from NOTIFY)
 		if handler := c.options.unilateralDataHandler().Status; handler != nil && !c.ignoresUnsolicitedData() {

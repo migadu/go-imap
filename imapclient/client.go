@@ -830,13 +830,51 @@ func findPendingCmdByType[T command](c *Client) T {
 	return cmd
 }
 
+func isAuthBarrier(cmd command) bool {
+	switch cmd.(type) {
+	case *authenticateCommand, *loginCommand, *unauthenticateCommand, *logoutCommand:
+		return true
+	default:
+		return false
+	}
+}
+
+func isSelectionBarrier(cmd command) bool {
+	if isAuthBarrier(cmd) {
+		return true
+	}
+	switch cmd.(type) {
+	case *SelectCommand, *unselectCommand:
+		return true
+	default:
+		return false
+	}
+}
+
+func findPendingAuthCmdByType[T command](c *Client) T {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+
+	for _, cmd := range c.pendingCmds {
+		if isAuthBarrier(cmd) {
+			var zero T
+			return zero
+		}
+		if cmd, ok := cmd.(T); ok {
+			return cmd
+		}
+	}
+
+	var cmd T
+	return cmd
+}
+
 func findPendingSelectedCmdByType[T command](c *Client) T {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 
 	for _, cmd := range c.pendingCmds {
-		switch cmd.(type) {
-		case *SelectCommand, *unselectCommand, *unauthenticateCommand:
+		if isSelectionBarrier(cmd) {
 			var zero T
 			return zero
 		}
@@ -950,8 +988,7 @@ func (c *Client) activeSelectCmd() *SelectCommand {
 		if c.state == imap.ConnStateSelected && c.cmdUsesSelectedMailboxLocked(cmd) {
 			return nil
 		}
-		switch cmd.(type) {
-		case *authenticateCommand, *loginCommand, *unauthenticateCommand, *logoutCommand:
+		if isAuthBarrier(cmd) {
 			return nil
 		}
 	}
@@ -1616,13 +1653,13 @@ func (c *Client) readResponseData(typ string) error {
 					return fmt.Errorf("in resp-code-copy: %w", err)
 				}
 				pending := c.findPendingCmdFunc(func(cmd command) bool {
-					switch cmd := cmd.(type) {
-					case *SelectCommand, *unselectCommand, *unauthenticateCommand:
+					if isSelectionBarrier(cmd) {
 						return true
-					case *MoveCommand:
+					}
+					if move, ok := cmd.(*MoveCommand); ok {
 						// The fallback is published as COPY before its STORE is
 						// assigned. Use the immutable command name to identify MOVE.
-						return cmd.name == "MOVE" || cmd.name == "UID MOVE"
+						return move.name == "MOVE" || move.name == "UID MOVE"
 					}
 					return false
 				})

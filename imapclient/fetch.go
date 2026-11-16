@@ -817,8 +817,7 @@ func (c *Client) handleFetch(seqNum uint32) (err error) {
 	// command. The scan below visits commands in the order they were sent.
 	var uidPending, seqClaimed bool
 	c.findPendingCmdFunc(func(cmd command) bool {
-		switch cmd.(type) {
-		case *SelectCommand, *unselectCommand, *unauthenticateCommand:
+		if isSelectionBarrier(cmd) {
 			return true
 		}
 		fetch, ok := cmd.(*FetchCommand)
@@ -923,8 +922,7 @@ func (c *Client) handleFetch(seqNum uint32) (err error) {
 		}
 
 		pending := c.findPendingCmdFunc(func(anyCmd command) bool {
-			switch anyCmd.(type) {
-			case *SelectCommand, *unselectCommand, *unauthenticateCommand:
+			if isSelectionBarrier(anyCmd) {
 				return true
 			}
 			cmd, ok := anyCmd.(*FetchCommand)

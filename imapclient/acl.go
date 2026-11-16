@@ -111,7 +111,7 @@ func (c *Client) handleMyRights() error {
 	if err != nil {
 		return fmt.Errorf("in myrights-response: %w", err)
 	}
-	if cmd := findPendingCmdByType[*MyRightsCommand](c); cmd != nil {
+	if cmd := findPendingAuthCmdByType[*MyRightsCommand](c); cmd != nil {
 		cmd.data = *data
 	}
 	return nil
@@ -122,7 +122,7 @@ func (c *Client) handleGetACL() error {
 	if err != nil {
 		return fmt.Errorf("in getacl-response: %w", err)
 	}
-	if cmd := findPendingCmdByType[*GetACLCommand](c); cmd != nil {
+	if cmd := findPendingAuthCmdByType[*GetACLCommand](c); cmd != nil {
 		cmd.data = *data
 	}
 	return nil
@@ -133,7 +133,7 @@ func (c *Client) handleListRights() error {
 	if err != nil {
 		return fmt.Errorf("in listrights-response: %w", err)
 	}
-	if cmd := findPendingCmdByType[*ListRightsCommand](c); cmd != nil {
+	if cmd := findPendingAuthCmdByType[*ListRightsCommand](c); cmd != nil {
 		cmd.data = *data
 	}
 	return nil

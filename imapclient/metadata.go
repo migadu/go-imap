@@ -129,6 +129,9 @@ func (c *Client) handleMetadata() error {
 	}
 
 	cmd := c.findPendingCmdFunc(func(anyCmd command) bool {
+		if isAuthBarrier(anyCmd) {
+			return true
+		}
 		switch cmd := anyCmd.(type) {
 		case *GetMetadataCommand:
 			return cmd.mailbox == data.Mailbox
@@ -138,7 +141,7 @@ func (c *Client) handleMetadata() error {
 			return false
 		}
 	})
-	if len(data.EntryValues) == 0 {
+	if isAuthBarrier(cmd) || len(data.EntryValues) == 0 {
 		cmd = nil // Response is unsolicited
 	}
 

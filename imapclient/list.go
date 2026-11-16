@@ -135,6 +135,9 @@ func (c *Client) handleList() error {
 
 	activeSelect := c.activeSelectCmd()
 	cmd := c.findPendingCmdFunc(func(cmd command) bool {
+		if isAuthBarrier(cmd) {
+			return true
+		}
 		switch cmd := cmd.(type) {
 		case *ListCommand:
 			// A LIST response is never an answer to LSUB: one that arrives
@@ -148,6 +151,9 @@ func (c *Client) handleList() error {
 			return false
 		}
 	})
+	if isAuthBarrier(cmd) {
+		cmd = nil
+	}
 	switch cmd := cmd.(type) {
 	case *ListCommand:
 		if cmd.returnStatus || cmd.returnMetadata {
@@ -199,13 +205,15 @@ func (c *Client) handleLsub() error {
 	// matches none still answers one of them, since none is unsolicited, and
 	// the server's reading of the reference may be one matches cannot follow.
 	cmd := c.findPendingCmdFunc(func(cmd command) bool {
-		return isLsub(cmd) && cmd.(*ListCommand).matches(data)
+		return isAuthBarrier(cmd) || (isLsub(cmd) && cmd.(*ListCommand).matches(data))
 	})
 	if cmd == nil {
-		cmd = c.findPendingCmdFunc(isLsub)
+		cmd = c.findPendingCmdFunc(func(cmd command) bool {
+			return isAuthBarrier(cmd) || isLsub(cmd)
+		})
 	}
-	if cmd != nil {
-		return c.deliverListData(cmd.(*ListCommand), data)
+	if listCmd, ok := cmd.(*ListCommand); ok {
+		return c.deliverListData(listCmd, data)
 	}
 	return nil
 }

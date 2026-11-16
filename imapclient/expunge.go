@@ -36,11 +36,11 @@ func (c *Client) handleExpunge(seqNum uint32) error {
 	// An EXPUNGE command sent after SELECT cannot own an update from before
 	// that selection's boundary. Stop at SELECT instead of skipping over it.
 	pending := c.findPendingCmdFunc(func(cmd command) bool {
-		switch cmd.(type) {
-		case *SelectCommand, *unselectCommand, *unauthenticateCommand, *ExpungeCommand:
+		if isSelectionBarrier(cmd) {
 			return true
 		}
-		return false
+		_, ok := cmd.(*ExpungeCommand)
+		return ok
 	})
 	cmd, _ := pending.(*ExpungeCommand)
 	apply := func() error {

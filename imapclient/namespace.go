@@ -21,7 +21,7 @@ func (c *Client) handleNamespace() error {
 	if err != nil {
 		return fmt.Errorf("in namespace-response: %w", err)
 	}
-	if cmd := findPendingCmdByType[*NamespaceCommand](c); cmd != nil {
+	if cmd := findPendingAuthCmdByType[*NamespaceCommand](c); cmd != nil {
 		cmd.data = *data
 	}
 	return nil

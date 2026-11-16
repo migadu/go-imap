@@ -257,7 +257,7 @@ func (c *Client) handleESearch() error {
 			case *SelectCommand, *unselectCommand:
 				crossedSelection = true
 				return false
-			case *unauthenticateCommand:
+			case *authenticateCommand, *loginCommand, *unauthenticateCommand, *logoutCommand:
 				crossedSelection = true
 				crossedAuth = true
 				return false
