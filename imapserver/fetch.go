@@ -587,9 +587,17 @@ func (w *FetchResponseWriter) WriteUID(uid imap.UID) {
 // WriteFlags writes the message's flags.
 func (w *FetchResponseWriter) WriteFlags(flags []imap.Flag) {
 	w.writeItemSep()
-	w.enc.Atom("FLAGS").SP().List(len(flags), func(i int) {
-		w.enc.Flag(flags[i])
-	})
+	// Flags can be queued before ENABLE IMAP4rev2. Check the revision under
+	// the encoder lock so queued \Recent flags cannot follow ENABLED.
+	rev2 := w.enc.conn.isIMAP4rev2()
+	list := w.enc.Atom("FLAGS").SP().BeginList()
+	for _, flag := range flags {
+		if rev2 && imapwire.EqualFoldASCII(string(flag), string(internal.FlagRecent)) {
+			continue
+		}
+		list.Item().Flag(flag)
+	}
+	list.End()
 }
 
 // WriteRFC822Size writes the message's full size.
