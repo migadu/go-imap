@@ -190,10 +190,10 @@ func (dec *Decoder) readByte() (byte, bool) {
 	if dec.MaxSize > 0 && dec.readBytes > dec.MaxSize {
 		return 0, dec.failMaxSize()
 	}
-	dec.crlf = false
 	if dec.literal {
 		return 0, dec.returnErr(fmt.Errorf("imapwire: cannot decode while a literal is open"))
 	}
+	dec.crlf = false
 	b, err := dec.r.ReadByte()
 	if err != nil {
 		dec.readFailed = true
@@ -261,10 +261,16 @@ func (dec *Decoder) NextBytesFold(s string) bool {
 	if dec.err != nil && !dec.discarding {
 		return false
 	}
+	if dec.MaxSize > 0 && dec.readBytes > dec.MaxSize {
+		return dec.failMaxSize()
+	}
 	if dec.literal {
 		return dec.returnErr(fmt.Errorf("imapwire: cannot decode while a literal is open"))
 	}
 	for i := 1; i <= len(s); i++ {
+		if dec.MaxSize > 0 && int64(i-1) > dec.MaxSize-dec.readBytes {
+			return dec.failMaxSize()
+		}
 		b, err := dec.r.Peek(i)
 		if err != nil {
 			dec.readFailed = true
@@ -296,6 +302,12 @@ func foldASCII(ch byte) byte {
 // because the recorded one wins over anything found later, but they should
 // check Err() if they want to fail at the cause.
 func (dec *Decoder) EOF() bool {
+	if dec.err != nil && !dec.discarding {
+		return false
+	}
+	if dec.literal {
+		return dec.returnErr(fmt.Errorf("imapwire: cannot decode while a literal is open"))
+	}
 	_, err := dec.r.Peek(1)
 	if err == io.EOF {
 		return true
@@ -581,12 +593,6 @@ func (dec *Decoder) DiscardLine() {
 	priorNonSync := dec.nonSyncState == 4
 	var text string
 	dec.Text(&text)
-	trailingSpace := false
-	if text == "" && !dec.readFailed {
-		if b, err := dec.r.Peek(1); err == nil && b[0] == ' ' {
-			trailingSpace = true
-		}
-	}
 	// Text stops at a bare CR too. Only a complete line ending makes it safe
 	// to treat the following input as another command.
 	lineEnded := !dec.readFailed && dec.CRLF()
@@ -595,7 +601,7 @@ func (dec *Decoder) DiscardLine() {
 	// never reached: its octets follow, but their count was never validated by
 	// this decoder, so skipping them would be a guess. Refuse to resynchronise.
 	// Likewise when the end of the line was never reached.
-	endedWithNonSync := EndsWithNonSyncLiteral(text) || (text == "" && priorNonSync && !trailingSpace)
+	endedWithNonSync := EndsWithNonSyncLiteral(text) || (text == "" && priorNonSync)
 	if dec.side == ConnSideServer && (!lineEnded || endedWithNonSync) {
 		dec.desynced = true
 	}
@@ -883,12 +889,23 @@ func (dec *Decoder) quoted(ptr *string, allowStrayQuotes bool) bool {
 		// Peek rather than readByte: hitting the end of the input here is not
 		// an error, and must not set the decoder error.
 		for i := 0; i < maxStrayQuotes; i++ {
-			b, err := dec.r.Peek(1)
-			if err != nil || b[0] != '"' {
+			if dec.MaxSize > 0 && dec.readBytes > dec.MaxSize {
 				break
 			}
-			dec.r.Discard(1)
+			b, err := dec.r.Peek(1)
+			if err != nil {
+				if err != io.EOF {
+					dec.readFailed = true
+					return dec.returnErr(err)
+				}
+				break
+			}
+			if b[0] != '"' {
+				break
+			}
+			_, _ = dec.r.Discard(1)
 			dec.readBytes++
+			dec.prevNonSyncState = 0
 		}
 	}
 
