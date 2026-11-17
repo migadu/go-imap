@@ -51,7 +51,7 @@ func TestSearchReturnSaveWire(t *testing.T) {
 				go func() {
 					done <- func() error {
 						br := bufio.NewReader(serverConn)
-						if _, err := fmt.Fprint(serverConn, "* PREAUTH [CAPABILITY IMAP4rev2 ESEARCH SEARCHRES MULTISEARCH] ready\r\n"); err != nil {
+						if _, err := fmt.Fprint(serverConn, "* PREAUTH [CAPABILITY IMAP4rev1 IMAP4rev2 ESEARCH SEARCHRES MULTISEARCH] ready\r\n"); err != nil {
 							return err
 						}
 						line, err := br.ReadString('\n')
