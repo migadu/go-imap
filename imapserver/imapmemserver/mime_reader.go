@@ -34,7 +34,7 @@ func newMIMEEntity(header gomessage.Header, body io.Reader) (*gomessage.Entity, 
 	rawCTE := header.Get("Content-Transfer-Encoding")
 	mech := imapwire.CTEMechanism(rawCTE)
 	switch imapwire.ToLowerASCII(mech) {
-	case "7bit", "8bit", "binary", "base64", "quoted-printable":
+	case "", "7bit", "8bit", "binary", "base64", "quoted-printable":
 		if mech != rawCTE {
 			decodeHeader = header.Copy()
 			decodeHeader.Set("Content-Transfer-Encoding", mech)

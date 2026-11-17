@@ -1,6 +1,10 @@
 package imapwire
 
-import "strings"
+import (
+	"strings"
+	"unicode"
+	"unicode/utf8"
+)
 
 // IMAP keywords are case-insensitive over US-ASCII only: "ABNF strings are
 // case insensitive and the character set for these strings is US-ASCII" (RFC
@@ -67,19 +71,29 @@ func IsASCII(s string) bool {
 	return true
 }
 
-// IsMIMETokenPart reports whether s is non-empty and free of ASCII control
-// characters, spaces, and RFC 2045 tspecials. Non-ASCII UTF-8 bytes (>= 0x80)
-// are permitted so callers can distinguish unknown non-ASCII subtypes (such as
-// multipart/dİgest) from tokens containing CTLs or delimiters.
+// IsMIMETokenPart reports whether s is non-empty and free of ASCII/Unicode
+// control characters, ASCII/Unicode whitespace, invalid UTF-8, and RFC 2045
+// tspecials. Valid non-ASCII graphic UTF-8 runes are permitted so callers can
+// distinguish unknown non-ASCII subtypes (such as multipart/dİgest) from tokens
+// containing whitespace, CTLs, or delimiters.
 func IsMIMETokenPart(s string) bool {
 	if s == "" {
 		return false
 	}
-	for i := 0; i < len(s); i++ {
+	for i := 0; i < len(s); {
 		ch := s[i]
-		if ch <= ' ' || ch == 0x7f || strings.IndexByte(`()<>@,;:\"/[]?=`, ch) >= 0 {
+		if ch < utf8.RuneSelf {
+			if ch <= ' ' || ch == 0x7f || strings.IndexByte(`()<>@,;:\"/[]?=`, ch) >= 0 {
+				return false
+			}
+			i++
+			continue
+		}
+		r, width := utf8.DecodeRuneInString(s[i:])
+		if (r == utf8.RuneError && width == 1) || unicode.IsSpace(r) || unicode.IsControl(r) {
 			return false
 		}
+		i += width
 	}
 	return true
 }
