@@ -525,12 +525,14 @@ func (dec *Decoder) ExpectText(ptr *string) bool {
 	return dec.Expect(dec.Text(ptr), "text")
 }
 
+// DiscardUntilByte skips bytes on the current line up to untilCh (or CR/LF),
+// leaving the stopping byte unread so the caller never crosses a line boundary.
 func (dec *Decoder) DiscardUntilByte(untilCh byte) {
 	for {
 		ch, ok := dec.readByte()
 		if !ok {
 			return
-		} else if ch == untilCh {
+		} else if ch == untilCh || ch == '\r' || ch == '\n' {
 			dec.mustUnreadByte()
 			return
 		}

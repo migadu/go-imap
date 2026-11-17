@@ -51,22 +51,19 @@ func (c *Client) Store(numSet imap.NumSet, store *imap.StoreFlags, options *imap
 }
 
 // readRespCodeModified parses the number set carried by a MODIFIED response
-// code (RFC 7162 §3.1.3). The set is interpreted in the number space of the
-// STORE command that produced it: UIDs for UID STORE, sequence numbers for
-// STORE. The pending command carries that number space via its numSet.
-func readRespCodeModified(dec *imapwire.Decoder, cmd command) (imap.NumSet, error) {
-	// MODIFIED is only emitted for STORE / UID STORE, which are backed by a
-	// FetchCommand. Default to sequence numbers for any other (unexpected)
-	// command so the decoder still consumes the set and stays in sync.
+// code (RFC 7162 §3.1.3) without poisoning dec on syntax errors. The set is
+// interpreted in the number space of the STORE command that produced it: UIDs
+// for UID STORE, sequence numbers for STORE.
+func readRespCodeModified(dec *imapwire.Decoder, cmd command) (imap.NumSet, bool) {
+	var raw string
+	if !dec.SP() || !dec.Func(&raw, func(ch byte) bool { return ch == '*' || imapwire.IsAtomChar(ch) }) || !dec.NextByteIs(']') {
+		return nil, false
+	}
 	kind := imapwire.NumKindSeq
 	if fetchCmd, ok := cmd.(*FetchCommand); ok {
 		kind = imapwire.NumSetKind(fetchCmd.numSet)
 	}
-	var modified imap.NumSet
-	if !dec.ExpectNumSet(kind, &modified) {
-		return nil, dec.Err()
-	}
-	return modified, nil
+	return imapwire.ParseNumSet(kind, raw)
 }
 
 // Modified returns the messages that a conditional STORE did not update because

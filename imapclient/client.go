@@ -1464,7 +1464,7 @@ func (c *Client) readResponseTagged(tag, typ string) (startTLS *startTLSCommand,
 				uidValidity uint32
 				uidNum      uint32
 			)
-			if !c.dec.SP() || !c.dec.Number(&uidValidity) || !c.dec.SP() || !c.dec.Number(&uidNum) {
+			if !c.dec.SP() || !c.dec.Number(&uidValidity) || uidValidity == 0 || !c.dec.SP() || !c.dec.Number(&uidNum) || uidNum == 0 || !c.dec.NextByteIs(']') {
 				malformedCode = true
 				break
 			}
@@ -1490,6 +1490,10 @@ func (c *Client) readResponseTagged(tag, typ string) (startTLS *startTLSCommand,
 				cmd.data = MoveData(data)
 			}
 		case "READ-ONLY", "READ-WRITE": // RFC 9051 §7.1
+			if !c.dec.NextByteIs(']') {
+				malformedCode = true
+				break
+			}
 			readOnly := code == "READ-ONLY"
 			if cmd, ok := cmd.(*SelectCommand); ok {
 				cmd.data.ReadOnly = readOnly
@@ -1502,12 +1506,10 @@ func (c *Client) readResponseTagged(tag, typ string) (startTLS *startTLSCommand,
 				}
 			}
 		case "MODIFIED": // RFC 7162 §3.1.3: conditional STORE UNCHANGEDSINCE failures
-			if !c.dec.ExpectSP() {
-				return nil, c.dec.Err()
-			}
-			modified, err := readRespCodeModified(c.dec, cmd)
-			if err != nil {
-				return nil, fmt.Errorf("in resp-code-modified: %w", err)
+			modified, ok := readRespCodeModified(c.dec, cmd)
+			if !ok {
+				malformedCode = true
+				break
 			}
 			if cmd, ok := cmd.(*FetchCommand); ok {
 				cmd.modified = modified
@@ -1637,12 +1639,14 @@ func (c *Client) readResponseData(typ string) error {
 				}
 				c.setCaps(caps)
 			case "PERMANENTFLAGS":
-				if !c.dec.ExpectSP() {
-					return c.dec.Err()
+				if !c.dec.SP() {
+					malformedCode = true
+					break
 				}
-				flags, err := internal.ExpectFlagList(c.dec)
-				if err != nil {
-					return err
+				flags, ok := internal.ReadFlagList(c.dec)
+				if !ok || !c.dec.NextByteIs(']') {
+					malformedCode = true
+					break
 				}
 				if c.ignoresMailboxData() {
 					break
@@ -1662,6 +1666,10 @@ func (c *Client) readResponseData(typ string) error {
 					return err
 				}
 			case "READ-ONLY", "READ-WRITE":
+				if !c.dec.NextByteIs(']') {
+					malformedCode = true
+					break
+				}
 				// RFC 9051 §7.1: besides answering SELECT, these report that the
 				// access to the selected mailbox has changed.
 				readOnly := code == "READ-ONLY"
@@ -1679,7 +1687,7 @@ func (c *Client) readResponseData(typ string) error {
 				}
 			case "UIDNEXT":
 				var num uint32
-				if !c.dec.SP() || !c.dec.Number(&num) {
+				if !c.dec.SP() || !c.dec.Number(&num) || !c.dec.NextByteIs(']') {
 					malformedCode = true
 					break
 				}
@@ -1689,7 +1697,7 @@ func (c *Client) readResponseData(typ string) error {
 				}
 			case "UIDVALIDITY":
 				var uidValidity uint32
-				if !c.dec.SP() || !c.dec.Number(&uidValidity) {
+				if !c.dec.SP() || !c.dec.Number(&uidValidity) || !c.dec.NextByteIs(']') {
 					malformedCode = true
 					break
 				}
@@ -1718,7 +1726,7 @@ func (c *Client) readResponseData(typ string) error {
 				}
 			case "HIGHESTMODSEQ":
 				var modSeq uint64
-				if !c.dec.SP() || !c.dec.ModSeq(&modSeq) {
+				if !c.dec.SP() || !c.dec.ModSeq(&modSeq) || !c.dec.NextByteIs(']') {
 					malformedCode = true
 					break
 				}
@@ -1730,15 +1738,27 @@ func (c *Client) readResponseData(typ string) error {
 					cmd.recorded = true
 				}
 			case "NOMODSEQ":
+				if !c.dec.NextByteIs(']') {
+					malformedCode = true
+					break
+				}
 				if cmd := c.activeSelectCmd(); cmd != nil {
 					cmd.data.HighestModSeq = 0
 					cmd.recorded = true
 				}
 			case "NOTIFICATIONOVERFLOW":
+				if !c.dec.NextByteIs(']') {
+					malformedCode = true
+					break
+				}
 				if handler := c.options.unilateralDataHandler().NotificationOverflow; handler != nil && !c.ignoresUnsolicitedData() {
 					if err := c.runUnilateralHandler(func() { handler() }); err != nil {
 						return err
 					}
+				}
+			case "CLOSED":
+				if !c.dec.NextByteIs(']') {
+					malformedCode = true
 				}
 			default: // [SP 1*<any TEXT-CHAR except "]">]
 				if c.dec.SP() {
