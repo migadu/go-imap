@@ -147,11 +147,18 @@ func isMultipartContentType(mediaType string) bool {
 	return strings.HasPrefix(mediaType, "multipart/") && imapwire.IsMIMETokenPart(mediaType[len("multipart/"):])
 }
 
+// Multipart traversal and its CTE exception require a usable boundary. A MIME
+// parser can retain the type while losing the parameters on a parse error.
+// BODYSTRUCTURE keeps its separate lenient fallback for such containers.
+func isMultipartWithBoundary(mediaType string, params map[string]string) bool {
+	return isMultipartContentType(mediaType) && params["boundary"] != ""
+}
+
 func findMessagePart(header textproto.Header, body io.Reader, partPath []int) (string, textproto.Header, io.Reader) {
 	// First part of non-multipart message refers to the message itself
 	msgHeader := gomessage.Header{Header: header}
-	mediaType, _ := contentTypeASCII(msgHeader)
-	if !isMultipartContentType(mediaType) && len(partPath) > 0 && partPath[0] == 1 {
+	mediaType, typeParams := contentTypeASCII(msgHeader)
+	if !isMultipartWithBoundary(mediaType, typeParams) && len(partPath) > 0 && partPath[0] == 1 {
 		partPath = partPath[1:]
 	}
 
@@ -163,7 +170,7 @@ func findMessagePart(header textproto.Header, body io.Reader, partPath []int) (s
 
 		msgHeader := gomessage.Header{Header: header}
 		mediaType, typeParams := contentTypeASCII(msgHeader)
-		if !isMultipartContentType(mediaType) {
+		if !isMultipartWithBoundary(mediaType, typeParams) {
 			if partNum != 1 {
 				return "", textproto.Header{}, nil
 			}
@@ -309,7 +316,7 @@ func writeBinarySection(w io.Writer, r io.Reader, part []int, lenient bool) erro
 	}
 
 	h := gomessage.Header{Header: header}
-	mediaType, _ := contentTypeASCII(h)
+	mediaType, typeParams := contentTypeASCII(h)
 	if !h.Has("Content-Type") && parentMediaType == "multipart/digest" {
 		mediaType = "message/rfc822" // RFC 2046 §5.1.5
 	}
@@ -319,7 +326,7 @@ func writeBinarySection(w io.Writer, r io.Reader, part []int, lenient bool) erro
 	// text/* body to UTF-8 when a CharsetReader is installed, so it is given
 	// the encoding alone. Like New, ignore the encoding of a multipart, which
 	// RFC 2045 §6.4 restricts to the identity encodings.
-	if !isMultipartContentType(mediaType) {
+	if !isMultipartWithBoundary(mediaType, typeParams) {
 		mech := cteMechanism(header.Get("Content-Transfer-Encoding"))
 		// Balanced comments have already been removed. Residual parentheses
 		// are not mechanism tokens, even if a decoder can recover from them.
