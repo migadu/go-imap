@@ -29,9 +29,16 @@ func readRespCodePermanentFlags(dec *imapwire.Decoder) ([]imap.Flag, string, boo
 		flags, valid = internal.ReadFlagList(p)
 	}
 	if !valid {
-		// The list did not close. Recover at the first code bracket on this
-		// line, without swallowing it as part of an unfinished keyword.
-		p = newParser()
+		// Skip a structurally closed list before looking for the code bracket:
+		// keywords can contain arbitrary '[' and ']' bytes. Even if the outer
+		// ']' is absent, keep the tail after ')' so its validation fails rather
+		// than rewinding to a bracket inside a keyword. An unclosed list retains
+		// the first-bracket recovery below.
+		if tail, ok := skipClosedMalformedFlagList(raw); ok {
+			p = imapwire.NewDecoder(bufio.NewReader(strings.NewReader(tail+"\r\n")), imapwire.ConnSideClient)
+		} else {
+			p = newParser()
+		}
 	}
 	if !valid || !p.Special(']') {
 		// A completed list may contain keyword brackets. Skip trailing junk
@@ -50,4 +57,35 @@ func readRespCodePermanentFlags(dec *imapwire.Decoder) ([]imap.Flag, string, boo
 		return nil, "", false, p.Err()
 	}
 	return flags, text, valid, nil
+}
+
+// The bool reports an observed outer ')', not valid flag syntax. The caller
+// must still find the response-code bracket and validate the response text.
+func skipClosedMalformedFlagList(raw string) (string, bool) {
+	s := strings.TrimLeft(raw, " ")
+	if len(s) == 0 || s[0] != '(' {
+		return "", false
+	}
+	depth := 1
+	for i := 1; i < len(s); i++ {
+		switch s[i] {
+		case '"':
+			for i++; i < len(s) && s[i] != '"'; i++ {
+				if s[i] == '\\' {
+					i++
+				}
+			}
+			if i >= len(s) {
+				return "", false
+			}
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				return s[i+1:], true
+			}
+		}
+	}
+	return "", false
 }
