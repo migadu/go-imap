@@ -29,10 +29,11 @@ func readRespCodePermanentFlags(dec *imapwire.Decoder) ([]imap.Flag, string, boo
 		flags, valid = internal.ReadFlagList(p)
 	}
 	if !valid {
-		// If a parenthesized flag list actually closed on this line before an
-		// outer ']', skip past that closed list so brackets inside keywords (such
-		// as [Imap]/Todo) are not mistaken for the end of the response code.
-		// Otherwise the list did not close, so recover at the first code bracket.
+		// Skip a structurally closed list before looking for the code bracket:
+		// keywords can contain arbitrary '[' and ']' bytes. Even if the outer
+		// ']' is absent, keep the tail after ')' so its validation fails rather
+		// than rewinding to a bracket inside a keyword. An unclosed list retains
+		// the first-bracket recovery below.
 		if tail, ok := skipClosedMalformedFlagList(raw); ok {
 			p = imapwire.NewDecoder(bufio.NewReader(strings.NewReader(tail+"\r\n")), imapwire.ConnSideClient)
 		} else {
@@ -58,12 +59,14 @@ func readRespCodePermanentFlags(dec *imapwire.Decoder) ([]imap.Flag, string, boo
 	return flags, text, valid, nil
 }
 
+// The bool reports an observed outer ')', not valid flag syntax. The caller
+// must still find the response-code bracket and validate the response text.
 func skipClosedMalformedFlagList(raw string) (string, bool) {
 	s := strings.TrimLeft(raw, " ")
 	if len(s) == 0 || s[0] != '(' {
 		return "", false
 	}
-	var squareDepth int
+	depth := 1
 	for i := 1; i < len(s); i++ {
 		switch s[i] {
 		case '"':
@@ -75,23 +78,13 @@ func skipClosedMalformedFlagList(raw string) (string, bool) {
 			if i >= len(s) {
 				return "", false
 			}
-		case '[':
-			squareDepth++
-		case ']':
-			if squareDepth > 0 {
-				squareDepth--
-				continue
-			}
-			if i+1 == len(s) || s[i+1] == ' ' || s[i+1] == '(' {
-				return "", false
-			}
 		case '(':
-			return "", false
+			depth++
 		case ')':
-			if squareDepth == 0 && strings.IndexByte(s[i+1:], ']') >= 0 {
+			depth--
+			if depth == 0 {
 				return s[i+1:], true
 			}
-			return "", false
 		}
 	}
 	return "", false
