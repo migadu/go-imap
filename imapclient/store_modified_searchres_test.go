@@ -63,7 +63,13 @@ func TestStoreModifiedPreservesSearchResultMarker(t *testing.T) {
 					if _, err := c.Select("INBOX", nil).Wait(); err != nil {
 						t.Fatal(err)
 					}
-					if err := c.SaveSearchForTest(uid); err != nil {
+					var saveCmd *imapclient.SearchCommand
+					if uid {
+						saveCmd = c.UIDSearch(&imap.SearchCriteria{}, &imap.SearchOptions{ReturnSave: true})
+					} else {
+						saveCmd = c.Search(&imap.SearchCriteria{}, &imap.SearchOptions{ReturnSave: true})
+					}
+					if _, err := saveCmd.Wait(); err != nil {
 						t.Fatalf("SEARCH SAVE setup: %v", err)
 					}
 					var nums imap.NumSet = imap.SeqSetNum(1, 2)

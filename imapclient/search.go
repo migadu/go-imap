@@ -20,6 +20,7 @@ func returnSearchOptions(options *imap.SearchOptions) []string {
 		"MAX":   options.ReturnMax,
 		"ALL":   options.ReturnAll,
 		"COUNT": options.ReturnCount,
+		"SAVE":  options.ReturnSave,
 	}
 
 	var l []string
