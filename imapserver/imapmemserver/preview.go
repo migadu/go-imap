@@ -92,15 +92,13 @@ func (g *previewGenerator) walk(entity *gomessage.Entity, depth int, parentMedia
 	}
 	g.parts++
 	rawDisp := entity.Header.Get("Content-Disposition")
-	disposition, _, dispErr := entity.Header.ContentDisposition()
+	var disposition string
 	// A parser may return a normalized disposition alongside a parameter error,
-	// or reject RFC 822 comments on an otherwise valid token. Check the
-	// comment-stripped head token directly before exposing this part's text.
+	// accept vertical tabs/form feeds around the token, or reject RFC 822
+	// comments on an otherwise valid token. Check the comment-stripped head
+	// token directly before exposing this part's text.
 	if rawDisp != "" {
-		dispToken, ok := imapwire.MIMEHeadToken(rawDisp)
-		if !ok || !imapwire.IsASCII(dispToken) {
-			disposition = ""
-		} else if dispErr != nil {
+		if dispToken, ok := imapwire.MIMEHeadToken(rawDisp); ok && imapwire.IsASCII(dispToken) {
 			disposition = dispToken
 		}
 	}
@@ -112,7 +110,7 @@ func (g *previewGenerator) walk(entity *gomessage.Entity, depth int, parentMedia
 	rawCT := entity.Header.Get("Content-Type")
 	mediaType, mediaParams, _ := entity.Header.ContentType()
 	if rawCT != "" {
-		if ctToken, ok := imapwire.MIMEHeadToken(rawCT); !ok || !imapwire.IsASCII(ctToken) {
+		if ctToken, ok := imapwire.MIMEHeadToken(rawCT); !ok || !imapwire.IsASCII(ctToken) || ctToken != mediaType {
 			mediaType = ""
 		}
 	}
@@ -123,6 +121,9 @@ func (g *previewGenerator) walk(entity *gomessage.Entity, depth int, parentMedia
 		mediaType = "message/rfc822"
 	}
 	if strings.HasPrefix(mediaType, "multipart/") {
+		if mediaParams["boundary"] == "" {
+			return "", false, nil
+		}
 		mr := entity.MultipartReader()
 		for {
 			if err := g.readError(); err != nil {
