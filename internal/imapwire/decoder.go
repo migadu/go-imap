@@ -498,46 +498,6 @@ func (dec *Decoder) PeekSpecial(b byte) bool {
 	return got == b
 }
 
-// HasFlagListClosingParen reports, without consuming input, whether a closing
-// ')' appears on the current line after only valid listed-flag bytes (' ', '\',
-// '*', ']', or atom-char). It lets ReadFlagList distinguish a ']' inside a
-// Gmail keyword (such as [Imap]/Todo) from the closing ']' of an unclosed
-// [PERMANENTFLAGS (Todo] response code.
-func (dec *Decoder) HasFlagListClosingParen() bool {
-	if dec.err != nil && !dec.discarding {
-		return false
-	}
-	if dec.MaxSize > 0 && dec.readBytes > dec.MaxSize {
-		return dec.failMaxSize()
-	}
-	if dec.literal {
-		return dec.returnErr(fmt.Errorf("imapwire: cannot decode while a literal is open"))
-	}
-	for i := 1; ; i++ {
-		if dec.MaxSize > 0 && int64(i-1) > dec.MaxSize-dec.readBytes {
-			return dec.failMaxSize()
-		}
-		b, err := dec.r.Peek(i)
-		if err != nil {
-			if errors.Is(err, bufio.ErrBufferFull) {
-				return true
-			}
-			if err != io.EOF {
-				dec.readFailed = true
-				dec.returnErr(err)
-			}
-			return false
-		}
-		ch := b[i-1]
-		if ch == ')' {
-			return true
-		}
-		if ch != ' ' && ch != '\\' && ch != '*' && ch != ']' && !IsAtomChar(ch) {
-			return false
-		}
-	}
-}
-
 func (dec *Decoder) ExpectSpecial(b byte) bool {
 	return dec.Expect(dec.Special(b), fmt.Sprintf("'%v'", string(b)))
 }

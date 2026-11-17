@@ -34,7 +34,6 @@ import (
 	"time"
 
 	"github.com/migadu/go-imap"
-	"github.com/migadu/go-imap/internal"
 	"github.com/migadu/go-imap/internal/imapwire"
 )
 
@@ -1627,7 +1626,8 @@ func (c *Client) readResponseData(typ string) error {
 		// see #500 and #502
 		hasSP := c.dec.SP()
 
-		var code string
+		var code, text string
+		var responseTextRead bool
 		// malformedCode is set when a code we recognise carries an argument we
 		// cannot parse. Rather than failing the connection over advisory
 		// metadata, we skip the code exactly as we skip an unknown one: RFC 9051
@@ -1655,13 +1655,13 @@ func (c *Client) readResponseData(typ string) error {
 				}
 				c.setCaps(caps)
 			case "PERMANENTFLAGS":
-				if !c.dec.SP() {
-					malformedCode = true
-					break
+				flags, tailText, ok, err := readRespCodePermanentFlags(c.dec)
+				if err != nil {
+					return fmt.Errorf("in resp-text: %w", err)
 				}
-				flags, ok := internal.ReadFlagList(c.dec)
-				if !ok || !c.dec.NextByteIs(']') {
-					malformedCode = true
+				text, responseTextRead = tailText, true
+				if !ok {
+					code = ""
 					break
 				}
 				if c.ignoresMailboxData() {
@@ -1789,20 +1789,21 @@ func (c *Client) readResponseData(typ string) error {
 					c.dec.DiscardUntilByte(']')
 				}
 			}
-			if malformedCode {
-				// Drop whatever is left of the code and forget its name, so it
-				// is reported the same as any code we do not act on.
-				c.dec.DiscardUntilByte(']')
-				code = ""
+			if !responseTextRead {
+				if malformedCode {
+					// Drop whatever is left of the code and forget its name, so it
+					// is reported the same as any code we do not act on.
+					c.dec.DiscardUntilByte(']')
+					code = ""
+				}
+				if !c.dec.ExpectSpecial(']') {
+					return fmt.Errorf("in resp-text: %w", c.dec.Err())
+				}
+				hasSP = c.dec.SP()
 			}
-			if !c.dec.ExpectSpecial(']') {
-				return fmt.Errorf("in resp-text: %w", c.dec.Err())
-			}
-			hasSP = c.dec.SP()
 		}
 
-		var text string
-		if hasSP && !c.dec.ExpectText(&text) {
+		if !responseTextRead && hasSP && !c.dec.ExpectText(&text) {
 			return fmt.Errorf("in resp-text: %w", c.dec.Err())
 		}
 
