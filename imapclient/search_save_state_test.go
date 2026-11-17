@@ -74,16 +74,13 @@ func TestSearchSaveUpdatesSessionResult(t *testing.T) {
 				}
 				checkSaved := func(want ...imap.UID) {
 					t.Helper()
-					messages, err := c.Fetch(imap.SearchRes(), &imap.FetchOptions{UID: true}).Collect()
+					data, err := c.UIDSearch(&imap.SearchCriteria{UID: []imap.UIDSet{imap.SearchRes()}}, &imap.SearchOptions{ReturnAll: true}).Wait()
 					if err != nil {
 						t.Fatal(err)
 					}
-					var got []imap.UID
-					for _, msg := range messages {
-						got = append(got, msg.UID)
-					}
+					got := data.AllUIDs()
 					if !slices.Equal(got, want) {
-						t.Fatalf("FETCH $ UIDs = %v, want %v", got, want)
+						t.Fatalf("UID SEARCH UID $ = %v, want %v", got, want)
 					}
 				}
 
