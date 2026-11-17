@@ -2239,6 +2239,10 @@ type UnilateralDataHandler struct {
 	// selected mailbox should therefore treat a message buffer that lacks a
 	// requested item as incomplete and re-fetch it, or keep FlagChange out of
 	// the SELECTED specifier of its watch.
+	//
+	// With imap.SearchRes(), the saved set's membership may be unknown to the
+	// client. Any UID-bearing response can therefore be attributed to the
+	// pending FETCH or STORE, even if the message is outside the saved set.
 	Fetch func(msg *FetchMessageData)
 
 	// Requires ENABLE QRESYNC.

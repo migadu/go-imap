@@ -10,6 +10,8 @@ import (
 // Store sends a STORE command.
 //
 // Unless StoreFlags.Silent is set, the server will return the updated values.
+// When numSet is imap.SearchRes(), these responses have the same attribution
+// limitations as Fetch with imap.SearchRes().
 //
 // A nil options pointer is equivalent to a zero options value. The
 // UNCHANGEDSINCE modifier (RFC 7162 §3.1.3) is sent when
