@@ -129,6 +129,9 @@ func mimeHeaderTokenASCII(raw, parsed string, parseErr error) string {
 	if raw == "" || (parseErr != nil && parsed == raw) {
 		return parsed
 	}
+	if token, ok := imapwire.MIMEHeadToken(raw); ok {
+		return token
+	}
 	token, _, _ := strings.Cut(raw, ";")
 	return imapwire.ToLowerASCII(strings.Trim(token, " \t\r\n"))
 }
@@ -316,7 +319,7 @@ func writeBinarySection(w io.Writer, r io.Reader, part []int, lenient bool) erro
 		mech := cteMechanism(header.Get("Content-Transfer-Encoding"))
 		// Balanced comments have already been removed. Residual parentheses
 		// are not mechanism tokens, even if a decoder can recover from them.
-		if !isASCIIToken(mech) || strings.ContainsAny(mech, "()") {
+		if !imapwire.IsASCII(mech) || strings.ContainsAny(mech, "()") {
 			if !lenient {
 				return ErrUnknownCTE
 			}
@@ -350,15 +353,6 @@ func writeBinarySection(w io.Writer, r io.Reader, part []int, lenient bool) erro
 	return nil
 }
 
-func isASCIIToken(s string) bool {
-	for i := 0; i < len(s); i++ {
-		if s[i] >= 0x80 {
-			return false
-		}
-	}
-	return true
-}
-
 // cteMechanism returns the mechanism a Content-Transfer-Encoding field value
 // names, without the comments around it: MIME fields "can include RFC 822
 // comments, which have no semantic content and should be ignored during MIME
@@ -366,31 +360,7 @@ func isASCIIToken(s string) bool {
 // and what FETCH BINARY decodes: gomessage.New takes the whole value for the
 // mechanism, so "base64 (comment)" would otherwise be an unknown encoding.
 func cteMechanism(v string) string {
-	if !strings.ContainsRune(v, '(') {
-		return v
-	}
-	var b strings.Builder
-	depth := 0
-	for i := 0; i < len(v); i++ {
-		switch c := v[i]; {
-		case depth > 0 && c == '\\':
-			i++ // quoted-pair
-			if i >= len(v) {
-				return v
-			}
-		case c == '(':
-			depth++
-			b.WriteByte(' ')
-		case depth > 0 && c == ')':
-			depth--
-		case depth == 0:
-			b.WriteByte(c)
-		}
-	}
-	if depth != 0 {
-		return v
-	}
-	return strings.TrimSpace(b.String())
+	return imapwire.CTEMechanism(v)
 }
 
 // crlfWriter writes each LF that does not end a CRLF as CRLF.

@@ -1,5 +1,7 @@
 package imapwire
 
+import "strings"
+
 // IMAP keywords are case-insensitive over US-ASCII only: "ABNF strings are
 // case insensitive and the character set for these strings is US-ASCII" (RFC
 // 5234 section 2.3). strings.ToUpper, strings.ToLower and strings.EqualFold
@@ -53,4 +55,88 @@ func EqualFoldASCII(a, b string) bool {
 		}
 	}
 	return true
+}
+
+// IsASCII reports whether every byte of s is 7-bit US-ASCII (< 0x80).
+func IsASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 0x80 {
+			return false
+		}
+	}
+	return true
+}
+
+// MIMEHeadToken extracts the leading MIME type/subtype or disposition token
+// before the first uncommented ';', stripping balanced RFC 5322 comments and
+// ASCII linear whitespace while lowercasing ASCII letters only. It returns
+// ok=false if comments before ';' are unbalanced.
+func MIMEHeadToken(raw string) (string, bool) {
+	head := raw
+	if strings.ContainsAny(raw, "();") {
+		var b strings.Builder
+		depth := 0
+		for i := 0; i < len(raw); i++ {
+			switch c := raw[i]; {
+			case depth > 0 && c == '\\':
+				i++
+				if i >= len(raw) {
+					return "", false
+				}
+			case c == '(':
+				depth++
+				b.WriteByte(' ')
+			case c == ')':
+				if depth == 0 {
+					return "", false
+				}
+				depth--
+			case depth == 0 && c == ';':
+				i = len(raw)
+			case depth == 0:
+				b.WriteByte(c)
+			}
+		}
+		if depth != 0 {
+			return "", false
+		}
+		head = b.String()
+	}
+	head = strings.Trim(head, " \t\r\n")
+	if lhs, rhs, hasSlash := strings.Cut(head, "/"); hasSlash {
+		head = strings.Trim(lhs, " \t\r\n") + "/" + strings.Trim(rhs, " \t\r\n")
+	}
+	return ToLowerASCII(head), true
+}
+
+// CTEMechanism returns the Content-Transfer-Encoding mechanism token with
+// balanced RFC 5322 comments and surrounding ASCII whitespace removed. If
+// comments are unbalanced, the original value or residual parentheses are
+// preserved so callers can treat it as unknown.
+func CTEMechanism(v string) string {
+	if !strings.ContainsRune(v, '(') {
+		return v
+	}
+	var b strings.Builder
+	depth := 0
+	for i := 0; i < len(v); i++ {
+		switch c := v[i]; {
+		case depth > 0 && c == '\\':
+			i++
+			if i >= len(v) {
+				return v
+			}
+		case c == '(':
+			depth++
+			b.WriteByte(' ')
+		case depth > 0 && c == ')':
+			depth--
+		case depth == 0:
+			b.WriteByte(c)
+		}
+	}
+	if depth != 0 {
+		return v
+	}
+	return strings.Trim(b.String(), " \t\r\n")
 }
