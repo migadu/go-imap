@@ -47,6 +47,11 @@ func (b *boundedBuf) Write(p []byte) (n int, err error) {
 // defer a call to FetchCommand.Close.
 //
 // A nil options pointer is equivalent to a zero options value.
+//
+// With imap.SearchRes(), the server resolves the saved set. Its membership may
+// be unknown to the client, so any UID-bearing FETCH response may be attributed
+// to this command while it is pending. Avoid pipelining it with other FETCH or
+// STORE commands; see UnilateralDataHandler.Fetch for notifications.
 func (c *Client) Fetch(numSet imap.NumSet, options *imap.FetchOptions) *FetchCommand {
 	if options == nil {
 		options = new(imap.FetchOptions)
@@ -262,7 +267,9 @@ func (cmd *FetchCommand) recvSeqNum(seqNum uint32) bool {
 
 func (cmd *FetchCommand) recvUID(uid imap.UID) bool {
 	set, ok := cmd.numSet.(imap.UIDSet)
-	if !ok || !set.Contains(uid) {
+	// SEARCHRES is an opaque server-side set, not an empty numeric set.
+	// Keep the normal pending-command order and per-command UID deduplication.
+	if !ok || (!imap.IsSearchRes(set) && !set.Contains(uid)) {
 		return false
 	}
 
