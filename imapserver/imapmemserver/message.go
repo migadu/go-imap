@@ -333,8 +333,9 @@ func matchEntity(e *gomessage.Entity, pattern string, includeHeader bool) bool {
 		return true
 	}
 
+	t, ctParams, ctErr := e.Header.ContentType()
 	if rawCT := e.Header.Get("Content-Type"); rawCT != "" {
-		if ctToken, ok := imapwire.MIMEHeadToken(rawCT); !ok || !imapwire.IsASCII(ctToken) {
+		if ctToken, ok := imapwire.MIMEHeadToken(rawCT); !ok || !imapwire.IsASCII(ctToken) || ctToken != t {
 			return false
 		}
 	}
@@ -355,8 +356,7 @@ func matchEntity(e *gomessage.Entity, pattern string, includeHeader bool) bool {
 
 		return false
 	} else {
-		t, ctParams, err := e.Header.ContentType()
-		if err != nil {
+		if ctErr != nil {
 			return false
 		}
 
