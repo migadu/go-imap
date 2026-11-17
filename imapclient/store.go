@@ -59,6 +59,9 @@ func readRespCodeModified(dec *imapwire.Decoder, cmd command) (imap.NumSet, bool
 	if !dec.SP() || !dec.Func(&raw, func(ch byte) bool { return ch == '*' || imapwire.IsAtomChar(ch) }) || !dec.NextByteIs(']') {
 		return nil, false
 	}
+	if raw == "$" {
+		return imap.SearchRes(), true
+	}
 	kind := imapwire.NumKindSeq
 	if fetchCmd, ok := cmd.(*FetchCommand); ok {
 		kind = imapwire.NumSetKind(fetchCmd.numSet)
@@ -82,9 +85,15 @@ func readRespCodeModified(dec *imapwire.Decoder, cmd command) (imap.NumSet, bool
 // a NO completion: Modified is still populated, and Close/Collect return the
 // corresponding *imap.Error.
 //
-// The returned set is a copy: mutating it does not disturb the command, so a
-// later call reports the same set.
+// The returned numeric set is a copy: mutating it does not disturb the command,
+// so a later call reports the same set. A SEARCHRES reference retains its
+// special marker identity.
 func (cmd *FetchCommand) Modified() imap.NumSet {
+	// SEARCHRES is identified by its backing slice, so copying it would turn
+	// the marker into an ordinary empty set.
+	if cmd.modified != nil && imap.IsSearchRes(cmd.modified) {
+		return imap.SearchRes()
+	}
 	switch set := cmd.modified.(type) {
 	case imap.SeqSet:
 		return append(imap.SeqSet(nil), set...)
