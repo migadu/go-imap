@@ -55,10 +55,13 @@ func (c *Client) search(numKind imapwire.NumKind, criteria *imap.SearchCriteria,
 		all = imap.UIDSet(nil)
 	}
 
-	cmd := &SearchCommand{}
+	returnOpts := returnSearchOptions(options)
+	cmd := &SearchCommand{
+		extended: len(returnOpts) > 0,
+	}
 	cmd.data.All = all
 	enc := c.beginCommand(uidCmdName("SEARCH", numKind), cmd)
-	if returnOpts := returnSearchOptions(options); len(returnOpts) > 0 {
+	if len(returnOpts) > 0 {
 		enc.SP().Atom("RETURN").SP().List(len(returnOpts), func(i int) {
 			enc.Atom(returnOpts[i])
 		})
@@ -90,7 +93,8 @@ func (c *Client) MultiSearch(source *imap.SearchSource, criteria *imap.SearchCri
 	// See search.
 	condStore := c.Caps().Has(imap.CapCondStore)
 
-	requiresSelected := source == nil || source.IsZero() || source.Selected
+	requiresSelected := source == nil || source.IsZero() || source.Selected ||
+		(options != nil && options.ReturnSave)
 	cmd := &MultiSearchCommand{
 		// Namespace membership, subscriptions and hierarchy delimiters are
 		// server-defined and not cached here. These scopes may include the
@@ -181,7 +185,17 @@ func writeSearchSource(enc *imapwire.Encoder, source *imap.SearchSource) {
 }
 
 func (c *Client) handleSearch() error {
-	cmd := findPendingSelectedCmdByType[*SearchCommand](c)
+	var cmd *SearchCommand
+	c.findPendingCmdFunc(func(pending command) bool {
+		if isSelectionBarrier(pending) {
+			return true
+		}
+		if searchCmd, ok := pending.(*SearchCommand); ok && !searchCmd.extended {
+			cmd = searchCmd
+			return true
+		}
+		return false
+	})
 	for c.dec.SP() {
 		if c.dec.Special('(') {
 			var name string
@@ -278,6 +292,7 @@ func (c *Client) handleESearch() error {
 		// RFC 5267 §3.1: an extended SORT is answered with ESEARCH too. Its ALL
 		// is in sort order, which a SearchData cannot hold, so it is read the
 		// way an ESORT response is.
+		sortCmd.extended = true
 		return c.readESortData(sortCmd, spRead)
 	}
 	if err := readESearchReturnData(c.dec, data, spRead); err != nil {
@@ -286,6 +301,7 @@ func (c *Client) handleESearch() error {
 	if cmd != nil {
 		switch cmd := cmd.(type) {
 		case *SearchCommand:
+			cmd.extended = true
 			cmd.data = *data
 		case *MultiSearchCommand:
 			cmd.data = append(cmd.data, data)
@@ -297,7 +313,8 @@ func (c *Client) handleESearch() error {
 // SearchCommand is a SEARCH command.
 type SearchCommand struct {
 	commandBase
-	data imap.SearchData
+	extended bool
+	data     imap.SearchData
 }
 
 func (cmd *SearchCommand) Wait() (*imap.SearchData, error) {
