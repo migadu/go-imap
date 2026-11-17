@@ -41,10 +41,10 @@ func (c *Client) sort(numKind imapwire.NumKind, options *SortOptions) *SortComma
 	// Learn the capabilities before taking the encoder, which a CAPABILITY
 	// command needs too.
 	condStore := c.Caps().Has(imap.CapCondStore)
-	cmd := &SortCommand{numKind: numKind}
+	isESort := options.Return.ReturnMin || options.Return.ReturnMax || options.Return.ReturnAll || options.Return.ReturnCount
+	cmd := &SortCommand{numKind: numKind, extended: isESort}
 	enc := c.beginCommand(uidCmdName("SORT", numKind), cmd)
 
-	isESort := options.Return.ReturnMin || options.Return.ReturnMax || options.Return.ReturnAll || options.Return.ReturnCount
 	if isESort {
 		enc.SP().Atom("RETURN").SP()
 		var returnOpts []string
@@ -79,7 +79,17 @@ func (c *Client) sort(numKind imapwire.NumKind, options *SortOptions) *SortComma
 }
 
 func (c *Client) handleSort() error {
-	cmd := findPendingSelectedCmdByType[*SortCommand](c)
+	var cmd *SortCommand
+	c.findPendingCmdFunc(func(pending command) bool {
+		if isSelectionBarrier(pending) {
+			return true
+		}
+		if sortCmd, ok := pending.(*SortCommand); ok && !sortCmd.extended {
+			cmd = sortCmd
+			return true
+		}
+		return false
+	})
 	for c.dec.SP() {
 		if c.dec.Special('(') {
 			// RFC 7162 §3.1.9: "* SORT 2 3 4 (MODSEQ 917162500)"
@@ -268,8 +278,9 @@ func (c *Client) UIDSort(options *SortOptions) *SortCommand {
 // SortCommand is a SORT command.
 type SortCommand struct {
 	commandBase
-	numKind imapwire.NumKind
-	data    SortData
+	numKind  imapwire.NumKind
+	extended bool
+	data     SortData
 }
 
 func (cmd *SortCommand) Wait() (*SortData, error) {
