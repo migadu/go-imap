@@ -83,15 +83,6 @@ func isUnknownBodyCoding(err error) bool {
 	return gomessage.IsUnknownCharset(err) || gomessage.IsUnknownEncoding(err)
 }
 
-func isASCIIPreviewToken(s string) bool {
-	for i := 0; i < len(s); i++ {
-		if s[i] >= 0x80 {
-			return false
-		}
-	}
-	return true
-}
-
 func (g *previewGenerator) walk(entity *gomessage.Entity, depth int, parentMediaType string, partErr error) (string, bool, error) {
 	if err := g.readError(); err != nil {
 		return "", false, err
@@ -102,25 +93,30 @@ func (g *previewGenerator) walk(entity *gomessage.Entity, depth int, parentMedia
 	g.parts++
 	rawDisp := entity.Header.Get("Content-Disposition")
 	disposition, _, dispErr := entity.Header.ContentDisposition()
-	if dispErr != nil {
-		disposition, _, _ = strings.Cut(disposition, ";")
-		disposition = imapwire.ToLowerASCII(strings.TrimSpace(disposition))
-	}
-	// A parser may return a normalized disposition alongside a parameter error.
-	// Always check the original token before exposing this part's text.
-	if rawDispType, _, _ := strings.Cut(rawDisp, ";"); !isASCIIPreviewToken(rawDispType) {
-		disposition = ""
+	// A parser may return a normalized disposition alongside a parameter error,
+	// or reject RFC 822 comments on an otherwise valid token. Check the
+	// comment-stripped head token directly before exposing this part's text.
+	if rawDisp != "" {
+		dispToken, ok := imapwire.MIMEHeadToken(rawDisp)
+		if !ok || !imapwire.IsASCII(dispToken) {
+			disposition = ""
+		} else if dispErr != nil {
+			disposition = dispToken
+		}
 	}
 	// A multipart disposition applies to its entire subtree (RFC 2183
 	// section 2.9). Unknown dispositions are attachments too (section 2.8).
 	if rawDisp != "" && disposition != "inline" {
 		return "", false, nil
 	}
-	mediaType, _, _ := entity.Header.ContentType()
-	if rawCTType, _, _ := strings.Cut(entity.Header.Get("Content-Type"), ";"); !isASCIIPreviewToken(rawCTType) {
-		mediaType = ""
+	rawCT := entity.Header.Get("Content-Type")
+	mediaType, mediaParams, _ := entity.Header.ContentType()
+	if rawCT != "" {
+		if ctToken, ok := imapwire.MIMEHeadToken(rawCT); !ok || !imapwire.IsASCII(ctToken) {
+			mediaType = ""
+		}
 	}
-	if parentMediaType == "multipart/digest" && entity.Header.Get("Content-Type") == "" {
+	if parentMediaType == "multipart/digest" && rawCT == "" {
 		// go-message defaults every absent type to text/plain. Digest children
 		// instead default to message/rfc822 (RFC 2046 section 5.1.5), which this
 		// preview algorithm skips. Keep that default local to the direct child.
@@ -149,6 +145,13 @@ func (g *previewGenerator) walk(entity *gomessage.Entity, depth int, parentMedia
 		}
 	}
 	if mediaType != "text/plain" || partErr != nil {
+		return "", false, nil
+	}
+	mech := imapwire.CTEMechanism(entity.Header.Get("Content-Transfer-Encoding"))
+	if !imapwire.IsASCII(mech) || strings.ContainsAny(mech, "()") {
+		return "", false, nil
+	}
+	if cs, ok := mediaParams["charset"]; ok && !imapwire.IsASCII(cs) {
 		return "", false, nil
 	}
 	// Body is already transfer/charset decoded by go-message. Keep a useful
