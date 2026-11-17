@@ -490,7 +490,7 @@ func (c *Client) useQuotedUTF8() bool {
 func (c *Client) useQuotedUTF8Locked() bool {
 	return c.enabled.Has(imap.CapIMAP4rev2) ||
 		c.enabled.Has(imap.CapUTF8Accept) ||
-		(c.caps != nil && !c.caps.Has(imap.CapIMAP4rev1))
+		(len(c.caps) > 0 && !c.caps.Has(imap.CapIMAP4rev1))
 }
 
 func (c *Client) hasPendingSessionResetLocked() bool {
@@ -511,7 +511,7 @@ func (c *Client) useEncoderQuotedUTF8Locked() bool {
 		(c.enabled.Has(imap.CapIMAP4rev2) || c.enabled.Has(imap.CapUTF8Accept)) {
 		return true
 	}
-	return c.caps != nil && !c.caps.Has(imap.CapIMAP4rev1)
+	return len(c.caps) > 0 && !c.caps.Has(imap.CapIMAP4rev1)
 }
 
 // State returns the current connection state of the client.
@@ -1424,9 +1424,13 @@ func (c *Client) readResponseTagged(tag, typ string) (startTLS *startTLSCommand,
 		code = imapwire.ToUpperASCII(code)
 		switch code {
 		case "CAPABILITY": // capability-data
-			caps, err := readCapabilities(c.dec)
+			caps, ok, err := readRespCodeCapabilities(c.dec)
 			if err != nil {
 				return nil, fmt.Errorf("in capability-data: %w", err)
+			}
+			if !ok {
+				malformedCode = true
+				break
 			}
 			// STARTTLS's OK is the last response sent in the clear: what it
 			// says is discarded with the rest once TLS has started (below).
@@ -1477,9 +1481,17 @@ func (c *Client) readResponseTagged(tag, typ string) (startTLS *startTLSCommand,
 				cmd.data.UIDValidity = uidValidity
 			}
 		case "COPYUID":
+			if !c.dec.Special(' ') {
+				malformedCode = true
+				break
+			}
 			data, err := readRespCodeCopyUID(c.dec)
 			if err != nil {
 				return nil, fmt.Errorf("in resp-code-copy: %w", err)
+			}
+			if data.UIDValidity == 0 || !c.dec.NextByteIs(']') {
+				malformedCode = true
+				break
 			}
 			switch cmd := cmd.(type) {
 			case *CopyCommand:
@@ -1633,9 +1645,13 @@ func (c *Client) readResponseData(typ string) error {
 			code = imapwire.ToUpperASCII(code)
 			switch code {
 			case "CAPABILITY": // capability-data
-				caps, err := readCapabilities(c.dec)
+				caps, ok, err := readRespCodeCapabilities(c.dec)
 				if err != nil {
 					return fmt.Errorf("in capability-data: %w", err)
+				}
+				if !ok {
+					malformedCode = true
+					break
 				}
 				c.setCaps(caps)
 			case "PERMANENTFLAGS":
@@ -1687,7 +1703,7 @@ func (c *Client) readResponseData(typ string) error {
 				}
 			case "UIDNEXT":
 				var num uint32
-				if !c.dec.SP() || !c.dec.Number(&num) || !c.dec.NextByteIs(']') {
+				if !c.dec.SP() || !c.dec.Number(&num) || num == 0 || !c.dec.NextByteIs(']') {
 					malformedCode = true
 					break
 				}
@@ -1697,7 +1713,7 @@ func (c *Client) readResponseData(typ string) error {
 				}
 			case "UIDVALIDITY":
 				var uidValidity uint32
-				if !c.dec.SP() || !c.dec.Number(&uidValidity) || !c.dec.NextByteIs(']') {
+				if !c.dec.SP() || !c.dec.Number(&uidValidity) || uidValidity == 0 || !c.dec.NextByteIs(']') {
 					malformedCode = true
 					break
 				}
@@ -1706,9 +1722,17 @@ func (c *Client) readResponseData(typ string) error {
 					cmd.recorded = true
 				}
 			case "COPYUID":
+				if !c.dec.Special(' ') {
+					malformedCode = true
+					break
+				}
 				data, err := readRespCodeCopyUID(c.dec)
 				if err != nil {
 					return fmt.Errorf("in resp-code-copy: %w", err)
+				}
+				if data.UIDValidity == 0 || !c.dec.NextByteIs(']') {
+					malformedCode = true
+					break
 				}
 				pending := c.findPendingCmdFunc(func(cmd command) bool {
 					if isSelectionBarrier(cmd) {

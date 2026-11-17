@@ -76,7 +76,8 @@ func ExpectFlagList(dec *imapwire.Decoder) ([]imap.Flag, error) {
 // ReadFlagList reads a parenthesized flag list from a server response without
 // recording a syntax error on dec when the list is malformed, allowing
 // advisory response-code parsers (such as PERMANENTFLAGS) to discard invalid
-// codes up to ']'. Like ExpectFlagList, it accepts "]" inside a listed flag.
+// codes up to ']'. Like ExpectFlagList, it accepts "]" inside a listed keyword
+// when a matching ')' closes the list on the current line.
 func ReadFlagList(dec *imapwire.Decoder) ([]imap.Flag, bool) {
 	if !dec.Special('(') {
 		return nil, false
@@ -91,15 +92,29 @@ func ReadFlagList(dec *imapwire.Decoder) ([]imap.Flag, bool) {
 		isSystem := dec.Special('\\')
 		if isSystem && dec.Special('*') {
 			flags = append(flags, imap.FlagWildcard)
-		} else {
+		} else if isSystem {
 			var name string
-			if !dec.Func(&name, isListedFlagChar) {
+			if !dec.Func(&name, imapwire.IsAtomChar) {
 				return nil, false
 			}
-			if isSystem {
-				name = "\\" + name
+			flags = append(flags, canonicalFlag("\\"+name))
+		} else {
+			var sb strings.Builder
+			for {
+				var part string
+				if dec.Func(&part, imapwire.IsAtomChar) {
+					sb.WriteString(part)
+				}
+				if !dec.PeekSpecial(']') || !dec.HasFlagListClosingParen() {
+					break
+				}
+				dec.Special(']')
+				sb.WriteByte(']')
 			}
-			flags = append(flags, canonicalFlag(name))
+			if sb.Len() == 0 {
+				return nil, false
+			}
+			flags = append(flags, canonicalFlag(sb.String()))
 		}
 		if dec.Special(')') {
 			return flags, true
@@ -113,6 +128,14 @@ func ReadFlagList(dec *imapwire.Decoder) ([]imap.Flag, bool) {
 			return flags, true
 		}
 	}
+}
+
+func ReadCap(dec *imapwire.Decoder) (imap.Cap, bool) {
+	var name string
+	if !dec.Atom(&name) {
+		return "", false
+	}
+	return canonicalCap(name), true
 }
 
 func ExpectCap(dec *imapwire.Decoder) (imap.Cap, error) {
