@@ -1442,7 +1442,7 @@ func (c *Client) readResponseTagged(tag, typ string) (startTLS *startTLSCommand,
 			switch imapwire.ToUpperASCII(subCode) {
 			case "LONGENTRIES", "MAXSIZE":
 				var size uint32
-				if !c.dec.SP() || !c.dec.Number(&size) {
+				if !c.dec.SP() || !c.dec.Number(&size) || !c.dec.NextByteIs(']') {
 					malformedCode = true
 					break
 				}
