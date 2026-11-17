@@ -26,19 +26,30 @@ func TestStoreModifiedPreservesSearchResultMarker(t *testing.T) {
 
 					go func() {
 						br := bufio.NewReader(serverConn)
-						_, _ = fmt.Fprint(serverConn, "* PREAUTH [CAPABILITY IMAP4rev2 CONDSTORE SEARCHRES] ready\r\n")
-						for stage := 0; stage < 3; stage++ {
+						_, _ = fmt.Fprint(serverConn, "* PREAUTH [CAPABILITY IMAP4rev2 CONDSTORE SEARCHRES ESEARCH] ready\r\n")
+						for stage := 0; stage < 4; stage++ {
 							line, err := br.ReadString('\n')
 							if err != nil {
 								return
 							}
-							tag, _, _ := strings.Cut(line, " ")
+							tag, command, _ := strings.Cut(line, " ")
 							switch stage {
 							case 0:
-								_, _ = fmt.Fprintf(serverConn, "* 2 EXISTS\r\n%s OK [READ-WRITE] selected\r\n", tag)
+								_, _ = fmt.Fprintf(serverConn, "* 2 EXISTS\r\n* OK [UIDVALIDITY 1] valid\r\n%s OK [READ-WRITE] selected\r\n", tag)
 							case 1:
-								_, _ = fmt.Fprintf(serverConn, "%s %s [MODIFIED %s] conditional result\r\n", tag, status, marker)
+								want := "SEARCH RETURN (SAVE) ALL\r\n"
+								if uid {
+									want = "UID " + want
+								}
+								if command != want {
+									_, _ = fmt.Fprintf(serverConn, "%s BAD expected %q, got %q\r\n", tag, want, command)
+									return
+								}
+								// Both messages match ALL; SAVE alone suppresses results.
+								_, _ = fmt.Fprintf(serverConn, "%s OK saved messages 1 and 2\r\n", tag)
 							case 2:
+								_, _ = fmt.Fprintf(serverConn, "%s %s [MODIFIED %s] conditional result\r\n", tag, status, marker)
+							case 3:
 								_, _ = fmt.Fprintf(serverConn, "%s OK still framed\r\n", tag)
 							}
 						}
@@ -51,6 +62,9 @@ func TestStoreModifiedPreservesSearchResultMarker(t *testing.T) {
 					}
 					if _, err := c.Select("INBOX", nil).Wait(); err != nil {
 						t.Fatal(err)
+					}
+					if err := c.SaveSearchForTest(uid); err != nil {
+						t.Fatalf("SEARCH SAVE setup: %v", err)
 					}
 					var nums imap.NumSet = imap.SeqSetNum(1, 2)
 					if uid {
