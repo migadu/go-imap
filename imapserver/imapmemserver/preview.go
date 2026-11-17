@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	gomessage "github.com/emersion/go-message"
+	"github.com/emersion/go-message/textproto"
 	"github.com/migadu/go-imap/internal/imapwire"
 )
 
@@ -33,7 +34,7 @@ func (msg *message) preview(ctx context.Context) (string, bool, error) {
 func generatePreview(ctx context.Context, r io.Reader) (string, bool, error) {
 	raw := &previewInput{ctx: ctx, r: r, remaining: maxPreviewRawBytes}
 	g := previewGenerator{ctx: ctx, raw: raw}
-	entity, err := gomessage.Read(raw)
+	entity, err := readMIMEEntity(raw)
 	var (
 		text  string
 		found bool
@@ -126,12 +127,16 @@ func (g *previewGenerator) walk(entity *gomessage.Entity, depth int, parentMedia
 		if mediaParams["boundary"] == "" {
 			return "", false, nil
 		}
-		mr := entity.MultipartReader()
+		mr := textproto.NewMultipartReader(entity.Body, mediaParams["boundary"])
 		for {
 			if err := g.readError(); err != nil {
 				return "", false, err
 			}
-			part, nextErr := mr.NextPart()
+			rawPart, nextErr := mr.NextPart()
+			var part *gomessage.Entity
+			if nextErr == nil {
+				part, nextErr = newMIMEEntity(gomessage.Header{Header: rawPart.Header}, rawPart)
+			}
 			if readErr := g.readError(); readErr != nil {
 				return "", false, readErr
 			}
@@ -147,7 +152,7 @@ func (g *previewGenerator) walk(entity *gomessage.Entity, depth int, parentMedia
 			}
 		}
 	}
-	if mediaType != "text/plain" {
+	if mediaType != "text/plain" || partErr != nil {
 		return "", false, nil
 	}
 	mech := imapwire.CTEMechanism(entity.Header.Get("Content-Transfer-Encoding"))
@@ -157,22 +162,9 @@ func (g *previewGenerator) walk(entity *gomessage.Entity, depth int, parentMedia
 	if cs, ok := mediaParams["charset"]; ok && !imapwire.IsASCII(cs) {
 		return "", false, nil
 	}
-	partBody := entity.Body
-	if partErr != nil {
-		if !gomessage.IsUnknownEncoding(partErr) || mech == "" {
-			return "", false, nil
-		}
-		h := entity.Header.Copy()
-		h.Set("Content-Transfer-Encoding", mech)
-		decoded, decErr := gomessage.New(h, entity.Body)
-		if decErr != nil {
-			return "", false, nil
-		}
-		partBody = decoded.Body
-	}
 	// Body is already transfer/charset decoded by go-message. Keep a useful
 	// prefix without draining the rest, but check cancellation through buffers.
-	body := previewContextReader{ctx: g.ctx, r: partBody}
+	body := previewContextReader{ctx: g.ctx, r: entity.Body}
 	b, _ := io.ReadAll(io.LimitReader(body, maxPreviewTextBytes))
 	text := formatPreviewText(b)
 	if err := g.readError(); err != nil {

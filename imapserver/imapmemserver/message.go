@@ -191,7 +191,7 @@ func (msg *message) store(mbox *Mailbox, store *imap.StoreFlags) bool {
 }
 
 func (msg *message) reader() (*gomessage.Entity, error) {
-	r, err := gomessage.Read(bytes.NewReader(msg.buf))
+	r, err := readMIMEEntity(bytes.NewReader(msg.buf))
 	if r == nil {
 		r, _ = gomessage.New(gomessage.Header{}, bytes.NewReader(nil))
 	}
@@ -348,15 +348,16 @@ func matchEntity(e *gomessage.Entity, partErr error, pattern string, includeHead
 		if ctParams["boundary"] == "" {
 			return false
 		}
-		mr := e.MultipartReader()
-		if mr == nil {
-			return false
-		}
+		mr := textproto.NewMultipartReader(e.Body, ctParams["boundary"])
 		for {
-			part, err := mr.NextPart()
+			rawPart, err := mr.NextPart()
 			if err == io.EOF {
 				break
-			} else if err != nil && !isUnknownBodyCoding(err) {
+			} else if err != nil {
+				return false
+			}
+			part, err := newMIMEEntity(gomessage.Header{Header: rawPart.Header}, rawPart)
+			if err != nil && !isUnknownBodyCoding(err) {
 				return false
 			}
 
@@ -367,7 +368,7 @@ func matchEntity(e *gomessage.Entity, partErr error, pattern string, includeHead
 
 		return false
 	} else {
-		if ctErr != nil || !imapwire.IsASCII(t) {
+		if ctErr != nil || partErr != nil || !imapwire.IsASCII(t) {
 			return false
 		}
 
@@ -383,21 +384,7 @@ func matchEntity(e *gomessage.Entity, partErr error, pattern string, includeHead
 			return false
 		}
 
-		body := e.Body
-		if partErr != nil {
-			if !gomessage.IsUnknownEncoding(partErr) || mech == "" {
-				return false
-			}
-			h := e.Header.Copy()
-			h.Set("Content-Transfer-Encoding", mech)
-			decoded, decErr := gomessage.New(h, e.Body)
-			if decErr != nil {
-				return false
-			}
-			body = decoded.Body
-		}
-
-		buf, err := io.ReadAll(body)
+		buf, err := io.ReadAll(e.Body)
 		if err != nil {
 			return false
 		}
