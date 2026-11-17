@@ -37,3 +37,18 @@ func ParseSeqSet(s string) (imap.SeqSet, error) {
 	numSet, err := imapnum.ParseSet(s)
 	return seqSetFromNumSet(numSet), err
 }
+
+func ParseNumSet(kind NumKind, s string) (imap.NumSet, bool) {
+	numSet, err := imapnum.ParseSet(s)
+	if err != nil {
+		return nil, false
+	}
+	switch kind {
+	case NumKindSeq:
+		return seqSetFromNumSet(numSet), true
+	case NumKindUID:
+		return uidSetFromNumSet(numSet), true
+	default:
+		return nil, false
+	}
+}

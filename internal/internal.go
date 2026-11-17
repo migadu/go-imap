@@ -73,6 +73,48 @@ func ExpectFlagList(dec *imapwire.Decoder) ([]imap.Flag, error) {
 	return flags, err
 }
 
+// ReadFlagList reads a parenthesized flag list from a server response without
+// recording a syntax error on dec when the list is malformed, allowing
+// advisory response-code parsers (such as PERMANENTFLAGS) to discard invalid
+// codes up to ']'. Like ExpectFlagList, it accepts "]" inside a listed flag.
+func ReadFlagList(dec *imapwire.Decoder) ([]imap.Flag, bool) {
+	if !dec.Special('(') {
+		return nil, false
+	}
+	for dec.Special(' ') {
+	}
+	if dec.Special(')') {
+		return []imap.Flag{}, true
+	}
+	var flags []imap.Flag
+	for {
+		isSystem := dec.Special('\\')
+		if isSystem && dec.Special('*') {
+			flags = append(flags, imap.FlagWildcard)
+		} else {
+			var name string
+			if !dec.Func(&name, isListedFlagChar) {
+				return nil, false
+			}
+			if isSystem {
+				name = "\\" + name
+			}
+			flags = append(flags, canonicalFlag(name))
+		}
+		if dec.Special(')') {
+			return flags, true
+		}
+		if !dec.Special(' ') {
+			return nil, false
+		}
+		for dec.Special(' ') {
+		}
+		if dec.Special(')') {
+			return flags, true
+		}
+	}
+}
+
 func ExpectCap(dec *imapwire.Decoder) (imap.Cap, error) {
 	var name string
 	if !dec.ExpectAtom(&name) {
