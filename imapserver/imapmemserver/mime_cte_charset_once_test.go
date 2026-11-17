@@ -7,6 +7,7 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"time"
 
 	gomessage "github.com/emersion/go-message"
 	"github.com/migadu/go-imap"
@@ -85,6 +86,10 @@ func TestMIMECommentedCTEDecodesCharsetOnce(t *testing.T) {
 				if err != nil || len(res.AllSeqNums()) != 1 {
 					t.Errorf("SEARCH TEXT lost original header: result=%v err=%v", res.AllSeqNums(), err)
 				}
+				res, err = mbox.NewView().Search(ctx, imapserver.NumKindSeq, &imap.SearchCriteria{Text: []string{tc.cte}}, &imap.SearchOptions{})
+				if err != nil || len(res.AllSeqNums()) != 1 {
+					t.Errorf("SEARCH TEXT lost original CTE %q: result=%v err=%v", tc.cte, res.AllSeqNums(), err)
+				}
 				mbox.mutex.Lock()
 				unchanged := bytes.Equal(mbox.l[0].buf, []byte(raw))
 				mbox.mutex.Unlock()
@@ -97,9 +102,12 @@ func TestMIMECommentedCTEDecodesCharsetOnce(t *testing.T) {
 }
 
 func TestMIMEDecodingKeepsRootHeaderLimit(t *testing.T) {
-	msg := &message{buf: []byte("X-Pad: " + strings.Repeat("x", 1<<20) + "\r\n\r\nbody")}
+	msg := &message{buf: []byte("X-Pad: " + strings.Repeat("x", 1<<20) + "\r\n\r\nheader-limit-sentinel")}
 	if _, err := msg.reader(); err == nil {
 		t.Fatal("root MIME header over 1MiB was accepted")
+	}
+	if msg.search(1, &imap.SearchCriteria{Body: []string{"header-limit-sentinel"}}, time.Time{}) {
+		t.Fatal("SEARCH crossed the root header limit to match the body")
 	}
 	body := strings.Repeat("x", (1<<20)+1)
 	msg = &message{buf: []byte("Content-Type: text/plain\r\n\r\n" + body)}
