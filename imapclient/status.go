@@ -41,7 +41,7 @@ func (c *Client) Status(mailbox string, options *imap.StatusOptions) *StatusComm
 	}
 
 	cmd := &StatusCommand{
-		mailbox:       mailbox,
+		mailbox:       canonicalMailbox(mailbox),
 		highestModSeq: options.HighestModSeq,
 	}
 	enc := c.beginCommand("STATUS", cmd)

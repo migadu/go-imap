@@ -47,13 +47,13 @@ func (c *Client) GetMetadata(mailbox string, entries []string, options *imap.Get
 	// Validate entry names before sending to server
 	for _, entry := range entries {
 		if err := imap.ValidateMetadataEntry(entry); err != nil {
-			cmd := &GetMetadataCommand{mailbox: mailbox, opts: &c.options}
+			cmd := &GetMetadataCommand{mailbox: canonicalMailbox(mailbox), opts: &c.options}
 			cmd.err = fmt.Errorf("invalid entry name %q: %w", entry, err)
 			return cmd
 		}
 	}
 
-	cmd := &GetMetadataCommand{mailbox: mailbox, opts: &c.options}
+	cmd := &GetMetadataCommand{mailbox: canonicalMailbox(mailbox), opts: &c.options}
 	enc := c.beginCommand("GETMETADATA", cmd)
 	// RFC 5464: options come before mailbox
 	if opts := getMetadataOptionNames(options); len(opts) > 0 {

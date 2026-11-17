@@ -2,7 +2,6 @@ package imapclient
 
 import (
 	"fmt"
-	"strings"
 	"time"
 	"unicode"
 
@@ -458,9 +457,9 @@ func writeSearchKey(enc *imapwire.Encoder, criteria *imap.SearchCriteria, condst
 }
 
 func flagSearchKey(flag imap.Flag) string {
-	switch flag {
-	case imap.FlagAnswered, imap.FlagDeleted, imap.FlagDraft, imap.FlagFlagged, imap.FlagSeen:
-		return strings.ToUpper(strings.TrimPrefix(string(flag), "\\"))
+	switch s := imapwire.ToUpperASCII(string(flag)); s {
+	case "\\ANSWERED", "\\DELETED", "\\DRAFT", "\\FLAGGED", "\\SEEN":
+		return s[1:]
 	default:
 		return ""
 	}
@@ -516,7 +515,7 @@ func readESearchReturnData(dec *imapwire.Decoder, data *imap.SearchData, spRead 
 	} else if !dec.ExpectAtom(&name) {
 		return dec.Err()
 	}
-	isUID := name == "UID"
+	isUID := imapwire.EqualFoldASCII(name, "UID")
 
 	if isUID {
 		if !dec.SP() {

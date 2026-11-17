@@ -1421,6 +1421,7 @@ func (c *Client) readResponseTagged(tag, typ string) (startTLS *startTLSCommand,
 		if !c.dec.ExpectAtom(&code) {
 			return nil, fmt.Errorf("in resp-text-code: %w", c.dec.Err())
 		}
+		code = imapwire.ToUpperASCII(code)
 		switch code {
 		case "CAPABILITY": // capability-data
 			caps, err := readCapabilities(c.dec)
@@ -1434,14 +1435,16 @@ func (c *Client) readResponseTagged(tag, typ string) (startTLS *startTLSCommand,
 			}
 		case "METADATA": // METADATA response codes with size parameter
 			var subCode string
-			if !c.dec.ExpectSP() || !c.dec.ExpectAtom(&subCode) {
-				return nil, fmt.Errorf("in resp-code-metadata: %v", c.dec.Err())
+			if !c.dec.SP() || !c.dec.Atom(&subCode) {
+				malformedCode = true
+				break
 			}
 			switch imapwire.ToUpperASCII(subCode) {
 			case "LONGENTRIES", "MAXSIZE":
 				var size uint32
-				if !c.dec.ExpectSP() || !c.dec.ExpectNumber(&size) {
-					return nil, fmt.Errorf("in resp-code-metadata size: %v", c.dec.Err())
+				if !c.dec.SP() || !c.dec.Number(&size) {
+					malformedCode = true
+					break
 				}
 				if cmd, ok := cmd.(*GetMetadataCommand); ok {
 					if cmd.data.ResponseCodeData == nil {
@@ -1449,6 +1452,12 @@ func (c *Client) readResponseTagged(tag, typ string) (startTLS *startTLSCommand,
 					}
 					cmd.data.ResponseCodeData.Size = size
 				}
+			case "TOOMANY", "NOPRIVATE":
+				if !c.dec.NextByteIs(']') {
+					malformedCode = true
+				}
+			default:
+				malformedCode = true
 			}
 		case "APPENDUID":
 			var (
@@ -1619,6 +1628,7 @@ func (c *Client) readResponseData(typ string) error {
 			if !c.dec.ExpectAtom(&code) {
 				return fmt.Errorf("in resp-text-code: %w", c.dec.Err())
 			}
+			code = imapwire.ToUpperASCII(code)
 			switch code {
 			case "CAPABILITY": // capability-data
 				caps, err := readCapabilities(c.dec)

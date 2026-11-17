@@ -22,7 +22,7 @@ func (c *Client) GetQuota(root string) *GetQuotaCommand {
 //
 // This command requires support for the QUOTA extension.
 func (c *Client) GetQuotaRoot(mailbox string) *GetQuotaRootCommand {
-	cmd := &GetQuotaRootCommand{mailbox: mailbox}
+	cmd := &GetQuotaRootCommand{mailbox: canonicalMailbox(mailbox)}
 	enc := c.beginCommand("GETQUOTAROOT", cmd)
 	enc.SP().Mailbox(mailbox)
 	enc.end()
@@ -160,7 +160,7 @@ func readQuotaResponse(dec *imapwire.Decoder) (*QuotaData, error) {
 		if !dec.ExpectAtom(&name) || !dec.ExpectSP() || !dec.ExpectNumber64(&resData.Usage) || !dec.ExpectSP() || !dec.ExpectNumber64(&resData.Limit) {
 			return fmt.Errorf("in quota-resource: %w", dec.Err())
 		}
-		data.Resources[imap.QuotaResourceType(name)] = resData
+		data.Resources[imap.QuotaResourceType(imapwire.ToUpperASCII(name))] = resData
 		return nil
 	})
 	return &data, err
