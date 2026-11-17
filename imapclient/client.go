@@ -34,7 +34,6 @@ import (
 	"time"
 
 	"github.com/migadu/go-imap"
-	"github.com/migadu/go-imap/internal"
 	"github.com/migadu/go-imap/internal/imapwire"
 )
 
@@ -490,7 +489,7 @@ func (c *Client) useQuotedUTF8() bool {
 func (c *Client) useQuotedUTF8Locked() bool {
 	return c.enabled.Has(imap.CapIMAP4rev2) ||
 		c.enabled.Has(imap.CapUTF8Accept) ||
-		(c.caps != nil && !c.caps.Has(imap.CapIMAP4rev1))
+		(len(c.caps) > 0 && !c.caps.Has(imap.CapIMAP4rev1))
 }
 
 func (c *Client) hasPendingSessionResetLocked() bool {
@@ -511,7 +510,7 @@ func (c *Client) useEncoderQuotedUTF8Locked() bool {
 		(c.enabled.Has(imap.CapIMAP4rev2) || c.enabled.Has(imap.CapUTF8Accept)) {
 		return true
 	}
-	return c.caps != nil && !c.caps.Has(imap.CapIMAP4rev1)
+	return len(c.caps) > 0 && !c.caps.Has(imap.CapIMAP4rev1)
 }
 
 // State returns the current connection state of the client.
@@ -1424,9 +1423,13 @@ func (c *Client) readResponseTagged(tag, typ string) (startTLS *startTLSCommand,
 		code = imapwire.ToUpperASCII(code)
 		switch code {
 		case "CAPABILITY": // capability-data
-			caps, err := readCapabilities(c.dec)
+			caps, ok, err := readRespCodeCapabilities(c.dec)
 			if err != nil {
 				return nil, fmt.Errorf("in capability-data: %w", err)
+			}
+			if !ok {
+				malformedCode = true
+				break
 			}
 			// STARTTLS's OK is the last response sent in the clear: what it
 			// says is discarded with the rest once TLS has started (below).
@@ -1477,9 +1480,17 @@ func (c *Client) readResponseTagged(tag, typ string) (startTLS *startTLSCommand,
 				cmd.data.UIDValidity = uidValidity
 			}
 		case "COPYUID":
+			if !c.dec.Special(' ') {
+				malformedCode = true
+				break
+			}
 			data, err := readRespCodeCopyUID(c.dec)
 			if err != nil {
 				return nil, fmt.Errorf("in resp-code-copy: %w", err)
+			}
+			if data.UIDValidity == 0 || !c.dec.NextByteIs(']') {
+				malformedCode = true
+				break
 			}
 			switch cmd := cmd.(type) {
 			case *CopyCommand:
@@ -1615,7 +1626,8 @@ func (c *Client) readResponseData(typ string) error {
 		// see #500 and #502
 		hasSP := c.dec.SP()
 
-		var code string
+		var code, text string
+		var responseTextRead bool
 		// malformedCode is set when a code we recognise carries an argument we
 		// cannot parse. Rather than failing the connection over advisory
 		// metadata, we skip the code exactly as we skip an unknown one: RFC 9051
@@ -1633,19 +1645,23 @@ func (c *Client) readResponseData(typ string) error {
 			code = imapwire.ToUpperASCII(code)
 			switch code {
 			case "CAPABILITY": // capability-data
-				caps, err := readCapabilities(c.dec)
+				caps, ok, err := readRespCodeCapabilities(c.dec)
 				if err != nil {
 					return fmt.Errorf("in capability-data: %w", err)
 				}
-				c.setCaps(caps)
-			case "PERMANENTFLAGS":
-				if !c.dec.SP() {
+				if !ok {
 					malformedCode = true
 					break
 				}
-				flags, ok := internal.ReadFlagList(c.dec)
-				if !ok || !c.dec.NextByteIs(']') {
-					malformedCode = true
+				c.setCaps(caps)
+			case "PERMANENTFLAGS":
+				flags, tailText, ok, err := readRespCodePermanentFlags(c.dec)
+				if err != nil {
+					return fmt.Errorf("in resp-text: %w", err)
+				}
+				text, responseTextRead = tailText, true
+				if !ok {
+					code = ""
 					break
 				}
 				if c.ignoresMailboxData() {
@@ -1687,7 +1703,7 @@ func (c *Client) readResponseData(typ string) error {
 				}
 			case "UIDNEXT":
 				var num uint32
-				if !c.dec.SP() || !c.dec.Number(&num) || !c.dec.NextByteIs(']') {
+				if !c.dec.SP() || !c.dec.Number(&num) || num == 0 || !c.dec.NextByteIs(']') {
 					malformedCode = true
 					break
 				}
@@ -1697,7 +1713,7 @@ func (c *Client) readResponseData(typ string) error {
 				}
 			case "UIDVALIDITY":
 				var uidValidity uint32
-				if !c.dec.SP() || !c.dec.Number(&uidValidity) || !c.dec.NextByteIs(']') {
+				if !c.dec.SP() || !c.dec.Number(&uidValidity) || uidValidity == 0 || !c.dec.NextByteIs(']') {
 					malformedCode = true
 					break
 				}
@@ -1706,9 +1722,17 @@ func (c *Client) readResponseData(typ string) error {
 					cmd.recorded = true
 				}
 			case "COPYUID":
+				if !c.dec.Special(' ') {
+					malformedCode = true
+					break
+				}
 				data, err := readRespCodeCopyUID(c.dec)
 				if err != nil {
 					return fmt.Errorf("in resp-code-copy: %w", err)
+				}
+				if data.UIDValidity == 0 || !c.dec.NextByteIs(']') {
+					malformedCode = true
+					break
 				}
 				pending := c.findPendingCmdFunc(func(cmd command) bool {
 					if isSelectionBarrier(cmd) {
@@ -1765,20 +1789,21 @@ func (c *Client) readResponseData(typ string) error {
 					c.dec.DiscardUntilByte(']')
 				}
 			}
-			if malformedCode {
-				// Drop whatever is left of the code and forget its name, so it
-				// is reported the same as any code we do not act on.
-				c.dec.DiscardUntilByte(']')
-				code = ""
+			if !responseTextRead {
+				if malformedCode {
+					// Drop whatever is left of the code and forget its name, so it
+					// is reported the same as any code we do not act on.
+					c.dec.DiscardUntilByte(']')
+					code = ""
+				}
+				if !c.dec.ExpectSpecial(']') {
+					return fmt.Errorf("in resp-text: %w", c.dec.Err())
+				}
+				hasSP = c.dec.SP()
 			}
-			if !c.dec.ExpectSpecial(']') {
-				return fmt.Errorf("in resp-text: %w", c.dec.Err())
-			}
-			hasSP = c.dec.SP()
 		}
 
-		var text string
-		if hasSP && !c.dec.ExpectText(&text) {
+		if !responseTextRead && hasSP && !c.dec.ExpectText(&text) {
 			return fmt.Errorf("in resp-text: %w", c.dec.Err())
 		}
 

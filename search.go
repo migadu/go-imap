@@ -236,14 +236,17 @@ func (data *SearchData) AllUIDs() []UID {
 	return uids
 }
 
-// searchRes is a special empty UIDSet which can be used as a marker. It has
-// a non-zero cap so that its data pointer is non-nil and can be compared.
+// searchRes is a special empty UIDSet which can be used as a marker. It uses
+// a dedicated backing array sliced with zero capacity so its data pointer is
+// unique and non-nil, while any append/AddNum allocates a new backing array
+// without mutating or racing on the shared marker.
 //
 // It's a UIDSet rather than a SeqSet so that it can be passed to the
 // UID EXPUNGE command.
 var (
-	searchRes     = make(UIDSet, 0, 1)
-	searchResAddr = reflect.ValueOf(searchRes).Pointer()
+	searchResBacking [1]UIDRange
+	searchRes        = searchResBacking[:0:0]
+	searchResAddr    = reflect.ValueOf(searchRes).Pointer()
 )
 
 // SearchRes returns a special marker which can be used instead of a UIDSet to

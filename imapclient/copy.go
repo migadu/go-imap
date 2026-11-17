@@ -37,6 +37,11 @@ func readRespCodeCopyUID(dec *imapwire.Decoder) (imap.CopyData, error) {
 	if err := dec.Err(); err != nil {
 		return imap.CopyData{}, err
 	}
+	for i := 0; i < len(raw); i++ {
+		if raw[i] < ' ' || raw[i] == 0x7f {
+			return imap.CopyData{}, nil
+		}
+	}
 	fields := strings.Fields(raw)
 	if len(fields) != 3 || fields[0][0] < '0' || fields[0][0] > '9' {
 		return imap.CopyData{}, nil

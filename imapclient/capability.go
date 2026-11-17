@@ -85,3 +85,29 @@ func readCapabilities(dec *imapwire.Decoder) (imap.CapSet, error) {
 	}
 	return caps, dec.Err()
 }
+
+// readRespCodeCapabilities parses the capability list inside a [CAPABILITY ...]
+// response code without poisoning dec on malformed advisory tokens, requiring
+// at least one capability and a closing ']'.
+func readRespCodeCapabilities(dec *imapwire.Decoder) (imap.CapSet, bool, error) {
+	caps := make(imap.CapSet)
+	for dec.Special(' ') {
+		for dec.Special(' ') {
+		}
+		if dec.PeekSpecial(']') || dec.PeekSpecial('\r') || dec.PeekSpecial('\n') {
+			break
+		}
+		cap, ok := internal.ReadCap(dec)
+		if !ok {
+			return nil, false, dec.Err()
+		}
+		caps[cap] = struct{}{}
+	}
+	if err := dec.Err(); err != nil {
+		return nil, false, err
+	}
+	if len(caps) == 0 || !dec.NextByteIs(']') {
+		return nil, false, dec.Err()
+	}
+	return caps, true, nil
+}
