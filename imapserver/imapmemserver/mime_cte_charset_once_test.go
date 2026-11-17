@@ -69,7 +69,7 @@ func TestMIMECommentedCTEDecodesCharsetOnce(t *testing.T) {
 					t.Fatal(err)
 				}
 				for _, needle := range []string{"café", "cafÃ©"} {
-					res, err := mbox.NewView().Search(ctx, imapserver.NumKindSeq, &imap.SearchCriteria{Body: []string{needle}}, nil)
+					res, err := mbox.NewView().Search(ctx, imapserver.NumKindSeq, &imap.SearchCriteria{Body: []string{needle}}, &imap.SearchOptions{})
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -81,7 +81,7 @@ func TestMIMECommentedCTEDecodesCharsetOnce(t *testing.T) {
 						t.Errorf("SEARCH BODY %q = %v, want %d matches", needle, nums, want)
 					}
 				}
-				res, err := mbox.NewView().Search(ctx, imapserver.NumKindSeq, &imap.SearchCriteria{Text: []string{"original part header"}}, nil)
+				res, err := mbox.NewView().Search(ctx, imapserver.NumKindSeq, &imap.SearchCriteria{Text: []string{"original part header"}}, &imap.SearchOptions{})
 				if err != nil || len(res.AllSeqNums()) != 1 {
 					t.Errorf("SEARCH TEXT lost original header: result=%v err=%v", res.AllSeqNums(), err)
 				}
