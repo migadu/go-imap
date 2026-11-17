@@ -32,6 +32,15 @@ func TestBinaryMultipartWithoutUsableBoundaryChecksCTE(t *testing.T) {
 					t.Errorf("BINARY.SIZE%v = %d, %v; want UNKNOWN-CTE", part, got, err)
 				}
 			}
+			nested := "Content-Type: multipart/mixed; boundary=outer\r\n\r\n--outer\r\n" + raw + "--outer--\r\n"
+			for _, part := range [][]int{{1}, {1, 1}} {
+				if got, err := imapserver.DecodeBinarySection(strings.NewReader(nested), &imap.FetchItemBinarySection{Part: part}); !errors.Is(err, imapserver.ErrUnknownCTE) {
+					t.Errorf("nested BINARY%v = %q, %v; want UNKNOWN-CTE", part, got, err)
+				}
+				if got, err := imapserver.DecodeBinarySectionSize(strings.NewReader(nested), &imap.FetchItemBinarySectionSize{Part: part}); !errors.Is(err, imapserver.ErrUnknownCTE) {
+					t.Errorf("nested BINARY.SIZE%v = %d, %v; want UNKNOWN-CTE", part, got, err)
+				}
+			}
 			// The deprecated lenient API still exposes the opaque stored bytes.
 			if got := imapserver.ExtractBinarySection(strings.NewReader(raw), &imap.FetchItemBinarySection{}); !strings.HasSuffix(string(got), body) {
 				t.Errorf("lenient BINARY[] changed opaque bytes: %q", got)
