@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	gomessage "github.com/emersion/go-message"
+	"github.com/emersion/go-message/textproto"
 	"github.com/migadu/go-imap/internal/imapwire"
 )
 
@@ -33,7 +34,7 @@ func (msg *message) preview(ctx context.Context) (string, bool, error) {
 func generatePreview(ctx context.Context, r io.Reader) (string, bool, error) {
 	raw := &previewInput{ctx: ctx, r: r, remaining: maxPreviewRawBytes}
 	g := previewGenerator{ctx: ctx, raw: raw}
-	entity, err := gomessage.Read(raw)
+	entity, err := readMIMEEntity(raw)
 	var (
 		text  string
 		found bool
@@ -108,10 +109,12 @@ func (g *previewGenerator) walk(entity *gomessage.Entity, depth int, parentMedia
 		return "", false, nil
 	}
 	rawCT := entity.Header.Get("Content-Type")
-	mediaType, mediaParams, _ := entity.Header.ContentType()
+	mediaType, mediaParams, ctErr := entity.Header.ContentType()
 	if rawCT != "" {
-		if ctToken, ok := imapwire.MIMEHeadToken(rawCT); !ok || !imapwire.IsASCII(ctToken) || ctToken != mediaType {
+		if ctToken, ok := imapwire.MIMEHeadToken(rawCT); !ok || !imapwire.IsMediaTypeToken(ctToken) || (ctErr != nil && mediaType == rawCT) {
 			mediaType = ""
+		} else {
+			mediaType = ctToken
 		}
 	}
 	if parentMediaType == "multipart/digest" && rawCT == "" {
@@ -124,12 +127,16 @@ func (g *previewGenerator) walk(entity *gomessage.Entity, depth int, parentMedia
 		if mediaParams["boundary"] == "" {
 			return "", false, nil
 		}
-		mr := entity.MultipartReader()
+		mr := textproto.NewMultipartReader(entity.Body, mediaParams["boundary"])
 		for {
 			if err := g.readError(); err != nil {
 				return "", false, err
 			}
-			part, nextErr := mr.NextPart()
+			rawPart, nextErr := mr.NextPart()
+			var part *gomessage.Entity
+			if nextErr == nil {
+				part, nextErr = newMIMEEntity(gomessage.Header{Header: rawPart.Header}, rawPart)
+			}
 			if readErr := g.readError(); readErr != nil {
 				return "", false, readErr
 			}
@@ -137,7 +144,7 @@ func (g *previewGenerator) walk(entity *gomessage.Entity, depth int, parentMedia
 				return "", false, nil
 			}
 			if nextErr != nil && !isUnknownBodyCoding(nextErr) {
-				return "", false, nextErr
+				return "", false, nil
 			}
 			text, found, err := g.walk(part, depth+1, mediaType, nextErr)
 			if found || err != nil {

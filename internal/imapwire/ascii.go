@@ -67,6 +67,30 @@ func IsASCII(s string) bool {
 	return true
 }
 
+// IsMIMETokenPart reports whether s is non-empty and free of ASCII control
+// characters, spaces, and RFC 2045 tspecials. Non-ASCII UTF-8 bytes (>= 0x80)
+// are permitted so callers can distinguish unknown non-ASCII subtypes (such as
+// multipart/dİgest) from tokens containing CTLs or delimiters.
+func IsMIMETokenPart(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		ch := s[i]
+		if ch <= ' ' || ch == 0x7f || strings.IndexByte(`()<>@,;:\"/[]?=`, ch) >= 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// IsMediaTypeToken reports whether s has the form type/subtype where both
+// parts satisfy IsMIMETokenPart.
+func IsMediaTypeToken(s string) bool {
+	lhs, rhs, ok := strings.Cut(s, "/")
+	return ok && IsMIMETokenPart(lhs) && IsMIMETokenPart(rhs)
+}
+
 // MIMEHeadToken extracts the leading MIME type/subtype or disposition token
 // before the first uncommented ';', stripping balanced RFC 5322 comments and
 // ASCII linear whitespace while lowercasing ASCII letters only. It returns

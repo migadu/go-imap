@@ -190,12 +190,12 @@ func (msg *message) store(mbox *Mailbox, store *imap.StoreFlags) bool {
 	return changed
 }
 
-func (msg *message) reader() *gomessage.Entity {
-	r, _ := gomessage.Read(bytes.NewReader(msg.buf))
+func (msg *message) reader() (*gomessage.Entity, error) {
+	r, err := readMIMEEntity(bytes.NewReader(msg.buf))
 	if r == nil {
 		r, _ = gomessage.New(gomessage.Header{}, bytes.NewReader(nil))
 	}
-	return r
+	return r, err
 }
 
 func (msg *message) search(seqNum uint32, criteria *imap.SearchCriteria, now time.Time) bool {
@@ -253,12 +253,14 @@ func (msg *message) search(seqNum uint32, criteria *imap.SearchCriteria, now tim
 	}
 
 	for _, text := range criteria.Text {
-		if !matchEntity(msg.reader(), text, true) {
+		ent, err := msg.reader()
+		if !matchEntity(ent, err, text, true) {
 			return false
 		}
 	}
 	for _, body := range criteria.Body {
-		if !matchEntity(msg.reader(), body, false) {
+		ent, err := msg.reader()
+		if !matchEntity(ent, err, body, false) {
 			return false
 		}
 	}
@@ -324,7 +326,7 @@ func matchHeaderFields(fields gomessage.HeaderFields, pattern string) bool {
 	return false
 }
 
-func matchEntity(e *gomessage.Entity, pattern string, includeHeader bool) bool {
+func matchEntity(e *gomessage.Entity, partErr error, pattern string, includeHeader bool) bool {
 	if pattern == "" {
 		return true
 	}
@@ -335,28 +337,38 @@ func matchEntity(e *gomessage.Entity, pattern string, includeHeader bool) bool {
 
 	t, ctParams, ctErr := e.Header.ContentType()
 	if rawCT := e.Header.Get("Content-Type"); rawCT != "" {
-		if ctToken, ok := imapwire.MIMEHeadToken(rawCT); !ok || !imapwire.IsASCII(ctToken) || ctToken != t {
+		ctToken, ok := imapwire.MIMEHeadToken(rawCT)
+		if !ok || !imapwire.IsMediaTypeToken(ctToken) || (ctErr != nil && t == rawCT) {
 			return false
 		}
+		t = ctToken
 	}
 
-	if mr := e.MultipartReader(); mr != nil {
+	if strings.HasPrefix(t, "multipart/") {
+		if ctParams["boundary"] == "" {
+			return false
+		}
+		mr := textproto.NewMultipartReader(e.Body, ctParams["boundary"])
 		for {
-			part, err := mr.NextPart()
+			rawPart, err := mr.NextPart()
 			if err == io.EOF {
 				break
 			} else if err != nil {
 				return false
 			}
+			part, err := newMIMEEntity(gomessage.Header{Header: rawPart.Header}, rawPart)
+			if err != nil && !isUnknownBodyCoding(err) {
+				return false
+			}
 
-			if matchEntity(part, pattern, includeHeader) {
+			if matchEntity(part, err, pattern, includeHeader) {
 				return true
 			}
 		}
 
 		return false
 	} else {
-		if ctErr != nil {
+		if ctErr != nil || partErr != nil || !imapwire.IsASCII(t) {
 			return false
 		}
 
