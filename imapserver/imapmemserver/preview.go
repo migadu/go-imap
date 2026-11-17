@@ -108,10 +108,12 @@ func (g *previewGenerator) walk(entity *gomessage.Entity, depth int, parentMedia
 		return "", false, nil
 	}
 	rawCT := entity.Header.Get("Content-Type")
-	mediaType, mediaParams, _ := entity.Header.ContentType()
+	mediaType, mediaParams, ctErr := entity.Header.ContentType()
 	if rawCT != "" {
-		if ctToken, ok := imapwire.MIMEHeadToken(rawCT); !ok || !imapwire.IsASCII(ctToken) || ctToken != mediaType {
+		if ctToken, ok := imapwire.MIMEHeadToken(rawCT); !ok || !imapwire.IsMediaTypeToken(ctToken) || (ctErr != nil && mediaType == rawCT) {
 			mediaType = ""
+		} else {
+			mediaType = ctToken
 		}
 	}
 	if parentMediaType == "multipart/digest" && rawCT == "" {
@@ -137,7 +139,7 @@ func (g *previewGenerator) walk(entity *gomessage.Entity, depth int, parentMedia
 				return "", false, nil
 			}
 			if nextErr != nil && !isUnknownBodyCoding(nextErr) {
-				return "", false, nextErr
+				return "", false, nil
 			}
 			text, found, err := g.walk(part, depth+1, mediaType, nextErr)
 			if found || err != nil {
@@ -145,7 +147,7 @@ func (g *previewGenerator) walk(entity *gomessage.Entity, depth int, parentMedia
 			}
 		}
 	}
-	if mediaType != "text/plain" || partErr != nil {
+	if mediaType != "text/plain" {
 		return "", false, nil
 	}
 	mech := imapwire.CTEMechanism(entity.Header.Get("Content-Transfer-Encoding"))
@@ -155,9 +157,22 @@ func (g *previewGenerator) walk(entity *gomessage.Entity, depth int, parentMedia
 	if cs, ok := mediaParams["charset"]; ok && !imapwire.IsASCII(cs) {
 		return "", false, nil
 	}
+	partBody := entity.Body
+	if partErr != nil {
+		if !gomessage.IsUnknownEncoding(partErr) || mech == "" {
+			return "", false, nil
+		}
+		h := entity.Header.Copy()
+		h.Set("Content-Transfer-Encoding", mech)
+		decoded, decErr := gomessage.New(h, entity.Body)
+		if decErr != nil {
+			return "", false, nil
+		}
+		partBody = decoded.Body
+	}
 	// Body is already transfer/charset decoded by go-message. Keep a useful
 	// prefix without draining the rest, but check cancellation through buffers.
-	body := previewContextReader{ctx: g.ctx, r: entity.Body}
+	body := previewContextReader{ctx: g.ctx, r: partBody}
 	b, _ := io.ReadAll(io.LimitReader(body, maxPreviewTextBytes))
 	text := formatPreviewText(b)
 	if err := g.readError(); err != nil {
