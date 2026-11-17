@@ -24,13 +24,16 @@ func TestPermanentFlagsPhysicalLineFraming(t *testing.T) {
 		wantError bool
 	}{
 		{"long_text_after_unclosed_list", "(Todo] " + strings.Repeat("a", 5000), []imap.Flag{imap.FlagSeen}, false},
-		{"response_text_closing_paren", "(Todo] completed)", []imap.Flag{imap.FlagSeen}, false},
+		// Todo] and completed can be keywords in a completed list. With no
+		// outer ']', this ambiguous input must retain the framing error.
+		{"completed_list_missing_bracket", "(Todo] completed)", nil, true},
 		{"long_bracket_keyword", "(" + longKeyword + ")] text", []imap.Flag{imap.Flag(longKeyword)}, false},
 		{"many_keyword_brackets", "(" + bracketKeyword + ")] text", []imap.Flag{imap.Flag(bracketKeyword)}, false},
 		{"empty_list", "()] text", []imap.Flag{}, false},
 		{"no_response_text", "(\\Deleted)]", []imap.Flag{imap.FlagDeleted}, false},
 		{"empty_response_text", "(\\Deleted)] ", []imap.Flag{imap.FlagDeleted}, false},
 		{"malformed_list_trailing_junk", "(\\Deleted) junk] text", []imap.Flag{imap.FlagSeen}, false},
+		{"bracket_keyword_then_junk", "([Imap]/Todo) junk] text", []imap.Flag{imap.FlagSeen}, false},
 		{"missing_response_text_separator", "(\\Deleted)]junk", nil, true},
 		{"unclosed_code", "(Todo", nil, true},
 	} {
@@ -87,7 +90,7 @@ func TestPermanentFlagsMalformedGreetingPreservesErrorText(t *testing.T) {
 	defer serverConn.Close()
 	_ = clientConn.SetDeadline(time.Now().Add(5 * time.Second))
 	_ = serverConn.SetDeadline(time.Now().Add(5 * time.Second))
-	text := strings.Repeat("a", 5000) + " completed)"
+	text := strings.Repeat("a", 5000) + " completed"
 	go func() {
 		_, _ = fmt.Fprintf(serverConn, "* BYE [PERMANENTFLAGS (Todo] %s\r\n", text)
 	}()
