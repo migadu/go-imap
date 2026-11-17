@@ -17,14 +17,14 @@ import (
 // buffering, duplicate suppression and unsolicited-response lifetime rules.
 func TestFetchSearchResUIDLateAndUnsolicited(t *testing.T) {
 	unsolicited := make(chan selectIsolation307Fetch, 4)
-	c := newUIDBufferLimitClient(t, &imapclient.Options{
+	c := newUIDFetchWireClientWithGreeting(t, &imapclient.Options{
 		UnilateralDataHandler: &imapclient.UnilateralDataHandler{
 			Fetch: func(msg *imapclient.FetchMessageData) {
 				data, err := msg.Collect()
 				unsolicited <- selectIsolation307Fetch{data, err}
 			},
 		},
-	}, func(conn net.Conn, br *bufio.Reader) error {
+	}, "* OK [CAPABILITY IMAP4rev1 SEARCHRES ESEARCH] ready\r\n", func(conn net.Conn, br *bufio.Reader) error {
 		tag, err := readFetchSearchResWireCommand(br)
 		if err != nil {
 			return err
@@ -71,7 +71,7 @@ func TestFetchSearchResUIDLateAndUnsolicited(t *testing.T) {
 // marker then owns previously unseen UIDs until its tagged completion; later
 // responses can belong to another numeric command.
 func TestFetchSearchResPendingCommandOwnership(t *testing.T) {
-	c := newUIDBufferLimitClient(t, nil, func(conn net.Conn, br *bufio.Reader) error {
+	c := newUIDFetchWireClientWithGreeting(t, nil, "* OK [CAPABILITY IMAP4rev1 SEARCHRES ESEARCH] ready\r\n", func(conn net.Conn, br *bufio.Reader) error {
 		first, err := readUIDFetchWireCommand(br)
 		if err != nil {
 			return err

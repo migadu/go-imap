@@ -51,7 +51,7 @@ func (b *boundedBuf) Write(p []byte) (n int, err error) {
 // With imap.SearchRes(), the server resolves the saved set. Its membership may
 // be unknown to the client, so any UID-bearing FETCH response may be attributed
 // to this command while it is pending. Avoid pipelining it with other FETCH or
-// non-silent STORE commands; see UnilateralDataHandler.Fetch for notifications.
+// STORE commands; see UnilateralDataHandler.Fetch for notifications.
 func (c *Client) Fetch(numSet imap.NumSet, options *imap.FetchOptions) *FetchCommand {
 	if options == nil {
 		options = new(imap.FetchOptions)
