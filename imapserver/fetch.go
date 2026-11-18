@@ -907,8 +907,10 @@ func writeAddressList(enc *imapwire.Encoder, l []imap.Address) {
 		return
 	}
 
-	enc.List(len(l), func(i int) {
-		addr := l[i]
+	// env-from etc. are "(" 1*address ")": no SP between the addresses (RFC 3501
+	// and RFC 9051 §9), unlike enc.List's "(" x *(SP x) ")".
+	enc.Special('(')
+	for _, addr := range l {
 		enc.Special('(')
 		writeNString(enc, mime.QEncoding.Encode("utf-8", addr.Name))
 		enc.SP().NIL().SP()
@@ -916,7 +918,8 @@ func writeAddressList(enc *imapwire.Encoder, l []imap.Address) {
 		enc.SP()
 		writeNString(enc, addr.Host)
 		enc.Special(')')
-	})
+	}
+	enc.Special(')')
 }
 
 func writeNString(enc *imapwire.Encoder, s string) {
