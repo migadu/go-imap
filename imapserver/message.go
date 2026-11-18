@@ -14,6 +14,7 @@ import (
 
 	"github.com/migadu/go-imap"
 	"github.com/migadu/go-imap/internal/imapwire"
+	"github.com/migadu/go-imap/mailaddr"
 )
 
 // ExtractBodySection extracts a section of a message body.
@@ -498,45 +499,22 @@ func ExtractEnvelopeWithOptions(h textproto.Header, options *ExtractOptions) *im
 // then its members, then an end record with neither (RFC 3501 §7.4.2, RFC 9051 §7.5.2);
 // an empty group is its start and end. A repeated field (RFC 5322 §3.6 allows one, but
 // such mail exists) contributes every instance, in header order, and an instance that
-// does not parse adds nothing, as in migadu/sora's top-level ENVELOPE.
+// does not parse adds nothing. The parsing is mailaddr.ParseList, the same a backend
+// uses for a message's own ENVELOPE.
 func parseAddressList(mh mail.Header, k string) []imap.Address {
 	var l []imap.Address
-	add := func(addrs []*mail.Address, routes []string) {
-		for i, addr := range addrs {
-			// net/mail unquotes the local part, which may hold '@' ("a@b"@example.com),
-			// and rejects '@' in the domain, so the domain follows the last '@'.
-			at := strings.LastIndexByte(addr.Address, '@')
-			if at < 0 {
-				continue
-			}
-			address := imap.Address{
-				Name:    addr.Name,
-				Mailbox: addr.Address[:at],
-				Host:    addr.Address[at+1:],
-			}
-			if routes != nil {
-				address.Route = routes[i]
-			}
-			l = append(l, address)
-		}
-	}
 	for _, value := range mh.Values(k) {
-		if parts, ok := parseAddressGroups(value); ok {
-			for _, part := range parts {
-				if part.group != "" {
-					// Like addr-name, which the encoder Q-encodes, a non-ASCII name
-					// goes out RFC 2047 encoded.
-					l = append(l, imap.Address{Mailbox: mime.QEncoding.Encode("utf-8", part.group)})
-				}
-				add(part.addresses, part.routes)
-				if part.group != "" {
-					l = append(l, imap.Address{})
-				}
-			}
+		entries, err := mailaddr.ParseList(value)
+		if err != nil {
 			continue
 		}
-		if addrs, routes, err := parseAddressListRoutes(value); err == nil {
-			add(addrs, routes)
+		for _, entry := range entries {
+			if entry.IsGroupStart() {
+				// Like addr-name, which the encoder Q-encodes, a non-ASCII name goes
+				// out RFC 2047 encoded.
+				entry.Mailbox = mime.QEncoding.Encode("utf-8", entry.Mailbox)
+			}
+			l = append(l, entry)
 		}
 	}
 	return l

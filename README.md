@@ -48,6 +48,9 @@ Documentation and examples for the module are available here:
 
 - [Client docs]
 - [Server docs]
+- [Address list docs]: `mailaddr.ParseList` is the address-header parser behind the
+  server's ENVELOPE (groups, source routes, comments), for a backend that stores a
+  message's addresses itself
 
 `cmd/imapmemserver` is a small in-memory server useful for testing:
 
@@ -62,3 +65,4 @@ MIT, see [LICENSE](LICENSE).
 [emersion/go-imap]: https://github.com/emersion/go-imap
 [Client docs]: https://pkg.go.dev/github.com/migadu/go-imap/imapclient
 [Server docs]: https://pkg.go.dev/github.com/migadu/go-imap/imapserver
+[Address list docs]: https://pkg.go.dev/github.com/migadu/go-imap/mailaddr
