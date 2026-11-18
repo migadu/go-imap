@@ -562,6 +562,20 @@ func (w *FetchWriter) WriteVanished(uids imap.UIDSet, earlier bool) error {
 	return w.conn.writeVanished(uids, earlier)
 }
 
+// WriteMailboxFlags writes a FLAGS response listing the flags of the selected
+// mailbox (RFC 9051 §7.3.5).
+//
+// A STORE (or FETCH) that gives a message a keyword the client has not been
+// told the mailbox uses calls this before the FETCH responses showing it, so a
+// client that tracks the mailbox's keywords from FLAGS learns of it before it
+// is used. The list replaces the client's, so it must contain every flag
+// announced before. A backend that queues the update instead
+// (MailboxTracker.QueueMailboxFlags) has it written only after the command's
+// own FETCH responses.
+func (w *FetchWriter) WriteMailboxFlags(flags []imap.Flag) error {
+	return w.conn.writeFlags(flags)
+}
+
 // CreateMessage writes a FETCH response for a message.
 //
 // FetchResponseWriter.Close must be called.
