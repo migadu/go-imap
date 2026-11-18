@@ -168,9 +168,9 @@ func isBlankAddressList(s string) bool {
 // name, preserving quoted text and decoding RFC 2047 words only outside quotes.
 func decodePhrase(s string) string {
 	// net/mail accepts comments between words, but not before the first word.
-	s = strings.TrimSpace(s)
+	s = strings.Trim(s, " \t\r\n")
 	for len(s) > 0 && s[0] == '(' {
-		s = strings.TrimSpace(s[skipComment(s, 0)+1:])
+		s = strings.Trim(s[skipComment(s, 0)+1:], " \t\r\n")
 	}
 	const mailbox = "group-name@example.invalid"
 	addr, err := mail.ParseAddress(s + " <" + mailbox + ">")

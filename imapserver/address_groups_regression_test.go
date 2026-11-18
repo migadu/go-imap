@@ -73,6 +73,15 @@ func TestExtractEnvelopeAddressGroupSyntax(t *testing.T) {
 			},
 		},
 		{
+			name:  "UTF8 spaces are name data",
+			value: "\u00a0Team\u00a0: a@example.com;",
+			want: []imap.Address{
+				{Mailbox: "=?utf-8?q?=C2=A0Team=C2=A0?="},
+				{Mailbox: "a", Host: "example.com"},
+				{},
+			},
+		},
+		{
 			name:  "comments around phrase",
 			value: `(before) "Team Name" (after): a@example.com;`,
 			want: []imap.Address{
