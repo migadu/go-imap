@@ -2,6 +2,7 @@ package imapserver
 
 import (
 	"strings"
+	"unicode/utf8"
 
 	"github.com/emersion/go-message/mail"
 )
@@ -98,6 +99,7 @@ func stripAddressRoutes(list string) (stripped string, routes []string, aligned 
 // hop's domain must be well formed; anything else is not a route.
 func addressRoute(s string, i int) (end int, route string, ok bool) {
 	var hops strings.Builder
+	start := i
 	i, ok = routeCFWSEnd(s, i)
 	for ok && i < len(s) && s[i] == ',' {
 		i, ok = routeCFWSEnd(s, i+1)
@@ -124,6 +126,11 @@ func addressRoute(s string, i int) (end int, route string, ok bool) {
 			}
 		}
 		if s[i] == ':' {
+			// Validate the original route, including comments and quoted-pairs
+			// that canonicalization removes or copies without interpreting.
+			if !utf8.ValidString(s[start:i]) {
+				return 0, "", false
+			}
 			return i + 1, hops.String(), true
 		}
 		if s[i] != '@' {
@@ -134,7 +141,9 @@ func addressRoute(s string, i int) (end int, route string, ok bool) {
 
 // routeDomainEnd validates the domain of a route hop at s[i:] and appends it to hops: a
 // dot-atom, without the CFWS obs-domain allows around its dots, or a domain literal as
-// written (unfolded). It returns the index after the domain and its trailing CFWS.
+// written (unfolded). RFC 6532 extends both atext and dtext with UTF-8; addressRoute
+// validates that encoding on the complete route. It returns the index after the
+// domain and its trailing CFWS.
 func routeDomainEnd(s string, i int, hops *strings.Builder) (int, bool) {
 	i, ok := routeCFWSEnd(s, i)
 	if !ok || i == len(s) {
@@ -162,9 +171,6 @@ func routeDomainEnd(s string, i int, hops *strings.Builder) (int, bool) {
 			case '[', '\n', 0:
 				return 0, false
 			default:
-				if ch > 127 {
-					return 0, false
-				}
 				hops.WriteByte(ch)
 			}
 		}
@@ -172,7 +178,7 @@ func routeDomainEnd(s string, i int, hops *strings.Builder) (int, bool) {
 	}
 	for {
 		start := i
-		for i < len(s) && isAtext(s[i]) {
+		for i < len(s) && (isAtext(s[i]) || s[i] >= utf8.RuneSelf) {
 			i++
 		}
 		if start == i {
