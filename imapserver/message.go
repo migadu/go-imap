@@ -496,7 +496,9 @@ func ExtractEnvelopeWithOptions(h textproto.Header, options *ExtractOptions) *im
 // parseAddressList returns the envelope address list of header field k. An RFC 5322
 // group is a start record, an address with no host and the group name as its mailbox,
 // then its members, then an end record with neither (RFC 3501 §7.4.2, RFC 9051 §7.5.2);
-// an empty group is its start and end.
+// an empty group is its start and end. A repeated field (RFC 5322 §3.6 allows one, but
+// such mail exists) contributes every instance, in header order, and an instance that
+// does not parse adds nothing, as in migadu/sora's top-level ENVELOPE.
 func parseAddressList(mh mail.Header, k string) []imap.Address {
 	var l []imap.Address
 	add := func(addrs []*mail.Address) {
@@ -512,22 +514,25 @@ func parseAddressList(mh mail.Header, k string) []imap.Address {
 			})
 		}
 	}
-	if parts, ok := parseAddressGroups(mh.Get(k)); ok {
-		for _, part := range parts {
-			if part.group != "" {
-				// Like addr-name, which the encoder Q-encodes, a non-ASCII name goes
-				// out RFC 2047 encoded.
-				l = append(l, imap.Address{Mailbox: mime.QEncoding.Encode("utf-8", part.group)})
+	for _, value := range mh.Values(k) {
+		if parts, ok := parseAddressGroups(value); ok {
+			for _, part := range parts {
+				if part.group != "" {
+					// Like addr-name, which the encoder Q-encodes, a non-ASCII name
+					// goes out RFC 2047 encoded.
+					l = append(l, imap.Address{Mailbox: mime.QEncoding.Encode("utf-8", part.group)})
+				}
+				add(part.addresses)
+				if part.group != "" {
+					l = append(l, imap.Address{})
+				}
 			}
-			add(part.addresses)
-			if part.group != "" {
-				l = append(l, imap.Address{})
-			}
+			continue
 		}
-		return l
+		if addrs, err := mail.ParseAddressList(value); err == nil {
+			add(addrs)
+		}
 	}
-	addrs, _ := mh.AddressList(k)
-	add(addrs)
 	return l
 }
 
