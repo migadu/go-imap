@@ -1,10 +1,8 @@
 package imapserver
 
 import (
-	"mime"
 	"strings"
 
-	gomessage "github.com/emersion/go-message"
 	"github.com/emersion/go-message/mail"
 )
 
@@ -47,6 +45,8 @@ func parseAddressGroups(value string) (parts []addressListPart, ok bool) {
 			i = skipComment(value, i)
 		case '<':
 			i = skipAngleAddr(value, i)
+		case '[':
+			i = skipDomainLiteral(value, i)
 		case ',':
 			if !inGroup {
 				lastComma = i
@@ -135,6 +135,20 @@ func skipAngleAddr(s string, i int) int {
 	return len(s) - 1
 }
 
+// skipDomainLiteral skips the domain-literal opened at i, whose colons (for
+// example in an IPv6 address) are not group delimiters.
+func skipDomainLiteral(s string, i int) int {
+	for j := i + 1; j < len(s); j++ {
+		switch s[j] {
+		case '\\':
+			j++
+		case ']':
+			return j
+		}
+	}
+	return len(s) - 1
+}
+
 // isBlankAddressList reports whether s holds no address: only whitespace, comments and
 // the empty list elements RFC 5322 §4.4 obs-addr-list allows (bare commas).
 func isBlankAddressList(s string) bool {
@@ -150,46 +164,18 @@ func isBlankAddressList(s string) bool {
 	return true
 }
 
-// decodePhrase returns an RFC 5322 phrase (a group's display-name) as text: comments
-// dropped, quoted-strings unquoted, runs of whitespace folded to one space and RFC 2047
-// encoded-words decoded, as net/mail does for an address's display name.
+// decodePhrase uses the address parser's display-name rules to decode a group's
+// name, preserving quoted text and decoding RFC 2047 words only outside quotes.
 func decodePhrase(s string) string {
-	var words []string
-	var word strings.Builder
-	flush := func() {
-		if word.Len() > 0 {
-			words = append(words, word.String())
-			word.Reset()
-		}
+	// net/mail accepts comments between words, but not before the first word.
+	s = strings.TrimSpace(s)
+	for len(s) > 0 && s[0] == '(' {
+		s = strings.TrimSpace(s[skipComment(s, 0)+1:])
 	}
-	for i := 0; i < len(s); i++ {
-		switch c := s[i]; c {
-		case ' ', '\t', '\r', '\n':
-			flush()
-		case '(':
-			flush()
-			i = skipComment(s, i)
-		case '"':
-			end := skipQuotedString(s, i)
-			content := s[i+1:]
-			if s[end] == '"' && end > i {
-				content = s[i+1 : end]
-			}
-			for j := 0; j < len(content); j++ {
-				if content[j] == '\\' && j+1 < len(content) {
-					j++
-				}
-				word.WriteByte(content[j])
-			}
-			i = end
-		default:
-			word.WriteByte(c)
-		}
+	const mailbox = "group-name@example.invalid"
+	addr, err := mail.ParseAddress(s + " <" + mailbox + ">")
+	if err != nil || addr.Address != mailbox {
+		return ""
 	}
-	flush()
-	phrase := strings.Join(words, " ")
-	if decoded, err := (&mime.WordDecoder{CharsetReader: gomessage.CharsetReader}).DecodeHeader(phrase); err == nil {
-		phrase = decoded
-	}
-	return phrase
+	return addr.Name
 }
