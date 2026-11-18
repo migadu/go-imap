@@ -913,7 +913,9 @@ func writeAddressList(enc *imapwire.Encoder, l []imap.Address) {
 	for _, addr := range l {
 		enc.Special('(')
 		writeNString(enc, mime.QEncoding.Encode("utf-8", addr.Name))
-		enc.SP().NIL().SP()
+		enc.SP()
+		writeNString(enc, addr.Route)
+		enc.SP()
 		writeNString(enc, addr.Mailbox)
 		enc.SP()
 		writeNString(enc, addr.Host)

@@ -501,19 +501,23 @@ func ExtractEnvelopeWithOptions(h textproto.Header, options *ExtractOptions) *im
 // does not parse adds nothing, as in migadu/sora's top-level ENVELOPE.
 func parseAddressList(mh mail.Header, k string) []imap.Address {
 	var l []imap.Address
-	add := func(addrs []*mail.Address) {
-		for _, addr := range addrs {
+	add := func(addrs []*mail.Address, routes []string) {
+		for i, addr := range addrs {
 			// net/mail unquotes the local part, which may hold '@' ("a@b"@example.com),
 			// and rejects '@' in the domain, so the domain follows the last '@'.
 			at := strings.LastIndexByte(addr.Address, '@')
 			if at < 0 {
 				continue
 			}
-			l = append(l, imap.Address{
+			address := imap.Address{
 				Name:    addr.Name,
 				Mailbox: addr.Address[:at],
 				Host:    addr.Address[at+1:],
-			})
+			}
+			if routes != nil {
+				address.Route = routes[i]
+			}
+			l = append(l, address)
 		}
 	}
 	for _, value := range mh.Values(k) {
@@ -524,15 +528,15 @@ func parseAddressList(mh mail.Header, k string) []imap.Address {
 					// goes out RFC 2047 encoded.
 					l = append(l, imap.Address{Mailbox: mime.QEncoding.Encode("utf-8", part.group)})
 				}
-				add(part.addresses)
+				add(part.addresses, part.routes)
 				if part.group != "" {
 					l = append(l, imap.Address{})
 				}
 			}
 			continue
 		}
-		if addrs, err := mail.ParseAddressList(value); err == nil {
-			add(addrs)
+		if addrs, routes, err := parseAddressListRoutes(value); err == nil {
+			add(addrs, routes)
 		}
 	}
 	return l

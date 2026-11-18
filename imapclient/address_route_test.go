@@ -2,10 +2,11 @@ package imapclient
 
 import (
 	"bufio"
-	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
+	"github.com/migadu/go-imap"
 	"github.com/migadu/go-imap/internal/imapwire"
 )
 
@@ -15,13 +16,15 @@ func TestReadAddressKeepsSourceRoute(t *testing.T) {
 	dec := imapwire.NewDecoder(bufio.NewReader(strings.NewReader(
 		`((NIL "@first,@second" "user" "domain")(NIL NIL "plain" "domain"))`)), imapwire.ConnSideClient)
 	addrs, err := readAddressList(dec, &Options{})
-	if err != nil || len(addrs) != 2 {
-		t.Fatalf("readAddressList() = %+v, %v", addrs, err)
+	if err != nil {
+		t.Fatalf("readAddressList(): %v", err)
 	}
-	if got := fmt.Sprintf("%+v", addrs[0]); !strings.Contains(got, "@first,@second") {
-		t.Errorf("first address is %s, want it to keep the route @first,@second", got)
+	want := []imap.Address{{Route: "@first,@second", Mailbox: "user", Host: "domain"}, {Mailbox: "plain", Host: "domain"}}
+	if !slices.Equal(addrs, want) {
+		t.Errorf("readAddressList() = %+v, want %+v", addrs, want)
 	}
-	if got := fmt.Sprintf("%+v", addrs[1]); strings.Contains(got, "@") {
-		t.Errorf("second address is %s, want no route", got)
+	// The route is not part of the address a client replies to.
+	if got := addrs[0].Addr(); got != "user@domain" {
+		t.Errorf("Addr() = %q, want user@domain", got)
 	}
 }

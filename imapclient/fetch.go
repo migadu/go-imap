@@ -1493,13 +1493,12 @@ func readAddressList(dec *imapwire.Decoder, options *Options) ([]imap.Address, e
 
 func readAddress(dec *imapwire.Decoder, options *Options) (*imap.Address, error) {
 	var (
-		addr     imap.Address
-		name     string
-		obsRoute string
+		addr imap.Address
+		name string
 	)
 	ok := dec.ExpectSpecial('(') &&
 		dec.ExpectNString(&name) && dec.ExpectSP() &&
-		dec.ExpectNString(&obsRoute) && dec.ExpectSP() &&
+		dec.ExpectNString(&addr.Route) && dec.ExpectSP() &&
 		dec.ExpectNString(&addr.Mailbox) && dec.ExpectSP() &&
 		dec.ExpectNString(&addr.Host) && dec.ExpectSpecial(')')
 	if !ok {

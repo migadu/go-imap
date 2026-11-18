@@ -117,6 +117,12 @@ type Address struct {
 	Name    string
 	Mailbox string
 	Host    string
+	// Route is the addr-adl field of the address structure: the "at-domain-list (source
+	// route and obs-route ABNF production from [RFC5322])" of RFC 9051 section 7.5.2,
+	// for example "@first,@second" for "<@first,@second:user@example.org>". It is empty
+	// (NIL on the wire) for an address without a source route, which is nearly every
+	// address. It takes no part in Addr.
+	Route string
 }
 
 // Addr returns the e-mail address in the form "foo@example.org".
