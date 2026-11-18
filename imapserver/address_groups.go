@@ -11,6 +11,7 @@ import (
 type addressListPart struct {
 	group     string
 	addresses []*mail.Address
+	routes    []string // nil, or the obs-route of each address (parseAddressListRoutes)
 }
 
 // parseAddressGroups parses an address-list header value that holds RFC 5322 §3.4
@@ -27,11 +28,11 @@ func parseAddressGroups(value string) (parts []addressListPart, ok bool) {
 		if isBlankAddressList(list) {
 			return true
 		}
-		addresses, err := mail.ParseAddressList(list)
+		addresses, routes, err := parseAddressListRoutes(list)
 		if err != nil {
 			return false
 		}
-		parts = append(parts, addressListPart{addresses: addresses})
+		parts = append(parts, addressListPart{addresses: addresses, routes: routes})
 		return true
 	}
 	segStart, lastComma := 0, -1
@@ -73,11 +74,11 @@ func parseAddressGroups(value string) (parts []addressListPart, ok bool) {
 			}
 			part := addressListPart{group: groupName}
 			if members := value[segStart:i]; !isBlankAddressList(members) {
-				addresses, err := mail.ParseAddressList(members)
+				addresses, routes, err := parseAddressListRoutes(members)
 				if err != nil {
 					return nil, false
 				}
-				part.addresses = addresses
+				part.addresses, part.routes = addresses, routes
 			}
 			parts = append(parts, part)
 			inGroup, segStart, lastComma = false, i+1, -1
@@ -122,12 +123,17 @@ func skipComment(s string, i int) int {
 }
 
 // skipAngleAddr returns the index of the '>' closing the angle-addr opened at i. Its
-// ':' (an obsolete route) and quoted local part are not group syntax.
+// ':' (an obsolete route) and quoted local part are not group syntax, and a '>' in one
+// of its comments or domain literals does not close it.
 func skipAngleAddr(s string, i int) int {
 	for j := i + 1; j < len(s); j++ {
 		switch s[j] {
 		case '"':
 			j = skipQuotedString(s, j)
+		case '(':
+			j = skipComment(s, j)
+		case '[':
+			j = skipDomainLiteral(s, j)
 		case '>':
 			return j
 		}
