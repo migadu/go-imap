@@ -41,8 +41,10 @@ func writeNamespace(enc *imapwire.Encoder, l []imap.NamespaceDescriptor) {
 		return
 	}
 
-	enc.List(len(l), func(i int) {
-		descr := l[i]
+	// namespace is "(" 1*namespace-descr ")": no SP between the descriptors
+	// (RFC 9051 §9, RFC 2342 §6), unlike enc.List's "(" x *(SP x) ")".
+	enc.Special('(')
+	for _, descr := range l {
 		enc.Special('(').String(descr.Prefix).SP()
 		if descr.Delim == 0 {
 			enc.NIL()
@@ -50,5 +52,6 @@ func writeNamespace(enc *imapwire.Encoder, l []imap.NamespaceDescriptor) {
 			enc.Quoted(string(descr.Delim))
 		}
 		enc.Special(')')
-	})
+	}
+	enc.Special(')')
 }
