@@ -501,14 +501,16 @@ func parseAddressList(mh mail.Header, k string) []imap.Address {
 	var l []imap.Address
 	add := func(addrs []*mail.Address) {
 		for _, addr := range addrs {
-			mailbox, host, ok := strings.Cut(addr.Address, "@")
-			if !ok {
+			// net/mail unquotes the local part, which may hold '@' ("a@b"@example.com),
+			// and rejects '@' in the domain, so the domain follows the last '@'.
+			at := strings.LastIndexByte(addr.Address, '@')
+			if at < 0 {
 				continue
 			}
 			l = append(l, imap.Address{
 				Name:    addr.Name,
-				Mailbox: mailbox,
-				Host:    host,
+				Mailbox: addr.Address[:at],
+				Host:    addr.Address[at+1:],
 			})
 		}
 	}
