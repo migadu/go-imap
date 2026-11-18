@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"io"
+	"mime"
 	"strings"
 	"time"
 
@@ -492,21 +493,41 @@ func ExtractEnvelopeWithOptions(h textproto.Header, options *ExtractOptions) *im
 	}
 }
 
+// parseAddressList returns the envelope address list of header field k. An RFC 5322
+// group is a start record, an address with no host and the group name as its mailbox,
+// then its members, then an end record with neither (RFC 3501 §7.4.2, RFC 9051 §7.5.2);
+// an empty group is its start and end.
 func parseAddressList(mh mail.Header, k string) []imap.Address {
-	// TODO: handle groups
-	addrs, _ := mh.AddressList(k)
 	var l []imap.Address
-	for _, addr := range addrs {
-		mailbox, host, ok := strings.Cut(addr.Address, "@")
-		if !ok {
-			continue
+	add := func(addrs []*mail.Address) {
+		for _, addr := range addrs {
+			mailbox, host, ok := strings.Cut(addr.Address, "@")
+			if !ok {
+				continue
+			}
+			l = append(l, imap.Address{
+				Name:    addr.Name,
+				Mailbox: mailbox,
+				Host:    host,
+			})
 		}
-		l = append(l, imap.Address{
-			Name:    addr.Name,
-			Mailbox: mailbox,
-			Host:    host,
-		})
 	}
+	if parts, ok := parseAddressGroups(mh.Get(k)); ok {
+		for _, part := range parts {
+			if part.group != "" {
+				// Like addr-name, which the encoder Q-encodes, a non-ASCII name goes
+				// out RFC 2047 encoded.
+				l = append(l, imap.Address{Mailbox: mime.QEncoding.Encode("utf-8", part.group)})
+			}
+			add(part.addresses)
+			if part.group != "" {
+				l = append(l, imap.Address{})
+			}
+		}
+		return l
+	}
+	addrs, _ := mh.AddressList(k)
+	add(addrs)
 	return l
 }
 

@@ -16,7 +16,8 @@ const groupHeaders = "Date: Thu, 15 Feb 2007 01:02:03 +0200\r\n" +
 	"From: user@domain (Real Name)\r\n" +
 	"To: group: g1@d1.org, g2@d2.org;, group2: g3@d3.org;\r\n" +
 	"Cc: group:;, group2: (foo) ;\r\n" +
-	"Bcc: Plain <plain@example.com>, \"Team Name\": a@example.com;\r\n"
+	"Bcc: Plain <plain@example.com>, \"Team Name\": a@example.com;\r\n" +
+	"Reply-To: =?utf-8?q?Caf=C3=A9?= list:;\r\n"
 
 // checkGroupEnvelope checks the RFC 3501 §7.4.2 group records: a start is an address
 // with a NIL host and the group name as its mailbox, an end has both NIL, and an empty
@@ -34,6 +35,8 @@ func checkGroupEnvelope(t *testing.T, env *imap.Envelope) {
 			{Mailbox: "group2"}, {Mailbox: "g3", Host: "d3.org"}, end,
 		}},
 		{"Cc", env.Cc, []imap.Address{{Mailbox: "group"}, end, {Mailbox: "group2"}, end}},
+		// A non-ASCII group name is RFC 2047 encoded, like an addr-name on the wire.
+		{"Reply-To", env.ReplyTo, []imap.Address{{Mailbox: "=?utf-8?q?Caf=C3=A9_list?="}, end}},
 		{"Bcc", env.Bcc, []imap.Address{
 			{Name: "Plain", Mailbox: "plain", Host: "example.com"},
 			{Mailbox: "Team Name"}, {Mailbox: "a", Host: "example.com"}, end,
