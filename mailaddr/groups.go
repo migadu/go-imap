@@ -1,8 +1,11 @@
-package imapserver
+package mailaddr
 
 import (
+	"mime"
 	"strings"
+	"unicode/utf8"
 
+	"github.com/emersion/go-message"
 	"github.com/emersion/go-message/mail"
 )
 
@@ -43,7 +46,11 @@ func parseAddressGroups(value string) (parts []addressListPart, ok bool) {
 		case '"':
 			i = skipQuotedString(value, i)
 		case '(':
-			i = skipComment(value, i)
+			end, closed := commentEnd(value, i)
+			if !closed {
+				return nil, false
+			}
+			i = end
 		case '<':
 			i = skipAngleAddr(value, i)
 		case '[':
@@ -84,7 +91,7 @@ func parseAddressGroups(value string) (parts []addressListPart, ok bool) {
 			inGroup, segStart, lastComma = false, i+1, -1
 		}
 	}
-	if inGroup || !addPlain(value[segStart:]) {
+	if inGroup || !addPlain(value[segStart:]) || len(parts) == 0 {
 		return nil, false
 	}
 	return parts, true
@@ -106,6 +113,13 @@ func skipQuotedString(s string, i int) int {
 
 // skipComment returns the index of the ')' closing the (nestable) comment opened at i.
 func skipComment(s string, i int) int {
+	end, _ := commentEnd(s, i)
+	return end
+}
+
+// commentEnd also reports whether the comment closes, so callers that accept a
+// comment as whitespace can reject an unterminated one.
+func commentEnd(s string, i int) (int, bool) {
 	depth := 0
 	for j := i; j < len(s); j++ {
 		switch s[j] {
@@ -115,11 +129,11 @@ func skipComment(s string, i int) int {
 			depth++
 		case ')':
 			if depth--; depth == 0 {
-				return j
+				return j, true
 			}
 		}
 	}
-	return len(s) - 1
+	return len(s) - 1, false
 }
 
 // skipAngleAddr returns the index of the '>' closing the angle-addr opened at i. Its
@@ -162,7 +176,11 @@ func isBlankAddressList(s string) bool {
 		switch s[i] {
 		case ' ', '\t', '\r', '\n', ',':
 		case '(':
-			i = skipComment(s, i)
+			end, closed := commentEnd(s, i)
+			if !closed {
+				return false
+			}
+			i = end
 		default:
 			return false
 		}
@@ -170,9 +188,18 @@ func isBlankAddressList(s string) bool {
 	return true
 }
 
-// decodePhrase uses the address parser's display-name rules to decode a group's
-// name, preserving quoted text and decoding RFC 2047 words only outside quotes.
+// decodePhrase decodes a group's name. A well-formed phrase is decoded by the address
+// parser's own display-name rules, so a group's name reads as an address's does: quoted
+// text is kept as it is, RFC 2047 encoded-words are decoded only outside quotes, and each
+// atom or quoted string is a word of its own. A name that is not a phrase (an unquoted
+// "@" or other special in it) is still the name of the group the ":" opens; it is read
+// leniently (decodeLoosePhrase) instead of costing the header its addresses. A name
+// without a word, only comments and empty quoted strings, is no name ("").
 func decodePhrase(s string) string {
+	words := phraseWords(s)
+	if len(words) == 0 {
+		return ""
+	}
 	// net/mail accepts comments between words, but not before the first word.
 	s = strings.Trim(s, " \t\r\n")
 	for len(s) > 0 && s[0] == '(' {
@@ -181,7 +208,80 @@ func decodePhrase(s string) string {
 	const mailbox = "group-name@example.invalid"
 	addr, err := mail.ParseAddress(s + " <" + mailbox + ">")
 	if err != nil || addr.Address != mailbox {
-		return ""
+		return decodeLoosePhrase(s, words)
 	}
-	return addr.Name
+	if name := cleanText(addr.Name); name != "" {
+		return name
+	}
+	// Words, but no text from them (encoded-words that decode to nothing or not at
+	// all): the words are the name.
+	return decodeLoosePhrase(s, words)
+}
+
+// phraseWords splits text that should be an RFC 5322 phrase into its words: comments
+// dropped, quoted-strings unquoted, white space separating. Empty quoted strings are not
+// words.
+func phraseWords(s string) []string {
+	var words []string
+	var word strings.Builder
+	flush := func() {
+		if word.Len() > 0 {
+			words = append(words, word.String())
+			word.Reset()
+		}
+	}
+	for i := 0; i < len(s); i++ {
+		switch c := s[i]; c {
+		case ' ', '\t', '\r', '\n':
+			flush()
+		case '(':
+			flush()
+			i = skipComment(s, i)
+		case '"':
+			end := skipQuotedString(s, i)
+			content := s[i+1:]
+			if s[end] == '"' && end > i {
+				content = s[i+1 : end]
+			}
+			for j := 0; j < len(content); j++ {
+				if content[j] == '\\' && j+1 < len(content) {
+					j++
+				}
+				word.WriteByte(content[j])
+			}
+			i = end
+		default:
+			word.WriteByte(c)
+		}
+	}
+	flush()
+	return words
+}
+
+// decodeLoosePhrase reads text that is not an RFC 5322 phrase as one: its words
+// (phraseWords) joined by one space, RFC 2047 encoded-words decoded. Bytes that are not
+// text as written (invalid UTF-8, a NUL) have no reading.
+func decodeLoosePhrase(s string, words []string) string {
+	if !utf8.ValidString(s) || strings.IndexByte(s, 0) >= 0 {
+		return "" // no group, as net/mail has no address with such a name
+	}
+	phrase := strings.Join(words, " ")
+	if decoded, err := (&mime.WordDecoder{CharsetReader: message.CharsetReader}).DecodeHeader(phrase); err == nil {
+		phrase = decoded
+	}
+	return cleanText(phrase)
+}
+
+// cleanText returns decoded text without what is not text: an encoded-word can decode to
+// invalid UTF-8 or to a NUL, which neither an ENVELOPE nor a database can carry.
+func cleanText(s string) string {
+	if utf8.ValidString(s) && strings.IndexByte(s, 0) < 0 {
+		return s
+	}
+	return strings.Map(func(r rune) rune {
+		if r == 0 {
+			return -1
+		}
+		return r
+	}, strings.ToValidUTF8(s, ""))
 }

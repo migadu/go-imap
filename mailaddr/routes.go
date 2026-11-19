@@ -1,4 +1,4 @@
-package imapserver
+package mailaddr
 
 import (
 	"strings"
@@ -7,34 +7,36 @@ import (
 	"github.com/emersion/go-message/mail"
 )
 
-// parseAddressListRoutes parses an address list as mail.ParseAddressList does, and also
-// one whose angle-addrs carry an RFC 5322 §4.4 obs-route ("<@hop1,@hop2:user@domain>"),
-// which net/mail rejects. routes is nil when no address has a route; otherwise it has one
-// entry per address, the route in canonical form (see addressRoute) or "".
+// parseAddressListRoutes parses an address list without group syntax (or one to be parsed
+// flat): as mail.ParseAddressList does, and failing that without its RFC 5322 §4.4
+// obs-routes ("<@hop1,@hop2:user@domain>"), and failing that without the CFWS inside its
+// addr-specs (stripAddressCFWS). net/mail rejects both. routes is nil when no address
+// has a route; otherwise it has one entry per address, the route in canonical form (see
+// addressRoute) or "".
 //
-// A list that parses without help is returned as it is, so nothing that parsed before
-// changes. Otherwise the well-formed routes are cut out and the rest is parsed again. A
-// route is kept only when it is certain which address it belongs to: the list must be a
-// plain run of mailboxes, one per comma-separated element (parseAddressGroups hands
-// group members and the runs between groups over that way). If it is not, the addresses
-// are still returned, without routes.
+// A list that parses without help is returned as it is, so nothing net/mail accepts
+// changes. A route is kept only when it is certain which address it belongs to: the
+// list must be a plain run of mailboxes, one per comma-separated element
+// (parseAddressGroups hands group members and the runs between groups over that way).
+// If it is not, the addresses are still returned, without routes.
 func parseAddressListRoutes(list string) (addrs []*mail.Address, routes []string, err error) {
 	addrs, err = mail.ParseAddressList(list)
-	if err == nil {
-		return addrs, nil, nil
-	}
-	stripped, found, aligned := stripAddressRoutes(list)
-	if stripped == list {
-		return nil, nil, err
-	}
-	addrs, err = mail.ParseAddressList(stripped)
+	aligned := false
 	if err != nil {
-		return nil, nil, err
+		if stripped, found, ok := stripAddressRoutes(list); stripped != list {
+			list, routes, aligned = stripped, found, ok
+			addrs, err = mail.ParseAddressList(list)
+		}
 	}
-	if !aligned || len(found) != len(addrs) {
-		return addrs, nil, nil
+	if err != nil {
+		if stripped, ok := stripAddressCFWS(list); ok {
+			addrs, err = mail.ParseAddressList(stripped)
+		}
 	}
-	return addrs, found, nil
+	if err != nil || !aligned || len(routes) != len(addrs) {
+		return addrs, nil, err
+	}
+	return addrs, routes, nil
 }
 
 // stripAddressRoutes removes every well-formed obs-route that opens an angle-addr of
