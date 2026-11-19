@@ -45,9 +45,13 @@ func TestExtractEnvelopeUTF8SourceRoute(t *testing.T) {
 	}
 }
 
-// Invalid UTF-8 must not become a valid address by stripping it out with an
-// obs-route, even when it is in a discarded comment or follows a backslash.
+// A header is read without its bytes that are not text (mailaddr.ParseListLenient), so
+// invalid UTF-8 in a source route is removed like anywhere else in an address header
+// and the route is what remains: the ENVELOPE of an attached message is the one a
+// backend's top-level ENVELOPE has for the same header. Taken as written, such a route is
+// not a route (mailaddr's TestParseListMalformedUTF8SourceRoute).
 func TestExtractEnvelopeMalformedUTF8SourceRoute(t *testing.T) {
+	kept := 0
 	for _, encoding := range []struct{ name, bytes string }{
 		{"isolated continuation", "\x80"},
 		{"truncated", "\xe2\x82"},
@@ -55,22 +59,32 @@ func TestExtractEnvelopeMalformedUTF8SourceRoute(t *testing.T) {
 		{"surrogate", "\xed\xa0\x80"},
 		{"out of range", "\xf4\x90\x80\x80"},
 	} {
-		for _, context := range []struct{ name, before, after string }{
-			{"atom", "<@route", ".example:user@domain>"},
-			{"literal", "<@[route", "]:user@domain>"},
-			{"leading comment", "<(route", ") @route:user@domain>"},
-			{"comment", "<@route (route", "):user@domain>"},
-			{"quoted pair in literal", "<@[route\\", "]:user@domain>"},
-			{"quoted pair in comment", "<@route (route\\", "):user@domain>"},
+		for _, context := range []struct {
+			name, before, after string
+			want                []imap.Address
+		}{
+			{"atom", "<@route", ".example:user@domain>", []imap.Address{{Mailbox: "user", Host: "domain", Route: "@route.example"}}},
+			{"literal", "<@[route", "]:user@domain>", []imap.Address{{Mailbox: "user", Host: "domain", Route: "@[route]"}}},
+			{"leading comment", "<(route", ") @route:user@domain>", []imap.Address{{Mailbox: "user", Host: "domain", Route: "@route"}}},
+			{"comment", "<@route (route", "):user@domain>", []imap.Address{{Mailbox: "user", Host: "domain", Route: "@route"}}},
+			// Without the byte the backslash escapes the closing bracket or parenthesis.
+			{"quoted pair in literal", "<@[route\\", "]:user@domain>", nil},
+			{"quoted pair in comment", "<@route (route\\", "):user@domain>", nil},
 		} {
 			t.Run(encoding.name+"/"+context.name, func(t *testing.T) {
 				value := context.before + encoding.bytes + context.after
-				var h textproto.Header
+				var h, clean textproto.Header
 				h.Set("To", value)
-				if got := ExtractEnvelope(h).To; len(got) != 0 {
-					t.Errorf("malformed UTF-8 in %q gave %+v, want no address", value, got)
+				clean.Set("To", context.before+context.after)
+				got := ExtractEnvelope(h).To
+				if !slices.Equal(got, context.want) || !slices.Equal(got, ExtractEnvelope(clean).To) {
+					t.Errorf("To: %q = %+v, want %+v, as without the invalid bytes", value, got, context.want)
 				}
+				kept += len(got)
 			})
 		}
+	}
+	if kept != 20 {
+		t.Errorf("%d addresses kept, want 20", kept)
 	}
 }

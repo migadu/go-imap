@@ -14,6 +14,23 @@ import (
 	"github.com/migadu/go-imap"
 )
 
+// Sanitize returns a header value without the bytes that are not text: every byte that
+// is not part of a valid UTF-8 sequence, and every NUL. Valid text, U+FFFD included, is
+// returned as it is. Mail in the wild has such bytes (an unencoded Latin-1 name, a
+// truncated sequence), and neither an ENVELOPE nor a database can carry them.
+func Sanitize(value string) string {
+	return cleanText(value)
+}
+
+// ParseListLenient is ParseList(Sanitize(value)): the parse of an address header of a
+// stored message, whose addresses are worth keeping when a stray byte is not text.
+// imapserver.ExtractEnvelope uses it for the ENVELOPE of an attached message, and a
+// backend that stores a message's addresses uses it for the same header, so both read
+// every header alike, whatever is in it.
+func ParseListLenient(value string) ([]imap.Address, error) {
+	return ParseList(Sanitize(value))
+}
+
 // ParseList parses the value of one address header field and returns its entries in
 // header order, as RFC 9051 section 7.5.2 (RFC 3501 section 7.4.2) lists them in an
 // ENVELOPE:
@@ -41,9 +58,12 @@ import (
 //
 // A value that is not well-formed group syntax (a nested or unterminated group, ";"
 // outside a group, a group without a name, a run that does not parse) is parsed as a
-// flat list, and a value that is not an address list at all is an error. The value is
-// taken as written: a source route with invalid UTF-8 in it is not a route. A header
-// field that repeats is the caller's to combine, one call per instance.
+// flat list, and a value that is not an address list at all is an error. A header field
+// that repeats is the caller's to combine, one call per instance.
+//
+// The value is taken as written: invalid UTF-8 makes it no address list, as for
+// net/mail, and a source route with invalid UTF-8 in it is not a route. Use
+// ParseListLenient for the header of a stored message.
 func ParseList(value string) ([]imap.Address, error) {
 	var entries []imap.Address
 	add := func(addrs []*mail.Address, routes []string) {

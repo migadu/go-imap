@@ -4,6 +4,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/emersion/go-message/mail"
 
@@ -248,6 +249,73 @@ func TestParseListMalformedSourceRoutes(t *testing.T) {
 	}
 }
 
+// Taken as written, invalid UTF-8 in a route, in a hop, a literal, a comment or after a
+// backslash, is not part of a route: it must not become an address by being cut out with
+// one. ParseListLenient removes the bytes first, like anywhere else in the header.
+func TestParseListMalformedUTF8SourceRoute(t *testing.T) {
+	for _, encoding := range []struct{ name, bytes string }{
+		{"isolated continuation", "\x80"},
+		{"truncated", "\xe2\x82"},
+		{"overlong", "\xc0\xaf"},
+		{"surrogate", "\xed\xa0\x80"},
+		{"out of range", "\xf4\x90\x80\x80"},
+	} {
+		for _, context := range []struct{ name, before, after string }{
+			{"atom", "<@route", ".example:user@domain>"},
+			{"literal", "<@[route", "]:user@domain>"},
+			{"leading comment", "<(route", ") @route:user@domain>"},
+			{"comment", "<@route (route", "):user@domain>"},
+			{"quoted pair in literal", "<@[route\\", "]:user@domain>"},
+			{"quoted pair in comment", "<@route (route\\", "):user@domain>"},
+		} {
+			t.Run(encoding.name+"/"+context.name, func(t *testing.T) {
+				value := context.before + encoding.bytes + context.after
+				if got, err := mailaddr.ParseList(value); err == nil {
+					t.Errorf("ParseList(%q) = %+v, want an error", value, got)
+				}
+				lenient, lenientErr := mailaddr.ParseListLenient(value)
+				clean, cleanErr := mailaddr.ParseList(context.before + context.after)
+				if !slices.Equal(lenient, clean) || (lenientErr != nil) != (cleanErr != nil) {
+					t.Errorf("ParseListLenient(%q) = %+v, %v; want the parse without the bytes, %+v, %v", value, lenient, lenientErr, clean, cleanErr)
+				}
+			})
+		}
+	}
+}
+
+// Sanitize removes exactly the bytes that are not text, and ParseListLenient is the parse
+// of what is left.
+func TestSanitizeAndParseListLenient(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{"plain <a@example.com>", "plain <a@example.com>"},
+		{"caf\xe9@example.com", "caf@example.com"},
+		{"Na\x80me <us\x00er@example.com>", "Name <user@example.com>"},
+		{"J\xc3 \xe2\x82 <j@example.com>", "J  <j@example.com>"},
+		{"\xed\xa0\x80\xf4\x90\x80\x80\xc0\xafx", "x"},
+		{"\uFFFD Füße 例え 𐐀", "\uFFFD Füße 例え 𐐀"},
+		{"\x00", ""},
+		{"", ""},
+	} {
+		if got := mailaddr.Sanitize(tc.in); got != tc.want {
+			t.Errorf("Sanitize(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+	runLenient := func(value string, want []imap.Address) {
+		t.Helper()
+		got, err := mailaddr.ParseListLenient(value)
+		if err != nil || !slices.Equal(got, want) {
+			t.Errorf("ParseListLenient(%q) = %+v, %v; want %+v", value, got, err, want)
+		}
+		if _, err := mailaddr.ParseList(value); err == nil {
+			t.Errorf("ParseList(%q) parses the value as written", value)
+		}
+	}
+	runLenient("caf\xe9@example.com", []imap.Address{addr("", "caf", "example.com")})
+	runLenient("Na\x80me <user@example.com>, pl\xffain@example.com", []imap.Address{addr("Name", "user", "example.com"), addr("", "plain", "example.com")})
+	runLenient("te\xc0am: a@example.com;", []imap.Address{group("team"), addr("", "a", "example.com"), groupEnd})
+	runLenient("<@route\x80.example:user@domain>", []imap.Address{routed("@route.example", "", "user", "domain")})
+}
+
 // What is not an address list is an error, so a caller can tell it from a list without
 // addresses (an empty group).
 func TestParseListErrors(t *testing.T) {
@@ -271,7 +339,8 @@ func TestParseListDecodedNamesAreText(t *testing.T) {
 	})
 }
 
-// FuzzParseList: no input panics; every entry is an address (mailbox and host), a group
+// FuzzParseList: no input panics; the lenient parse is the strict parse of the sanitized
+// value and its entries are text; every entry is an address (mailbox and host), a group
 // start (mailbox only) or a group end, with starts and ends paired and not nested; and a
 // value net/mail parses gives the addresses net/mail gives, in order, with its display
 // names when the value has no group.
@@ -282,10 +351,28 @@ func FuzzParseList(f *testing.F) {
 		"Real Name < (before) @first (hop) , (between) @second : user (local) @ domain >", "<user (c)@ (c) example.com>",
 		`"a@b"@example.com`, "team: a@[2001:db8::1];", "<@bücher.example:user@domain>", "a@b: x@y;", `"""":;`, "g: h: a@example.com;;",
 		"=?utf-8?q?ab=80c?= <a@example.com>", "x@y, , ,", "<@[x\\]y]:user@domain>", "a@example.com; b@example.com",
+		"caf\xe9@example.com", "Na\x80me <us\x00er@example.com>", "<@route\x80.example:user@domain>", "te\xc0am: a@example.com;",
 	} {
 		f.Add(seed)
 	}
 	f.Fuzz(func(t *testing.T, value string) {
+		// The lenient parse is the strict parse of the sanitized value, and of the value
+		// itself when it is text.
+		clean := mailaddr.Sanitize(value)
+		if !utf8.ValidString(clean) || strings.IndexByte(clean, 0) >= 0 || mailaddr.Sanitize(clean) != clean {
+			t.Fatalf("Sanitize(%q) = %q is not clean text", value, clean)
+		}
+		lenient, lenientErr := mailaddr.ParseListLenient(value)
+		strict, strictErr := mailaddr.ParseList(clean)
+		if !slices.Equal(lenient, strict) || (lenientErr != nil) != (strictErr != nil) {
+			t.Fatalf("ParseListLenient(%q) = %+v, %v; ParseList(Sanitize) = %+v, %v", value, lenient, lenientErr, strict, strictErr)
+		}
+		for _, e := range lenient {
+			if !utf8.ValidString(e.Name+e.Mailbox+e.Host+e.Route) || strings.IndexByte(e.Name+e.Mailbox+e.Host+e.Route, 0) >= 0 {
+				t.Fatalf("ParseListLenient(%q): entry %+v is not text", value, e)
+			}
+		}
+
 		entries, err := mailaddr.ParseList(value)
 		var flat []imap.Address
 		inGroup := false
