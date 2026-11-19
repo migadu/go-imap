@@ -107,6 +107,30 @@ func TestParseListGroupNames(t *testing.T) {
 	}
 }
 
+// A group name that is a phrase is the display name the address parser gives the same
+// phrase in front of an address, also where that is surprising: an empty quoted string is
+// a word, an encoded-word is decoded only as a whole atom, and one that does not decode
+// (an unknown charset, an empty payload) is read as it is in a display name.
+func TestParseListGroupNameIsADisplayName(t *testing.T) {
+	for _, phrase := range []string{
+		"Team", "Team Name", `"Team Name"`, `"A""B"`, `A"B"`, `0 ""`, `"" 0 ""`, "Mr. X", "=?utf-8?q?Caf=C3=A9?= list",
+		`"=?utf-8?q?literal?=" =?utf-8?q?real?=`, "=?utf-8?q?a?==?utf-8?q?b?=", "x=?utf-8?q?a?=y", "=? utf8?q?0?=",
+		"00 =?x-unknown?q?abc?=", "00 =?0?B??=", "00 =?0?q?0?=", "=?utf-8?q?ab=80c?= team", "\u00a0Team\u00a0",
+	} {
+		t.Run(phrase, func(t *testing.T) {
+			named, err := mail.ParseAddress(phrase + " <named@example.invalid>")
+			if err != nil {
+				t.Fatalf("not a display name: %v", err)
+			}
+			want := mailaddr.Sanitize(named.Name)
+			got, err := mailaddr.ParseList(phrase + ": a@example.com;")
+			if err != nil || len(got) != 3 || !got[0].IsGroupStart() || got[0].Mailbox != want {
+				t.Errorf("ParseList(%q: a@example.com;) = %+v, %v; want a group named %q", phrase, got, err, want)
+			}
+		})
+	}
+}
+
 // A value that is not well-formed group syntax keeps the flat parse mail.ParseAddressList
 // gives it, without group entries.
 func TestParseListMalformedGroupsParseFlat(t *testing.T) {
@@ -319,7 +343,7 @@ func TestSanitizeAndParseListLenient(t *testing.T) {
 // What is not an address list is an error, so a caller can tell it from a list without
 // addresses (an empty group).
 func TestParseListErrors(t *testing.T) {
-	for _, value := range []string{"", "   ", "not an address", "a@", "<>", ",,"} {
+	for _, value := range []string{"", "   ", "not an address", "a@", "<>", ",,", "(comment)", "(a: b)", "(unterminated: comment", " , (a:b) ,"} {
 		if got, err := mailaddr.ParseList(value); err == nil {
 			t.Errorf("ParseList(%q) = %+v, want an error", value, got)
 		}
