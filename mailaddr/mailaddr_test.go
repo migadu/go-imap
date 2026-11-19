@@ -352,6 +352,7 @@ func FuzzParseList(f *testing.F) {
 		`"a@b"@example.com`, "team: a@[2001:db8::1];", "<@bücher.example:user@domain>", "a@b: x@y;", `"""":;`, "g: h: a@example.com;;",
 		"=?utf-8?q?ab=80c?= <a@example.com>", "x@y, , ,", "<@[x\\]y]:user@domain>", "a@example.com; b@example.com",
 		"caf\xe9@example.com", "Na\x80me <us\x00er@example.com>", "<@route\x80.example:user@domain>", "te\xc0am: a@example.com;",
+		"user@example.com (na\x80me)", "<user (c\x80) @ example.com>", "team (na\x00me): a@example.com;",
 	} {
 		f.Add(seed)
 	}
@@ -374,6 +375,12 @@ func FuzzParseList(f *testing.F) {
 		}
 
 		entries, err := mailaddr.ParseList(value)
+		if !utf8.ValidString(value) || strings.IndexByte(value, 0) >= 0 {
+			if err == nil || len(entries) != 0 {
+				t.Fatalf("ParseList(%q) = %+v, %v; want no entries and an error for invalid raw text", value, entries, err)
+			}
+			return
+		}
 		var flat []imap.Address
 		inGroup := false
 		for _, e := range entries {

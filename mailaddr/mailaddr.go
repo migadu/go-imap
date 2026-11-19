@@ -7,7 +7,9 @@
 package mailaddr
 
 import (
+	"errors"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/emersion/go-message/mail"
 
@@ -53,18 +55,22 @@ func ParseListLenient(value string) ([]imap.Address, error) {
 // the group syntax itself, which it flattens (an empty group leaves nothing); an obsolete
 // source route in an angle-addr (section 4.4), whose hop domains may be internationalized
 // (RFC 6532 section 3.2); and comments or white space around the dot-atoms of an addr-spec
-// (section 3.4.1), "<user (c) @ (c) example.com>". A value net/mail parses gives the
-// addresses net/mail gives.
+// (section 3.4.1), "<user (c) @ (c) example.com>". A valid UTF-8, NUL-free value that
+// net/mail parses gives the addresses net/mail gives.
 //
 // A value that is not well-formed group syntax (a nested or unterminated group, ";"
 // outside a group, a group without a name, a run that does not parse) is parsed as a
 // flat list, and a value that is not an address list at all is an error. A header field
 // that repeats is the caller's to combine, one call per instance.
 //
-// The value is taken as written: invalid UTF-8 makes it no address list, as for
-// net/mail, and a source route with invalid UTF-8 in it is not a route. Use
-// ParseListLenient for the header of a stored message.
+// The original value must contain valid UTF-8 and no NUL, including in comments.
+// Invalid UTF-8 or NUL produced by encoded-word decoding is removed from decoded
+// names. Use ParseListLenient for a stored header whose invalid bytes should be
+// removed before parsing.
 func ParseList(value string) ([]imap.Address, error) {
+	if !utf8.ValidString(value) || strings.IndexByte(value, 0) >= 0 {
+		return nil, errors.New("mailaddr: address list contains invalid UTF-8 or NUL")
+	}
 	var entries []imap.Address
 	add := func(addrs []*mail.Address, routes []string) {
 		for i, addr := range addrs {
