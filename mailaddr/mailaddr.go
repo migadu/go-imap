@@ -24,13 +24,20 @@ func Sanitize(value string) string {
 	return cleanText(value)
 }
 
-// ParseListLenient is ParseList(Sanitize(value)): the parse of an address header of a
-// stored message, whose addresses are worth keeping when a stray byte is not text.
-// imapserver.ExtractEnvelope uses it for the ENVELOPE of an attached message, and a
-// backend that stores a message's addresses uses it for the same header, so both read
-// every header alike, whatever is in it.
+// ParseListLenient parses a stored message's address header after Sanitize. If
+// parsing fails and a comment is unclosed, it discards that comment through the
+// end of the value and retries, preserving complete addresses before it.
+// imapserver.ExtractEnvelope and backends that store message addresses use this
+// parser so their ENVELOPEs read the same header alike.
 func ParseListLenient(value string) ([]imap.Address, error) {
-	return ParseList(Sanitize(value))
+	value = Sanitize(value)
+	entries, err := ParseList(value)
+	if err != nil {
+		if prefix := trimUnclosedComment(value); len(prefix) < len(value) {
+			return ParseList(prefix)
+		}
+	}
+	return entries, err
 }
 
 // ParseList parses the value of one address header field and returns its entries in

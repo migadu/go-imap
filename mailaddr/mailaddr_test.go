@@ -363,8 +363,8 @@ func TestParseListDecodedNamesAreText(t *testing.T) {
 	})
 }
 
-// FuzzParseList: no input panics; the lenient parse is the strict parse of the sanitized
-// value and its entries are text; every entry is an address (mailbox and host), a group
+// FuzzParseList: no input panics; lenient parsing preserves successful strict parses
+// of sanitized values and returns text; every entry is an address (mailbox and host), a group
 // start (mailbox only) or a group end, with starts and ends paired and not nested; and a
 // value net/mail parses gives the addresses net/mail gives, in order, with its display
 // names when the value has no group.
@@ -377,25 +377,57 @@ func FuzzParseList(f *testing.F) {
 		"=?utf-8?q?ab=80c?= <a@example.com>", "x@y, , ,", "<@[x\\]y]:user@domain>", "a@example.com; b@example.com",
 		"caf\xe9@example.com", "Na\x80me <us\x00er@example.com>", "<@route\x80.example:user@domain>", "te\xc0am: a@example.com;",
 		"user@example.com (na\x80me)", "<user (c\x80) @ example.com>", "team (na\x00me): a@example.com;",
+		"user@example.com (unterminated", "a@example.com, b@example.com (unclosed", "team: a@example.com; (unterminated",
+		`"user (team)"@example.com (unclosed`, "<@[hop(route]:user@example.com> (unclosed",
 	} {
 		f.Add(seed)
 	}
 	f.Fuzz(func(t *testing.T, value string) {
-		// The lenient parse is the strict parse of the sanitized value, and of the value
-		// itself when it is text.
+		// Sanitation is idempotent, and lenient recovery must not change a value
+		// that already parses successfully after sanitation.
 		clean := mailaddr.Sanitize(value)
 		if !utf8.ValidString(clean) || strings.IndexByte(clean, 0) >= 0 || mailaddr.Sanitize(clean) != clean {
 			t.Fatalf("Sanitize(%q) = %q is not clean text", value, clean)
 		}
 		lenient, lenientErr := mailaddr.ParseListLenient(value)
 		strict, strictErr := mailaddr.ParseList(clean)
-		if !slices.Equal(lenient, strict) || (lenientErr != nil) != (strictErr != nil) {
+		if strictErr == nil && (lenientErr != nil || !slices.Equal(lenient, strict)) {
 			t.Fatalf("ParseListLenient(%q) = %+v, %v; ParseList(Sanitize) = %+v, %v", value, lenient, lenientErr, strict, strictErr)
 		}
+		if strictErr == nil {
+			recovered, recoveryErr := mailaddr.ParseListLenient(clean + " (")
+			if recoveryErr != nil || !slices.Equal(recovered, strict) {
+				t.Fatalf("ParseListLenient(%q + unclosed comment) = %+v, %v; want %+v", clean, recovered, recoveryErr, strict)
+			}
+		}
+		cleanLenient, cleanLenientErr := mailaddr.ParseListLenient(clean)
+		if !slices.Equal(lenient, cleanLenient) || (lenientErr != nil) != (cleanLenientErr != nil) {
+			t.Fatalf("ParseListLenient(%q) differs after sanitation", value)
+		}
+		inLenientGroup := false
 		for _, e := range lenient {
 			if !utf8.ValidString(e.Name+e.Mailbox+e.Host+e.Route) || strings.IndexByte(e.Name+e.Mailbox+e.Host+e.Route, 0) >= 0 {
 				t.Fatalf("ParseListLenient(%q): entry %+v is not text", value, e)
 			}
+			switch {
+			case e.IsGroupStart():
+				if inLenientGroup || e.Name != "" || e.Route != "" {
+					t.Fatalf("ParseListLenient(%q): bad group start %+v", value, e)
+				}
+				inLenientGroup = true
+			case e.IsGroupEnd():
+				if !inLenientGroup || e != (imap.Address{}) {
+					t.Fatalf("ParseListLenient(%q): bad group end %+v", value, e)
+				}
+				inLenientGroup = false
+			default:
+				if e.Mailbox == "" || e.Host == "" {
+					t.Fatalf("ParseListLenient(%q): incomplete address %+v", value, e)
+				}
+			}
+		}
+		if inLenientGroup {
+			t.Fatalf("ParseListLenient(%q): unterminated group", value)
 		}
 
 		entries, err := mailaddr.ParseList(value)

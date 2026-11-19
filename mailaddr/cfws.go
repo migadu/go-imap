@@ -1,5 +1,25 @@
 package mailaddr
 
+// trimUnclosedComment removes only an unmatched comment and its remaining suffix.
+// Parentheses in quoted strings and domain literals are data, not comments.
+func trimUnclosedComment(value string) string {
+	for i := 0; i < len(value); i++ {
+		switch value[i] {
+		case '"':
+			i = skipQuotedString(value, i)
+		case '[':
+			i = skipDomainLiteral(value, i)
+		case '(':
+			end, closed := commentEnd(value, i)
+			if !closed {
+				return value[:i]
+			}
+			i = end
+		}
+	}
+	return value
+}
+
 // stripAddressCFWS rewrites an address list net/mail failed to parse into one it can.
 // RFC 5322 §3.4.1 builds the local-part and the domain of an addr-spec from dot-atoms,
 // and a dot-atom may have CFWS (comments and folding white space) on either side, so
