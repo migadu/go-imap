@@ -499,12 +499,13 @@ func ExtractEnvelopeWithOptions(h textproto.Header, options *ExtractOptions) *im
 // then its members, then an end record with neither (RFC 3501 §7.4.2, RFC 9051 §7.5.2);
 // an empty group is its start and end. A repeated field (RFC 5322 §3.6 allows one, but
 // such mail exists) contributes every instance, in header order, and an instance that
-// does not parse adds nothing. The parsing is mailaddr.ParseList, the same a backend
-// uses for a message's own ENVELOPE.
+// does not parse adds nothing. The parsing is mailaddr.ParseListLenient, the same a
+// backend uses for a message's own ENVELOPE: bytes that are not text (invalid UTF-8, NUL)
+// are removed from the value first.
 func parseAddressList(mh mail.Header, k string) []imap.Address {
 	var l []imap.Address
 	for _, value := range mh.Values(k) {
-		entries, err := mailaddr.ParseList(value)
+		entries, err := mailaddr.ParseListLenient(value)
 		if err != nil {
 			continue
 		}
