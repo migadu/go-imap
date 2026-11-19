@@ -8,8 +8,9 @@ package mailaddr
 // (RFC 5322 §3.2.2: it is white space, nested and with quoted-pairs), and the white space
 // after "<" and on either side of "@" and ">" is dropped. Quoted strings and domain
 // literals are copied verbatim. It is only a fallback: a list net/mail parses keeps its
-// comments, so a trailing comment is still taken as the display name there.
-func stripAddressCFWS(value string) string {
+// comments, so a trailing comment is still taken as the display name there. An
+// unterminated comment is not CFWS and makes normalization fail.
+func stripAddressCFWS(value string) (string, bool) {
 	out := make([]byte, 0, len(value))
 	trimRight := func() {
 		for len(out) > 0 && isAddressWSP(out[len(out)-1]) {
@@ -21,7 +22,8 @@ func stripAddressCFWS(value string) string {
 		ch := value[i]
 		switch ch {
 		case '(':
-			for depth := 0; i < len(value); i++ {
+			depth := 0
+			for ; i < len(value); i++ {
 				switch value[i] {
 				case '\\':
 					i++
@@ -33,6 +35,9 @@ func stripAddressCFWS(value string) string {
 				if depth == 0 {
 					break
 				}
+			}
+			if depth != 0 {
+				return "", false
 			}
 			ch = ' '
 		case '"', '[':
@@ -61,7 +66,7 @@ func stripAddressCFWS(value string) string {
 		}
 		out = append(out, ch)
 	}
-	return string(out)
+	return string(out), true
 }
 
 func isAddressWSP(ch byte) bool {

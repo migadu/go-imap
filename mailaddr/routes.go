@@ -29,7 +29,9 @@ func parseAddressListRoutes(list string) (addrs []*mail.Address, routes []string
 		}
 	}
 	if err != nil {
-		addrs, err = mail.ParseAddressList(stripAddressCFWS(list))
+		if stripped, ok := stripAddressCFWS(list); ok {
+			addrs, err = mail.ParseAddressList(stripped)
+		}
 	}
 	if err != nil || !aligned || len(routes) != len(addrs) {
 		return addrs, nil, err

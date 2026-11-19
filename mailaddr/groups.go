@@ -46,7 +46,11 @@ func parseAddressGroups(value string) (parts []addressListPart, ok bool) {
 		case '"':
 			i = skipQuotedString(value, i)
 		case '(':
-			i = skipComment(value, i)
+			end, closed := commentEnd(value, i)
+			if !closed {
+				return nil, false
+			}
+			i = end
 		case '<':
 			i = skipAngleAddr(value, i)
 		case '[':
@@ -87,7 +91,7 @@ func parseAddressGroups(value string) (parts []addressListPart, ok bool) {
 			inGroup, segStart, lastComma = false, i+1, -1
 		}
 	}
-	if inGroup || !addPlain(value[segStart:]) {
+	if inGroup || !addPlain(value[segStart:]) || len(parts) == 0 {
 		return nil, false
 	}
 	return parts, true
@@ -109,6 +113,13 @@ func skipQuotedString(s string, i int) int {
 
 // skipComment returns the index of the ')' closing the (nestable) comment opened at i.
 func skipComment(s string, i int) int {
+	end, _ := commentEnd(s, i)
+	return end
+}
+
+// commentEnd also reports whether the comment closes, so callers that accept a
+// comment as whitespace can reject an unterminated one.
+func commentEnd(s string, i int) (int, bool) {
 	depth := 0
 	for j := i; j < len(s); j++ {
 		switch s[j] {
@@ -118,11 +129,11 @@ func skipComment(s string, i int) int {
 			depth++
 		case ')':
 			if depth--; depth == 0 {
-				return j
+				return j, true
 			}
 		}
 	}
-	return len(s) - 1
+	return len(s) - 1, false
 }
 
 // skipAngleAddr returns the index of the '>' closing the angle-addr opened at i. Its
@@ -165,7 +176,11 @@ func isBlankAddressList(s string) bool {
 		switch s[i] {
 		case ' ', '\t', '\r', '\n', ',':
 		case '(':
-			i = skipComment(s, i)
+			end, closed := commentEnd(s, i)
+			if !closed {
+				return false
+			}
+			i = end
 		default:
 			return false
 		}
@@ -195,11 +210,11 @@ func decodePhrase(s string) string {
 	if err != nil || addr.Address != mailbox {
 		return decodeLoosePhrase(s, words)
 	}
-	if name := cleanText(addr.Name); strings.Trim(name, " \t\r\n") != "" {
+	if name := cleanText(addr.Name); name != "" {
 		return name
 	}
-	// Words, but no text from them (quoted white space, encoded-words that decode to
-	// nothing or not at all): the words are the name.
+	// Words, but no text from them (encoded-words that decode to nothing or not at
+	// all): the words are the name.
 	return decodeLoosePhrase(s, words)
 }
 
