@@ -1,6 +1,7 @@
 package imapserver
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/migadu/go-imap"
@@ -10,14 +11,28 @@ import (
 // SessionQuota is an IMAP session which supports the QUOTA extension
 // (RFC 9208).
 //
+// QUOTA is offered only when imap.CapQuota is also in the connection's
+// configured capabilities (Options.Caps, or SessionCapabilities when the
+// session implements it), as for NOTIFY and the other optional extensions.
+// Otherwise it is not advertised and its commands are refused.
+//
 // SETQUOTA is not supported: it is always rejected with NOPERM and QUOTASET
 // is not advertised.
+//
+// RFC 9208 ties STATUS items to the advertised resource types: with
+// QUOTA=RES-MESSAGE, Session.Status must support StatusOptions.NumDeleted,
+// and with QUOTA=RES-STORAGE, StatusOptions.DeletedStorage.
 type SessionQuota interface {
 	Session
 
 	// QuotaResourceTypes returns the resource types supported by the server.
 	// Each is advertised as a QUOTA=RES-<type> capability. QUOTA responses
 	// only list these resource types, in this order.
+	//
+	// A type must be a non-empty ASCII atom. Invalid types and repeats
+	// (compared case-insensitively) are ignored; if no valid type remains,
+	// QUOTA is not offered, since RFC 9208 requires at least one
+	// QUOTA=RES-<type> capability.
 	QuotaResourceTypes() []imap.QuotaResourceType
 
 	// GetQuota returns the usage and limits for a quota root. An unknown
@@ -25,11 +40,59 @@ type SessionQuota interface {
 	//
 	// A resource without a limit must be left out of QuotaData.Resources. A
 	// quota root must have at least one resource with a limit.
-	GetQuota(root string) (*imap.QuotaData, error)
+	GetQuota(ctx context.Context, root string) (*imap.QuotaData, error)
 
 	// GetQuotaRoot returns the quota roots for a mailbox, along with their
 	// usage and limits. The list may be empty if no quota root applies.
-	GetQuotaRoot(mailbox string) ([]imap.QuotaData, error)
+	//
+	// The mailbox doesn't have to exist (RFC 9208 §4.1.2): a client may ask
+	// which quota roots a mailbox would get when it is created.
+	GetQuotaRoot(ctx context.Context, mailbox string) ([]imap.QuotaData, error)
+}
+
+// quotaSession returns the session as a SessionQuota, along with the resource
+// types it advertises, or nil if QUOTA is not offered on this connection.
+func (c *Conn) quotaSession() (SessionQuota, []imap.QuotaResourceType) {
+	session, ok := c.session.(SessionQuota)
+	if !ok || !c.configuredCaps().Has(imap.CapQuota) {
+		return nil, nil
+	}
+	types := validQuotaResourceTypes(session.QuotaResourceTypes())
+	if len(types) == 0 {
+		return nil, nil
+	}
+	return session, types
+}
+
+// validQuotaResourceTypes returns the types which can be written as an atom,
+// without repeats, in their original order.
+func validQuotaResourceTypes(types []imap.QuotaResourceType) []imap.QuotaResourceType {
+	var l []imap.QuotaResourceType
+	seen := make(map[string]struct{}, len(types))
+	for _, typ := range types {
+		if !isQuotaResourceName(string(typ)) {
+			continue
+		}
+		key := imapwire.ToUpperASCII(string(typ))
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		l = append(l, typ)
+	}
+	return l
+}
+
+func isQuotaResourceName(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 0x80 || !imapwire.IsAtomChar(s[i]) {
+			return false
+		}
+	}
+	return true
 }
 
 func (c *Conn) handleGetQuota(dec *imapwire.Decoder) error {
@@ -42,17 +105,20 @@ func (c *Conn) handleGetQuota(dec *imapwire.Decoder) error {
 		return err
 	}
 
-	session, ok := c.session.(SessionQuota)
-	if !ok {
+	session, types := c.quotaSession()
+	if session == nil {
 		return newClientBugError("QUOTA is not supported")
 	}
 
-	data, err := session.GetQuota(root)
+	data, err := session.GetQuota(c.ctx, root)
 	if err != nil {
 		return err
 	}
+	if data == nil {
+		return fmt.Errorf("imapserver: GetQuota returned no QuotaData for root %q", root)
+	}
 
-	resources, err := quotaResources(session.QuotaResourceTypes(), data)
+	resources, err := quotaResources(types, data)
 	if err != nil {
 		return err
 	}
@@ -70,17 +136,16 @@ func (c *Conn) handleGetQuotaRoot(dec *imapwire.Decoder) error {
 		return err
 	}
 
-	session, ok := c.session.(SessionQuota)
-	if !ok {
+	session, types := c.quotaSession()
+	if session == nil {
 		return newClientBugError("QUOTA is not supported")
 	}
 
-	l, err := session.GetQuotaRoot(mailbox)
+	l, err := session.GetQuotaRoot(c.ctx, mailbox)
 	if err != nil {
 		return err
 	}
 
-	types := session.QuotaResourceTypes()
 	resources := make([][]imap.QuotaResourceType, len(l))
 	for i := range l {
 		resources[i], err = quotaResources(types, &l[i])
@@ -126,7 +191,7 @@ func (c *Conn) handleSetQuota(dec *imapwire.Decoder) error {
 		return err
 	}
 
-	if _, ok := c.session.(SessionQuota); !ok {
+	if session, _ := c.quotaSession(); session == nil {
 		return newClientBugError("QUOTA is not supported")
 	}
 

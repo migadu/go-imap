@@ -140,6 +140,12 @@ func (mbox *Mailbox) statusDataLocked(options *imap.StatusOptions) *imap.StatusD
 		size := mbox.sizeLocked()
 		data.Size = &size
 	}
+	if options.DeletedStorage {
+		// RFC 9208 §4.1.4 allows the sum of the RFC822.SIZE of the messages
+		// flagged \Deleted.
+		size := mbox.deletedSizeLocked()
+		data.DeletedStorage = &size
+	}
 	if options.HighestModSeq {
 		data.HighestModSeq = mbox.highestModSeq
 	}
@@ -158,6 +164,16 @@ func (mbox *Mailbox) countByFlagLocked(flag imap.Flag) uint32 {
 		}
 	}
 	return n
+}
+
+func (mbox *Mailbox) deletedSizeLocked() int64 {
+	var size int64
+	for _, msg := range mbox.l {
+		if _, ok := msg.flags[canonicalFlag(imap.FlagDeleted)]; ok {
+			size += msg.size
+		}
+	}
+	return size
 }
 
 func (mbox *Mailbox) sizeLocked() int64 {

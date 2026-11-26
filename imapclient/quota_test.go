@@ -145,9 +145,16 @@ func TestGetQuotaRoot(t *testing.T) {
 		})
 	}
 
+	// RFC 9208 §4.1.2: the mailbox doesn't have to exist
 	t.Run("nonexistent mailbox", func(t *testing.T) {
-		_, err := client.GetQuotaRoot("Nonexistent").Wait()
-		wantIMAPError(t, err, imap.StatusResponseTypeNo, imap.ResponseCodeNonExistent)
+		data, err := client.GetQuotaRoot("Nonexistent").Wait()
+		if err != nil {
+			t.Fatalf("GetQuotaRoot() = %v", err)
+		}
+		want := []imapclient.QuotaData{testQuotaData}
+		if !reflect.DeepEqual(data, want) {
+			t.Errorf("GetQuotaRoot() = %v, want %v", data, want)
+		}
 	})
 }
 

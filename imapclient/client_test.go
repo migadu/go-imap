@@ -121,6 +121,7 @@ func newMemServerConn(t *testing.T, newSession func() imapserver.Session) (net.C
 			imap.Cap("THREAD=ORDEREDSUBJECT"): {},
 			imap.Cap("MULTISEARCH"):           {},
 			imap.CapPreview:                   {},
+			imap.CapQuota:                     {},
 		},
 	})
 

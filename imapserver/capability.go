@@ -179,9 +179,9 @@ func (c *Conn) availableCaps() []imap.Cap {
 			caps = append(caps, imap.CapCatenate)
 		}
 
-		if quotaSession, ok := c.session.(SessionQuota); ok {
+		if session, types := c.quotaSession(); session != nil {
 			caps = append(caps, imap.CapQuota)
-			for _, typ := range quotaSession.QuotaResourceTypes() {
+			for _, typ := range types {
 				caps = append(caps, imap.Cap("QUOTA=RES-"+string(typ)))
 			}
 		}

@@ -769,7 +769,7 @@ func (sess *UserSession) QuotaResourceTypes() []imap.QuotaResourceType {
 }
 
 // GetQuota returns the usage and limits for a quota root.
-func (sess *UserSession) GetQuota(root string) (*imap.QuotaData, error) {
+func (sess *UserSession) GetQuota(ctx context.Context, root string) (*imap.QuotaData, error) {
 	sess.user.mutex.Lock()
 	defer sess.user.mutex.Unlock()
 
@@ -787,14 +787,11 @@ func (sess *UserSession) GetQuota(root string) (*imap.QuotaData, error) {
 	return data, nil
 }
 
-// GetQuotaRoot returns the quota roots for a mailbox.
-func (sess *UserSession) GetQuotaRoot(mailbox string) ([]imap.QuotaData, error) {
+// GetQuotaRoot returns the quota roots for a mailbox. The user's single quota
+// root applies to every mailbox, including one that doesn't exist yet.
+func (sess *UserSession) GetQuotaRoot(ctx context.Context, mailbox string) ([]imap.QuotaData, error) {
 	sess.user.mutex.Lock()
 	defer sess.user.mutex.Unlock()
-
-	if _, err := sess.user.mailboxLocked(mailbox); err != nil {
-		return nil, err
-	}
 
 	data := sess.user.quotaLocked()
 	if data == nil {
