@@ -11,3 +11,21 @@ const (
 	QuotaResourceMailbox           QuotaResourceType = "MAILBOX"
 	QuotaResourceAnnotationStorage QuotaResourceType = "ANNOTATION-STORAGE"
 )
+
+// QuotaData is the data returned by a QUOTA response.
+//
+// Resources only contains resources which have a limit: a resource without a
+// limit is not listed. An empty Resources map means the root has no resource
+// limits.
+type QuotaData struct {
+	Root      string
+	Resources map[QuotaResourceType]QuotaResourceData
+}
+
+// QuotaResourceData contains the usage and limit for a quota resource.
+//
+// For STORAGE, the values are in units of 1024 octets.
+type QuotaResourceData struct {
+	Usage int64
+	Limit int64
+}

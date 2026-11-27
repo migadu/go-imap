@@ -63,6 +63,7 @@ var (
 	_ imapserver.SessionIMAP4rev2 = (*UserSession)(nil)
 	_ imapserver.SessionACL       = (*UserSession)(nil)
 	_ imapserver.SessionSearchRes = (*UserSession)(nil)
+	_ imapserver.SessionQuota     = (*UserSession)(nil)
 )
 
 // NewUserSession creates a new user session.
@@ -760,4 +761,59 @@ func (sess *UserSession) MyRights(ctx context.Context, name string) (*imap.MyRig
 		Mailbox: name,
 		Rights:  rights,
 	}, nil
+}
+
+// QuotaResourceTypes returns the supported quota resource types.
+func (sess *UserSession) QuotaResourceTypes() []imap.QuotaResourceType {
+	return []imap.QuotaResourceType{imap.QuotaResourceStorage, imap.QuotaResourceMessage}
+}
+
+// GetQuota returns the usage and limits for a quota root.
+func (sess *UserSession) GetQuota(ctx context.Context, root string) (*imap.QuotaData, error) {
+	sess.user.mutex.Lock()
+	defer sess.user.mutex.Unlock()
+
+	var data *imap.QuotaData
+	if root == quotaRoot {
+		data = sess.user.quotaLocked()
+	}
+	if data == nil {
+		return nil, &imap.Error{
+			Type: imap.StatusResponseTypeNo,
+			Code: imap.ResponseCodeNonExistent,
+			Text: "No such quota root",
+		}
+	}
+	return data, nil
+}
+
+// GetQuotaRoot returns the quota roots for a mailbox. The user's single quota
+// root applies to every mailbox, including one that doesn't exist yet.
+func (sess *UserSession) GetQuotaRoot(ctx context.Context, mailbox string) ([]imap.QuotaData, error) {
+	sess.user.mutex.Lock()
+	defer sess.user.mutex.Unlock()
+
+	data := sess.user.quotaLocked()
+	if data == nil {
+		return nil, nil
+	}
+	// Both supported resource types, MESSAGE and STORAGE, require the
+	// mailbox's read right for GETQUOTAROOT (RFC 9208 section 6). There is
+	// no mailbox ACL to check when the mailbox does not exist yet.
+	if strings.EqualFold(mailbox, "INBOX") {
+		mailbox = "INBOX"
+	}
+	if mbox := sess.user.mailboxes[mailbox]; mbox != nil {
+		mbox.mutex.Lock()
+		canRead := hasRight(mbox.acl[imap.RightsIdentifier(sess.user.username)], imap.RightRead)
+		mbox.mutex.Unlock()
+		if !canRead {
+			return nil, &imap.Error{
+				Type: imap.StatusResponseTypeNo,
+				Code: imap.ResponseCodeNoPerm,
+				Text: "Permission denied: read right required",
+			}
+		}
+	}
+	return []imap.QuotaData{*data}, nil
 }
