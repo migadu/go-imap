@@ -27,7 +27,7 @@ type SessionQuota interface {
 
 	// QuotaResourceTypes returns the resource types supported by the server.
 	// Each is advertised as a QUOTA=RES-<type> capability. QUOTA responses
-	// only list these resource types, in this order.
+	// only list these resource types, in this order, with uppercase names.
 	//
 	// A type must be a non-empty ASCII atom. Invalid types and repeats
 	// (compared case-insensitively) are ignored; if no valid type remains,
@@ -39,7 +39,8 @@ type SessionQuota interface {
 	// root should be reported with an error.
 	//
 	// A resource without a limit must be left out of QuotaData.Resources. A
-	// quota root must have at least one resource with a limit.
+	// root with no resource limits has an empty Resources map. Resource names
+	// are compared case-insensitively; repeated names in Resources are errors.
 	GetQuota(ctx context.Context, root string) (*imap.QuotaData, error)
 
 	// GetQuotaRoot returns the quota roots for a mailbox, along with their
@@ -47,6 +48,8 @@ type SessionQuota interface {
 	//
 	// The mailbox doesn't have to exist (RFC 9208 §4.1.2): a client may ask
 	// which quota roots a mailbox would get when it is created.
+	// When ACL is supported, the backend must check the rights required by
+	// the returned resource types (RFC 9208 §6).
 	GetQuotaRoot(ctx context.Context, mailbox string) ([]imap.QuotaData, error)
 }
 
@@ -65,7 +68,7 @@ func (c *Conn) quotaSession() (SessionQuota, []imap.QuotaResourceType) {
 }
 
 // validQuotaResourceTypes returns the types which can be written as an atom,
-// without repeats, in their original order.
+// without repeats, in their original order and with uppercase names.
 func validQuotaResourceTypes(types []imap.QuotaResourceType) []imap.QuotaResourceType {
 	var l []imap.QuotaResourceType
 	seen := make(map[string]struct{}, len(types))
@@ -78,7 +81,7 @@ func validQuotaResourceTypes(types []imap.QuotaResourceType) []imap.QuotaResourc
 			continue
 		}
 		seen[key] = struct{}{}
-		l = append(l, typ)
+		l = append(l, imap.QuotaResourceType(key))
 	}
 	return l
 }
@@ -146,7 +149,7 @@ func (c *Conn) handleGetQuotaRoot(dec *imapwire.Decoder) error {
 		return err
 	}
 
-	resources := make([][]imap.QuotaResourceType, len(l))
+	resources := make([][]quotaResource, len(l))
 	for i := range l {
 		resources[i], err = quotaResources(types, &l[i])
 		if err != nil {
@@ -212,34 +215,51 @@ func (c *Conn) writeQuotaRoot(mailbox string, l []imap.QuotaData) error {
 	return enc.CRLF()
 }
 
-// quotaResources returns the resource types of data to write, in the order
-// given by the session.
-func quotaResources(types []imap.QuotaResourceType, data *imap.QuotaData) ([]imap.QuotaResourceType, error) {
-	var l []imap.QuotaResourceType
+type quotaResource struct {
+	typ  imap.QuotaResourceType
+	data imap.QuotaResourceData
+}
+
+// quotaResources resolves resource names case-insensitively and returns the
+// names and values to write, in the order given by the session.
+func quotaResources(types []imap.QuotaResourceType, data *imap.QuotaData) ([]quotaResource, error) {
+	supported := make(map[imap.QuotaResourceType]struct{}, len(types))
 	for _, typ := range types {
-		res, ok := data.Resources[typ]
-		if !ok {
+		supported[typ] = struct{}{}
+	}
+	values := make(map[imap.QuotaResourceType]imap.QuotaResourceData, len(data.Resources))
+	for typ, res := range data.Resources {
+		key := imap.QuotaResourceType(imapwire.ToUpperASCII(string(typ)))
+		if _, ok := supported[key]; !ok {
 			continue
+		}
+		if _, ok := values[key]; ok {
+			return nil, fmt.Errorf("imapserver: repeated quota resource %v in root %q", key, data.Root)
 		}
 		if res.Usage < 0 || res.Limit < 0 {
 			return nil, fmt.Errorf("imapserver: negative usage or limit for quota resource %v in root %q", typ, data.Root)
 		}
-		l = append(l, typ)
+		values[key] = res
 	}
-	if len(l) == 0 {
-		// RFC 9208 requires at least one resource in a QUOTA response
-		return nil, fmt.Errorf("imapserver: no resource with a limit in quota root %q", data.Root)
+	if len(values) == 0 && len(data.Resources) != 0 {
+		return nil, fmt.Errorf("imapserver: no advertised resource in quota root %q", data.Root)
+	}
+	var l []quotaResource
+	for _, typ := range types {
+		if res, ok := values[typ]; ok {
+			l = append(l, quotaResource{typ: typ, data: res})
+		}
 	}
 	return l, nil
 }
 
-func (c *Conn) writeQuota(data *imap.QuotaData, resources []imap.QuotaResourceType) error {
+func (c *Conn) writeQuota(data *imap.QuotaData, resources []quotaResource) error {
 	enc := newResponseEncoder(c)
 	defer enc.end()
 	enc.Atom("*").SP().Atom("QUOTA").SP().String(data.Root).SP()
 	enc.List(len(resources), func(i int) {
-		res := data.Resources[resources[i]]
-		enc.Atom(string(resources[i])).SP().Number64(res.Usage).SP().Number64(res.Limit)
+		res := resources[i]
+		enc.Atom(string(res.typ)).SP().Number64(res.data.Usage).SP().Number64(res.data.Limit)
 	})
 	return enc.CRLF()
 }

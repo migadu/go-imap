@@ -152,6 +152,18 @@ func TestQuota_resourceTypes(t *testing.T) {
 			wantList: "(STORAGE 1 1024)",
 		},
 		{
+			name:     "lowercase first",
+			types:    []imap.QuotaResourceType{"storage", imap.QuotaResourceStorage},
+			wantCaps: []string{"QUOTA", "QUOTA=RES-STORAGE"},
+			wantList: "(STORAGE 1 1024)",
+		},
+		{
+			name:     "mixed case with another resource",
+			types:    []imap.QuotaResourceType{"storage", imap.QuotaResourceStorage, imap.QuotaResourceMessage},
+			wantCaps: []string{"QUOTA", "QUOTA=RES-STORAGE", "QUOTA=RES-MESSAGE"},
+			wantList: "(STORAGE 1 1024 MESSAGE 1 100)",
+		},
+		{
 			name:     "invalid skipped",
 			types:    []imap.QuotaResourceType{"FOO BAR", imap.QuotaResourceMessage, "", imap.QuotaResourceStorage},
 			wantCaps: []string{"QUOTA", "QUOTA=RES-MESSAGE", "QUOTA=RES-STORAGE"},

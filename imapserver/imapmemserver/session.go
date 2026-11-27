@@ -797,5 +797,23 @@ func (sess *UserSession) GetQuotaRoot(ctx context.Context, mailbox string) ([]im
 	if data == nil {
 		return nil, nil
 	}
+	// Both supported resource types, MESSAGE and STORAGE, require the
+	// mailbox's read right for GETQUOTAROOT (RFC 9208 section 6). There is
+	// no mailbox ACL to check when the mailbox does not exist yet.
+	if strings.EqualFold(mailbox, "INBOX") {
+		mailbox = "INBOX"
+	}
+	if mbox := sess.user.mailboxes[mailbox]; mbox != nil {
+		mbox.mutex.Lock()
+		canRead := hasRight(mbox.acl[imap.RightsIdentifier(sess.user.username)], imap.RightRead)
+		mbox.mutex.Unlock()
+		if !canRead {
+			return nil, &imap.Error{
+				Type: imap.StatusResponseTypeNo,
+				Code: imap.ResponseCodeNoPerm,
+				Text: "Permission denied: read right required",
+			}
+		}
+	}
 	return []imap.QuotaData{*data}, nil
 }

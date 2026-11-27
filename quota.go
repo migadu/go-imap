@@ -15,7 +15,8 @@ const (
 // QuotaData is the data returned by a QUOTA response.
 //
 // Resources only contains resources which have a limit: a resource without a
-// limit is not listed.
+// limit is not listed. An empty Resources map means the root has no resource
+// limits.
 type QuotaData struct {
 	Root      string
 	Resources map[QuotaResourceType]QuotaResourceData
